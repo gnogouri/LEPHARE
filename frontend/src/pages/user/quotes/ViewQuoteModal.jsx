@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal } from '../../../components/common/Modal';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import {
@@ -6,8 +6,15 @@ import {
   printConditionsParticulieres,
   printAnnexeIa,
   estDevisIaImprimable,
+  printAnnexeFlotte,
+  estDevisFlotteAuto,
+  estDevisVoyage,
+  printBordereauTransport,
 } from '../../../utils/exportUtils';
 import { formatDate } from '../../../utils/dateUtils';
+import { cedeaoDansPrimeNette } from '../../../utils/tarificationAuto';
+import { ImpositionRecapFlotte } from './ImpositionRecapFlotte';
+import { iaApi, santeApi, voyageApi, transportApi, mrhApi } from '../../../api/endpoints';
 import {
   FileText,
   Printer,
@@ -28,14 +35,89 @@ import {
   ShieldAlert,
   AlertTriangle,
   Users,
+  UserPlus,
+  Pencil,
 } from 'lucide-react';
 
-export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) => {
+const fcfa = (montant) => `${Number(montant || 0).toLocaleString('fr-FR')} FCFA`;
+
+// Champ des blocs Références et Décompte : libellé au-dessus de la valeur, sur la grille commune
+// .fiche-devis-grille (index.css). Couleur en style en ligne pour garder la recoloration du mode clair.
+const Champ = ({ libelle, couleur, libelleColore = false, className, children }) => (
+  <div className={className}>
+    <div className="fiche-devis-champ-libelle" style={libelleColore ? { color: couleur } : undefined}>{libelle}</div>
+    <div className="fiche-devis-champ-valeur" style={couleur ? { color: couleur } : undefined}>{children}</div>
+  </div>
+);
+
+export const ViewQuoteModal = ({ isOpen, onClose, quote: quoteInitial, onConvertToContract, onQuoteUpdated }) => {
+  // Devis relu après une imposition des primes du récapitulatif, et formulaire d'imposition
+  // affiché à la place de la fiche (comme le panneau d'URANUS)
+  const [quoteAJour, setQuoteAJour] = useState(null);
+  const [imposition, setImposition] = useState(false);
+  useEffect(() => {
+    setQuoteAJour(null);
+    setImposition(false);
+  }, [quoteInitial?.iddevis, isOpen]);
+
+  // Détail lu en base : assurés d'un devis IA (assureiainfo), saisie d'un devis Santé (couvertures,
+  // adhérents, affiliés), voyage d'un devis Voyage (destination, voyageur, garanties enregistrées)
+  const [detailBranche, setDetailBranche] = useState(null);
+  const idDevisBase = Number(quoteInitial?.iddevis || quoteInitial?.raw?.iddevis) || 0;
+  const brancheDevis = quoteInitial?.branche;
+  useEffect(() => {
+    let actif = true;
+    setDetailBranche(null);
+    if (!isOpen || !idDevisBase) return undefined;
+    const chargement = brancheDevis === 'IA'
+      ? iaApi.getAssuresDevis(idDevisBase).then((assures) => ({ assures: assures || [] }))
+      : brancheDevis === 'Santé' ? santeApi.lireDevis(idDevisBase)
+        : brancheDevis === 'Voyage' ? voyageApi.lireDevis(idDevisBase)
+          : brancheDevis === 'Transport' ? transportApi.getCertificats({ iddevis: idDevisBase })
+            : brancheDevis === 'MRH' ? mrhApi.getMaisons(idDevisBase) : null;
+    if (!chargement) return undefined;
+    chargement
+      .then((d) => { if (actif) setDetailBranche(d); })
+      .catch(() => { if (actif) setDetailBranche({ erreur: true }); });
+    return () => { actif = false; };
+  }, [isOpen, idDevisBase, brancheDevis]);
+
+  const quote = quoteAJour || quoteInitial;
   if (!isOpen || !quote) return null;
+
+  const flotteAuto = estDevisFlotteAuto(quote);
+  const imposable = flotteAuto && !quote.confirme && !quote.raw?.confirme && !quote.devis_consolide;
+
+  if (imposition) {
+    return (
+      <Modal isOpen={isOpen} onClose={onClose} title="Imposer les primes du récapitulatif de la flotte" size="medium">
+        <ImpositionRecapFlotte
+          quote={quote}
+          onAnnuler={() => setImposition(false)}
+          onEnregistre={(devisAJour) => {
+            setQuoteAJour(devisAJour);
+            setImposition(false);
+            if (onQuoteUpdated) onQuoteUpdated(devisAJour);
+          }}
+        />
+      </Modal>
+    );
+  }
 
   const isConsolidated = quote.statut === 'Consolidé';
   const details = quote.details || {};
   const raw = quote.raw || {};
+  // Prime nette affichée hors FGA (qui a sa case), CEDEAO comprise (garantie du devis, sans case à
+  // part), comme sur les CP : prime nette + accessoire + taxes + FGA = prime TTC. stddevis.primenette
+  // comprend le FGA, et la CEDEAO sauf pour un devis à primes imposées. Copie locale d'un devis Auto :
+  // sa prime nette est hors CEDEAO, qui lui est donc ajoutée.
+  const primeNetteAffichee = raw.primenette != null
+    ? Number(raw.primenette) - Number(raw.fga || 0) + (cedeaoDansPrimeNette({
+      ...raw,
+      primeImposee: Boolean(raw.prime_imposee),
+      arrondiNsia: Number(raw.compagnie?.IdCompagnie ?? raw.compagnie) === 1,
+    }) ? 0 : Number(raw.cedeao || 0))
+    : Number(quote.prime_nette || 0) + Number(quote.cedeao || 0);
   const telephone = details.telephoneClient || raw.numerotelephoneassure || raw.telephoneclient || '—';
   const numeroActe = raw.numeroavenant || details.numeroAvenant || '0000001';
 
@@ -46,6 +128,7 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
     if (b.includes('sant')) return <HeartPulse size={20} color="#f43f5e" />;
     if (b.includes('voyag')) return <Plane size={20} color="#38bdf8" />;
     if (b.includes('transp')) return <Ship size={20} color="#0284c7" />;
+    if (b === 'ia') return <UserPlus size={20} color="#a855f7" />;
     return <Shield size={20} color="#8b5cf6" />;
   };
 
@@ -196,82 +279,43 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
             <FileText size={15} color="#60a5fa" />
             Références
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem', fontSize: '0.82rem' }}>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Id. Devis</div>
-              <strong style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{quote.iddevis || '—'}</strong>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>N° Devis</div>
-              <strong style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{quote.numerodevis || '—'}</strong>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Effet</div>
-              <strong style={{ color: '#fff' }}>{formatDate(quote.date_effet)}</strong>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>N° Acte</div>
-              <strong style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{numeroActe}</strong>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Effect Acte</div>
-              <strong style={{ color: '#fff' }}>{formatDate(quote.date_effet)}</strong>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Expiration</div>
-              <strong style={{ color: '#fff' }}>{formatDate(quote.date_expiration)}</strong>
-            </div>
+          <div className="fiche-devis-grille">
+            <Champ libelle="Id. Devis">{quote.iddevis || '—'}</Champ>
+            <Champ libelle="N° Devis">{quote.numerodevis || '—'}</Champ>
+            <Champ libelle="Effet">{formatDate(quote.date_effet)}</Champ>
+            <Champ libelle="N° Acte">{numeroActe}</Champ>
+            <Champ libelle="Effet Acte">{formatDate(quote.date_effet)}</Champ>
+            <Champ libelle="Expiration">{formatDate(quote.date_expiration)}</Champ>
           </div>
         </div>
 
         {/* Actuarial Financial Breakdown */}
         <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.02)' }}>
-          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            Décompte Actuariel CIMA & Quittance
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              Décompte Actuariel CIMA & Quittance
+              {quote.raw?.prime_imposee && <StatusBadge label="Primes imposées" color="amber" />}
+            </div>
+            {imposable && (
+              <button
+                type="button"
+                className="btn btn-secondary no-print"
+                onClick={() => setImposition(true)}
+                title="Corriger le récapitulatif des primes de la flotte (prime nette, accessoire, taxes, FGA, CEDEAO, TTC)"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                <Pencil size={14} />
+                <span>Imposer les primes du récapitulatif</span>
+              </button>
+            )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.75rem' }}>
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Prime Nette</div>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.prime_nette || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
-
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Accessoire</div>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.accessoires || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
-
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Taxes</div>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.taxes || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
-
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>FDG</div>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.fga || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
-
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Cedeao</div>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.cedeao || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
-
-            <div style={{ padding: '0.75rem', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-              <div style={{ fontSize: '0.7rem', color: '#34d399', textTransform: 'uppercase', fontWeight: 700 }}>Prime TTC</div>
-              <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#34d399', fontFamily: 'var(--font-mono)' }}>
-                {Number(quote.prime_totale || 0).toLocaleString('fr-FR')} FCFA
-              </div>
-            </div>
+          <div className="fiche-devis-grille">
+            <Champ libelle="Prime Nette" couleur="#60a5fa">{fcfa(primeNetteAffichee)}</Champ>
+            <Champ libelle="Accessoire">{fcfa(quote.accessoires)}</Champ>
+            <Champ libelle="Taxes">{fcfa(quote.taxes)}</Champ>
+            <Champ libelle="FDG">{fcfa(quote.fga)}</Champ>
+            <Champ libelle="Prime TTC" couleur="#34d399" libelleColore className="fiche-devis-ttc">{fcfa(quote.prime_totale)}</Champ>
           </div>
 
           <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', borderTop: '1px dashed var(--border-subtle)', paddingTop: '0.75rem' }}>
@@ -280,8 +324,8 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
           </div>
         </div>
 
-        {/* Branch Specific Technical Details */}
-        {Object.keys(details).length > 0 && (
+        {/* Branch Specific Technical Details (IA, Santé, Voyage et Transport : détail lu en base) */}
+        {(Object.keys(details).length > 0 || ['IA', 'Santé', 'Voyage', 'Transport', 'MRH'].includes(quote.branche)) && (
           <div className="glass-panel" style={{ padding: '1.25rem' }}>
             <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase' }}>
               Détails & Paramètres Techniques ({quote.branche})
@@ -313,77 +357,260 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
               </div>
             )}
 
-            {/* MRH Details */}
-            {quote.branche === 'MRH' && details.maisons && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.85rem' }}>
-                {details.maisons.map((m, idx) => (
-                  <div key={idx} style={{ padding: '0.65rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-                    <strong>Logement #{idx + 1} - {m.description}</strong> ({m.code_usage}) :
-                    Bâtiment : {Number(m.valeur_batiment || 0).toLocaleString('fr-FR')} FCFA •
-                    Contenu : {Number(m.valeur_contenu || 0).toLocaleString('fr-FR')} FCFA
-                    {m.presence_gardien && ' • Gardiennage (-5%)'}
-                  </div>
-                ))}
-              </div>
+            {/* MRH : maisons enregistrées (usage, capitaux, options, garanties) */}
+            {quote.branche === 'MRH' && (
+              !detailBranche ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement des maisons…</div>
+              ) : detailBranche.erreur ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Détail MRH indisponible pour ce devis.</div>
+              ) : !(detailBranche.maisons || []).length ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Aucune maison enregistrée pour ce devis.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.85rem' }}>
+                  {detailBranche.maisons.map((m, idx) => {
+                    const p = m.parametres || {};
+                    const capitaux = [
+                      ['Bâtiment', p.valeur_batiment], ['Contenu', p.valeur_contenu], ['Loyer mensuel', p.loyer_mensuel], ['Capital RVT', p.capital_rvt],
+                    ].filter(([, v]) => Number(v) > 0);
+                    return (
+                      <div key={m.maison_id || idx} style={{ padding: '0.65rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                          <strong>Maison {idx + 1} — {m.usage_libelle || m.code_usage || 'usage non renseigné'}{m.adresse ? ` — ${m.adresse}` : ''}</strong>
+                          <span style={{ fontWeight: 700 }}>{fcfa(m.prime_nette)}{m.prime_imposee ? ' (imposée)' : ''}</span>
+                        </div>
+                        {capitaux.length > 0 && (
+                          <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.2rem' }}>
+                            {capitaux.map(([l, v]) => `${l} : ${fcfa(v)}`).join(' • ')}
+                          </div>
+                        )}
+                        {(m.garanties || []).length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.4rem' }}>
+                            {m.garanties.map((g) => (
+                              <span key={g.code_sous_garantie || g.id_sous_garantie} style={{ padding: '0.15rem 0.45rem', borderRadius: '4px', border: '1px solid var(--border-subtle)', fontSize: '0.72rem', color: g.optionnelle ? 'var(--accent-purple)' : 'var(--text-secondary)' }}>
+                                {g.libelle_sous_garantie || g.code_sous_garantie} {fcfa(g.prime_nette)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {(m.options || []).length > 0 && (
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.3rem' }}>Options : {m.options.join(', ').replace(/_/g, ' ')}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )
             )}
 
-            {/* Santé Details */}
+            {/* Santé : saisie enregistrée (couvertures, adhérents, affiliés) */}
             {quote.branche === 'Santé' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.85rem' }}>
-                <div><strong>Nombre total de bénéficiaires :</strong> {details.totalAssures || 0} personnes</div>
-                {details.colleges && details.colleges.map((c, idx) => (
-                  <div key={idx} style={{ padding: '0.6rem', borderRadius: '6px', background: 'var(--surface-sunken)' }}>
-                    <strong>{c.nom}</strong> : {c.effectif} assurés • Taux de couverture : {c.taux_couverture} • Prime/tête : {Number(c.prime_par_tete || 0).toLocaleString('fr-FR')} FCFA
+              !detailBranche ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement de la saisie Santé…</div>
+              ) : detailBranche.erreur ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Détail Santé indisponible pour ce devis.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', fontSize: '0.85rem' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.5rem 1rem' }}>
+                    <div><strong>Offre commerciale :</strong> {detailBranche.detail?.libelle_tarif || detailBranche.filiales?.[0]?.libelle_offre || '—'}</div>
+                    <div><strong>Formule de couverture :</strong> {detailBranche.detail?.libelle_offre || '—'}</div>
+                    <div><strong>Type de contrat :</strong> {detailBranche.detail?.libelle_type_contrat || '—'}</div>
+                    <div><strong>Gestionnaire :</strong> {detailBranche.detail?.gestionnairesante || '—'}</div>
+                    <div><strong>Adhérents :</strong> {detailBranche.adherents?.length || 0} • <strong>Affiliés :</strong> {detailBranche.affilies?.length || 0}</div>
                   </div>
-                ))}
-              </div>
+                  {(detailBranche.filiales || []).map((f) => (
+                    <div key={f.idfiliale} style={{ padding: '0.5rem 0.6rem', borderRadius: '6px', background: 'var(--bg-surface-elevated)' }}>
+                      <strong>{f.libellecollege}</strong> : {f.libelle_offre} • {f.libellezone}
+                    </div>
+                  ))}
+                  {(detailBranche.affilies || []).length > 0 && (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="table" style={{ width: '100%', fontSize: '0.8rem' }}>
+                        <thead>
+                          <tr><th style={{ textAlign: 'left' }}>Nom et prénoms</th><th style={{ textAlign: 'left' }}>Lien</th><th style={{ textAlign: 'left' }}>Né(e) le</th></tr>
+                        </thead>
+                        <tbody>
+                          {detailBranche.affilies.map((a) => (
+                            <tr key={a.idaffilie}><td>{a.nom} {a.prenom}</td><td>{a.libellelien || a.lien}</td><td>{formatDate(a.datenaissance)}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {!(detailBranche.adherents || []).length && (
+                    <div style={{ color: 'var(--text-muted)' }}>Aucun adhérent en base pour ce devis (devis repris d'URANUS sans saisie détaillée).</div>
+                  )}
+                </div>
+              )
             )}
 
-            {/* IA Details */}
+            {/* IA : assurés du devis (une ligne de devis par assuré) */}
             {quote.branche === 'IA' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.85rem' }}>
-                <div><strong>Classe Professionnelle :</strong> {details.classeProfessionnelle}</div>
-                <div><strong>Capital Décès :</strong> {Number(details.capitalDeces || 0).toLocaleString('fr-FR')} FCFA</div>
-                <div><strong>Capital Invalidité (IPT) :</strong> {Number(details.capitalIpt || 0).toLocaleString('fr-FR')} FCFA</div>
-                <div><strong>Frais Médicaux :</strong> {Number(details.fraisMedicaux || 0).toLocaleString('fr-FR')} FCFA</div>
-              </div>
-            )}
-
-            {/* Voyage Details */}
-            {quote.branche === 'Voyage' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.85rem' }}>
-                <div><strong>Destination :</strong> {details.paysDestination || 'Espace Schengen'} ({details.zone})</div>
-                <div><strong>Formule :</strong> {details.formule}</div>
-                <div><strong>Période :</strong> Du {details.dateDepart} au {details.dateRetour} ({details.daysCount} jours)</div>
-                <div><strong>Plafond Médical :</strong> {details.plafondFraisMedicaux || '30 000 €'}</div>
-                {details.voyageurs && (
-                  <div style={{ gridColumn: 'span 2', marginTop: '0.5rem' }}>
-                    <strong>Voyageurs assurés ({details.voyageurs.length}) :</strong>
-                    <ul style={{ margin: '0.3rem 0 0 1.25rem', padding: 0 }}>
-                      {details.voyageurs.map((v, i) => (
-                        <li key={i}>{v.nom} {v.prenom} (Né(e) le {v.dateNaissance}, Pass: {v.passeport || 'N/A'})</li>
+              !detailBranche ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement des assurés…</div>
+              ) : !(detailBranche.assures || []).length ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Aucun assuré en base pour ce devis (devis repris d'URANUS sans détail).</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="table" style={{ width: '100%', fontSize: '0.8rem' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left' }}>Assuré</th>
+                        <th style={{ textAlign: 'left' }}>Né(e) le</th>
+                        <th style={{ textAlign: 'left' }}>Profession</th>
+                        <th style={{ textAlign: 'right' }}>Décès</th>
+                        <th style={{ textAlign: 'right' }}>Infirmité</th>
+                        <th style={{ textAlign: 'right' }}>Frais trait.</th>
+                        <th style={{ textAlign: 'right' }}>Prime nette</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailBranche.assures.map((a) => (
+                        <tr key={a.id_devis_detail}>
+                          <td>{a.nom} {a.prenoms}</td>
+                          <td>{formatDate(a.date_naissance)}</td>
+                          <td>{a.libelle_profession || '—'}</td>
+                          <td style={{ textAlign: 'right' }}>{Number(a.capital_deces || 0).toLocaleString('fr-FR')}</td>
+                          <td style={{ textAlign: 'right' }}>{Number(a.capital_infirmite || 0).toLocaleString('fr-FR')}</td>
+                          <td style={{ textAlign: 'right' }}>{Number(a.capital_frais_traitement || 0).toLocaleString('fr-FR')}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{Math.round(Number(a.prime_nette || 0)).toLocaleString('fr-FR')}</td>
+                        </tr>
                       ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+                    </tbody>
+                  </table>
+                </div>
+              )
             )}
 
-            {/* Transport Details */}
+            {/* Voyage : saisie enregistrée (destination, voyageur, garanties) */}
+            {quote.branche === 'Voyage' && (
+              !detailBranche ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement du voyage…</div>
+              ) : detailBranche.erreur ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Détail Voyage indisponible pour ce devis.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', fontSize: '0.85rem' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.5rem 1rem' }}>
+                    <div><strong>Formule :</strong> {detailBranche.Detail?.LibelleTarif || '—'}</div>
+                    <div><strong>Offre :</strong> {detailBranche.Detail?.IdOffre ? detailBranche.Detail.LibelleOffre : '—'}</div>
+                    <div><strong>Destination :</strong> {detailBranche.Complement?.LibellePaysDestination || '—'}{detailBranche.LibelleZone ? ` (${detailBranche.LibelleZone})` : ''}</div>
+                    <div><strong>Schengen :</strong> {detailBranche.Complement ? (detailBranche.Complement.Schengen ? 'Oui' : 'Non') : '—'}</div>
+                    <div>
+                      <strong>Période :</strong> du {formatDate(detailBranche.DateEffet)} au {formatDate(detailBranche.DateExpiration)}
+                      {detailBranche.DateEffet && detailBranche.DateExpiration
+                        ? ` (${Math.round((new Date(detailBranche.DateExpiration) - new Date(detailBranche.DateEffet)) / 86400000)} jours)` : ''}
+                    </div>
+                    <div><strong>Voyageur né(e) le :</strong> {formatDate(detailBranche.Detail?.DateNaissance)}</div>
+                    <div><strong>Nationalité :</strong> {detailBranche.Complement?.Nationalite || '—'}</div>
+                    <div><strong>Passeport :</strong> {detailBranche.Complement?.NumeroPasseport || '—'}</div>
+                    <div><strong>N° attestation :</strong> {detailBranche.Complement?.NumeroAttestation || '—'}</div>
+                    <div><strong>Référence contrat :</strong> {detailBranche.Complement?.ReferenceContrat || '—'}</div>
+                    <div><strong>N° police compagnie :</strong> {detailBranche.NumeroPoliceCompagnie || '—'}</div>
+                    {Number(detailBranche.Detail?.TauxReduction) > 0 && <div><strong>Réduction :</strong> {detailBranche.Detail.TauxReduction} %</div>}
+                  </div>
+                  {(detailBranche.Garanties || []).length > 0 ? (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="table" style={{ width: '100%', fontSize: '0.8rem' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left' }}>Garantie</th>
+                            <th style={{ textAlign: 'right' }}>Capital</th>
+                            <th style={{ textAlign: 'right' }}>Franchise</th>
+                            <th style={{ textAlign: 'right' }}>Prime annuelle</th>
+                            <th style={{ textAlign: 'right' }}>Prime nette</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detailBranche.Garanties.map((g) => (
+                            <tr key={g.IdSousGarantie}>
+                              <td>{g.LibelleSousGarantie}</td>
+                              <td style={{ textAlign: 'right' }}>{g.Capital ? Math.round(g.Capital).toLocaleString('fr-FR') : '—'}</td>
+                              <td style={{ textAlign: 'right' }}>{g.Franchise ? Math.round(g.Franchise).toLocaleString('fr-FR') : '—'}</td>
+                              <td style={{ textAlign: 'right' }}>{Math.round(g.PrimeAnnuelle || 0).toLocaleString('fr-FR')}</td>
+                              <td style={{ textAlign: 'right', fontWeight: 700 }}>{Math.round(g.PrimeNette || 0).toLocaleString('fr-FR')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ color: 'var(--text-muted)' }}>Aucune garantie en base pour ce devis (devis repris d'URANUS sans détail).</div>
+                  )}
+                  {detailBranche.Detail && !detailBranche.Complement && (
+                    <div style={{ color: 'var(--text-muted)' }}>Devis repris d'URANUS : destination, nationalité et passeport non enregistrés.</div>
+                  )}
+                </div>
+              )
+            )}
+
+            {/* Transport : certificats GUCE du bordereau rattachés au devis (une ligne de devis par certificat) */}
             {quote.branche === 'Transport' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.85rem' }}>
-                <div><strong>Mode de Transport :</strong> {details.modeTransport}</div>
-                <div><strong>Catégorie de Marchandise :</strong> {details.natureMarchandise}</div>
-                <div><strong>Incoterm :</strong> {details.incoterm}</div>
-                <div><strong>Garantie :</strong> {details.typeGarantie}</div>
-                <div><strong>Trajet :</strong> De {details.portDepart} à {details.portArrivee}</div>
-                <div><strong>N° Connaissement / B/L :</strong> {details.numeroBlLta || 'En cours'}</div>
-                <div><strong>Navire / Vol :</strong> {details.nomNavireVol}</div>
-                <div><strong>Somme Totale Assurée :</strong> {Number(details.sommeAssuree || 0).toLocaleString('fr-FR')} FCFA</div>
-              </div>
+              !detailBranche ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement des certificats…</div>
+              ) : detailBranche.erreur || !(detailBranche.Certificats || []).length ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Aucun certificat GUCE rattaché à ce devis (devis repris d'URANUS ou saisi hors GUCE).</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span>
+                      Bordereau GUCE du <strong>{formatDate(detailBranche.DebutPeriode)}</strong> au <strong>{formatDate(detailBranche.FinPeriode)}</strong> :
+                      {' '}{detailBranche.Totaux.Certificats} certificats, valeur assurée {Math.round(detailBranche.Totaux.ValeurAssurance).toLocaleString('fr-FR')} FCFA
+                    </span>
+                    <button type="button" className="btn btn-secondary" onClick={() => printBordereauTransport({ iddevis: idDevisBase })} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}>
+                      <Printer size={14} /> Bordereau
+                    </button>
+                  </div>
+                  <div style={{ overflow: 'auto', maxHeight: '300px' }}>
+                    <table className="table" style={{ width: '100%', fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left' }}>N° requête</th>
+                          <th style={{ textAlign: 'left' }}>Certificat</th>
+                          <th style={{ textAlign: 'left' }}>Assuré</th>
+                          <th style={{ textAlign: 'left' }}>Transport / voyage</th>
+                          <th style={{ textAlign: 'right' }}>Valeur</th>
+                          <th style={{ textAlign: 'right' }}>Prime totale</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detailBranche.Certificats.map((c) => (
+                          <tr key={c.NumeroRequete}>
+                            <td>{c.NumeroRequete}</td>
+                            <td>{c.ReferenceCertificat} <span style={{ color: 'var(--text-muted)' }}>({formatDate(c.DateCertificat)})</span></td>
+                            <td>{c.Assure}</td>
+                            <td>{c.MoyenTransport} <span style={{ color: 'var(--text-muted)' }}>{c.Voyage}</span></td>
+                            <td style={{ textAlign: 'right' }}>{Math.round(c.ValeurAssurance).toLocaleString('fr-FR')}</td>
+                            <td style={{ textAlign: 'right', fontWeight: 700 }}>{Math.round(c.PrimeTtc).toLocaleString('fr-FR')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                    Prime totale des certificats {Math.round(detailBranche.Totaux.PrimeTtc).toLocaleString('fr-FR')} FCFA, diminuée de la part AFS-CI
+                    ({Math.round(detailBranche.Totaux.AccessoireClient).toLocaleString('fr-FR')} FCFA) : total général {Math.round(detailBranche.Totaux.TotalGeneral).toLocaleString('fr-FR')} FCFA.
+                  </div>
+                </div>
+              )
             )}
           </div>
         )}
+
+        {/* Document preview scope mirrors the official proforma and CP templates. */}
+        <div className="glass-panel" style={{ padding: '1rem', border: '1px solid rgba(96, 165, 250, 0.25)' }}>
+          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#93c5fd', marginBottom: '0.6rem', textTransform: 'uppercase' }}>
+            Documents du devis
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            <div>
+              <strong style={{ color: '#fff' }}>Facture proforma</strong>
+              <div>Souscripteur, assuré, période, référence, détail prime nette, accessoires, taxes, FGA/CEDEAO et total TTC.</div>
+            </div>
+            <div>
+              <strong style={{ color: '#fff' }}>Conditions particulières</strong>
+              <div>Risque assuré, caractéristiques techniques, garanties, plafonds, franchises, réductions, prime comptant et signatures.</div>
+            </div>
+          </div>
+        </div>
 
         {/* Modal Actions */}
         <div
@@ -402,7 +629,7 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
             Fermer
           </button>
 
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button
               type="button"
               className="btn btn-secondary"
@@ -417,11 +644,13 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
               type="button"
               className="btn btn-secondary"
               onClick={() => printConditionsParticulieres(quote)}
-              title="Conditions Particulières (références client / quittance, garanties, récapitulatif) — enregistrable en PDF"
+              title={estDevisVoyage(quote)
+                ? "Proposition d'assurance Voyage (souscripteur, assuré, période, garanties, primes) — enregistrable en PDF"
+                : 'Conditions Particulières (références client / quittance, garanties, récapitulatif) — enregistrable en PDF'}
               style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
             >
               <FileText size={15} />
-              <span>Imprimer Conditions Particulières</span>
+              <span>{estDevisVoyage(quote) ? 'Imprimer Proposition' : 'Imprimer Conditions Particulières'}</span>
             </button>
 
             {estDevisIaImprimable(quote) && (
@@ -433,6 +662,19 @@ export const ViewQuoteModal = ({ isOpen, onClose, quote, onConvertToContract }) 
                 style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
               >
                 <Users size={15} />
+                <span>Imprimer Annexe</span>
+              </button>
+            )}
+
+            {flotteAuto && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => printAnnexeFlotte(quote)}
+                title="Annexe : liste des véhicules de la flotte avec leurs primes par garantie et le décompte de prime — enregistrable en PDF"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              >
+                <Car size={15} />
                 <span>Imprimer Annexe</span>
               </button>
             )}

@@ -246,7 +246,7 @@ export const VehicleGeoSettingsPage = () => {
   const geoColumns = [
     { header: 'Code Zone', accessor: 'code', render: (r) => <strong style={{ color: '#c084fc' }}>{r.code}</strong> },
     { header: 'Zone Géographique', accessor: 'zone' },
-    { header: 'Pays / Territoire', accessor: 'pays' },
+    { header: 'Pays', accessor: 'pays' },
     { header: 'Coefficient Tarification', accessor: 'coefficient_risque', render: (r) => <strong style={{ color: '#fbbf24' }}>{r.coefficient_risque}</strong> },
     {
       header: 'Actions',
@@ -632,7 +632,7 @@ export const VehicleGeoSettingsPage = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Pays / Territoire *</label>
+            <label className="form-label">Pays *</label>
             <input
               type="text"
               className="form-control"
@@ -676,7 +676,7 @@ export const VehicleGeoSettingsPage = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Pays & Territoires couverts</label>
+            <label className="form-label">Pays couverts</label>
             <textarea
               className="form-control"
               rows={2}
@@ -737,7 +737,7 @@ export const VehicleGeoSettingsPage = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Description / Détails</label>
+            <label className="form-label">Description</label>
             <input
               type="text"
               className="form-control"

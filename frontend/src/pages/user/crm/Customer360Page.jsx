@@ -374,12 +374,12 @@ export const Customer360Page = () => {
       {/* 360 Tabs Navigation */}
       <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
         {[
-          { id: 'contracts', label: `Contrats & Polices (${clientContracts.length})`, icon: <Shield size={16} /> },
+          { id: 'contracts', label: `Contrats (${clientContracts.length})`, icon: <Shield size={16} /> },
           { id: 'claims', label: `Sinistres Délégués (${clientClaims.length})`, icon: <AlertTriangle size={16} /> },
-          { id: 'quotes', label: `Devis & Devises (${clientQuotes.length})`, icon: <FileText size={16} /> },
-          { id: 'finance', label: 'Encaissements & Règlements', icon: <CreditCard size={16} /> },
+          { id: 'quotes', label: `Devis (${clientQuotes.length})`, icon: <FileText size={16} /> },
+          { id: 'finance', label: 'Encaissements', icon: <CreditCard size={16} /> },
           { id: 'history', label: `Journal Échanges CRM (${interactionLogs.length})`, icon: <History size={16} /> },
-          { id: 'documents', label: 'Pièces & GED Probante', icon: <FolderOpen size={16} /> },
+          { id: 'documents', label: 'Pièces Justificatives', icon: <FolderOpen size={16} /> },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -476,7 +476,7 @@ export const Customer360Page = () => {
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <div>
-              <h3 className="title-md">Sinistres Délégués & Historique Sinistralité</h3>
+              <h3 className="title-md">Sinistres Délégués</h3>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                 Gestion selon conventions et mandats de règlement LE PHARE.
               </p>
@@ -547,7 +547,7 @@ export const Customer360Page = () => {
       {activeTab === 'quotes' && (
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h3 className="title-md">Devis & Propositions Commerciales</h3>
+            <h3 className="title-md">Devis</h3>
             <button className="btn btn-primary" onClick={() => navigate('/user/quotes')}>
               <Plus size={16} style={{ marginRight: '0.35rem' }} /> Émettre un Devis
             </button>
@@ -599,7 +599,7 @@ export const Customer360Page = () => {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>N° Quittance / Reçu</th>
+                  <th>N° Quittance</th>
                   <th>Police Rattachée</th>
                   <th>Date Émission</th>
                   <th>Montant Réglé</th>
@@ -631,7 +631,7 @@ export const Customer360Page = () => {
         <div className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <h3 className="title-md">Journal des Échanges & Suivi Relationnel</h3>
+              <h3 className="title-md">Journal des Échanges</h3>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                 Historique des sollicitations, appels, réunions et réclamations (CRM-02, CRM-03).
               </p>
@@ -693,7 +693,7 @@ export const Customer360Page = () => {
       {/* Tab Content 6: Documents & GED */}
       {activeTab === 'documents' && (
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
-          <h3 className="title-md" style={{ marginBottom: '0.5rem' }}>Pièces Justificatives & GED Client</h3>
+          <h3 className="title-md" style={{ marginBottom: '0.5rem' }}>Pièces Justificatives</h3>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
             Stockage légal des pièces d'identification, conformité CIMA et documents probants.
           </p>
@@ -761,7 +761,7 @@ export const Customer360Page = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Objet / Sujet de l'Échange</label>
+            <label className="form-label">Objet de l'Échange</label>
             <input
               type="text"
               className="form-control"

@@ -30,6 +30,9 @@ const colorMap = {
 
   purple: 'badge-purple',
   admin: 'badge-purple',
+
+  slate: 'badge-slate',
+  gray: 'badge-slate',
 };
 
 export const StatusBadge = ({ label, color }) => {

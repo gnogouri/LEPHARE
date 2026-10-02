@@ -85,7 +85,7 @@ export const ParametrageMarquesPage = () => {
 
   const columns = [
     {
-      header: 'Constructeur / Marque',
+      header: 'Marque',
       render: (r) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
           <div style={{ padding: '0.4rem', borderRadius: '6px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa' }}>
@@ -194,7 +194,7 @@ export const ParametrageMarquesPage = () => {
       >
         <form onSubmit={handleSaveMarque} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div className="form-group">
-            <label className="form-label">Nom du Constructeur / Marque (* requis)</label>
+            <label className="form-label">Marque (* requis)</label>
             <input
               type="text"
               className="form-control"

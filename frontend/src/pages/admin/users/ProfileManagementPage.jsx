@@ -25,11 +25,11 @@ import {
 
 const AVAILABLE_MODULES = [
   { id: 'quotes', label: 'Devis & Tarifications', desc: 'Auto, MRH, Santé Groupe, Individuelle Accident' },
-  { id: 'contracts', label: 'Polices & Contrats', desc: 'Consultation, fiches 360°, historiques' },
+  { id: 'contracts', label: 'Contrats', desc: 'Consultation, fiches 360°, historiques' },
   { id: 'asaci', label: 'Attestations ASACI', desc: 'Émission et impression des cartes numériques' },
   { id: 'cash', label: 'Caisse & Encaissements', desc: 'Espèces, virements, Mobile Money' },
   { id: 'cheques', label: 'Gestion des Chèques', desc: 'Enregistrement, bordereaux de remise' },
-  { id: 'endorsements', label: 'Avenants & Mouvements', desc: 'Changements de véhicule, renouvellements' },
+  { id: 'endorsements', label: 'Avenants', desc: 'Changements de véhicule, renouvellements' },
   { id: 'remittances', label: 'Reversements Compagnies', desc: 'Bordereaux de paiement des assureurs' },
   { id: 'commissions', label: 'Commissions Apporteurs', desc: 'Calcul et liquidation des commissions' },
   { id: 'cima', label: 'Reporting & CIMA E1/E2', desc: 'États réglementaires et bordereaux' },
@@ -433,7 +433,7 @@ export const ProfileManagementPage = () => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Intitulé / Nom du Profil</label>
+              <label className="form-label">Nom du Profil</label>
               <input
                 type="text"
                 className="form-control"

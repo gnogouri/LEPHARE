@@ -177,7 +177,7 @@ export const ContractActionModal = ({
             </div>
 
             <div>
-              <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Justification & Motif de l'Annulation</label>
+              <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Motif de l'Annulation</label>
               <textarea
                 className="form-control"
                 rows="2"

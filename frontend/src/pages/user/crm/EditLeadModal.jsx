@@ -1,249 +1,182 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '../../../components/common/Modal';
-import { Users, Phone, Mail, Banknote, Calendar, Briefcase, Award, Save } from 'lucide-react';
-import { trierParLibelle } from '../../../utils/sortUtils';
+import { AmountInput } from '../../../components/common/AmountInput';
+import { Users, Phone, Mail, Calendar, Briefcase, Save } from 'lucide-react';
+import { BRANCHES_PROSPECT, ETAPES, dansJours, montantProspect } from './suiviCommercial';
+import { echeanceEnClair, formatDateLisible } from '../../../utils/dateUtils';
 
-const BRANCHES = [
-  'Automobile',
-  'Flotte Auto',
-  'Santé Groupe',
-  'IARD',
-  'Multirisque Habitation',
-  'Multirisque Entreprise',
-  'Vie',
-  'Transport',
-];
+const VIDE = {
+  nom_prospect: '',
+  contact: '',
+  telephone: '',
+  email: '',
+  branche: 'Automobile',
+  prime_estimee: 0,
+  statut: 'Nouveau',
+  commercial_attribue: '',
+  prochaine_action: '',
+  date_action: '',
+};
 
-const STAGES = [
-  { id: 'Nouveau', label: 'Prospects Entrants' },
-  { id: 'Qualifié', label: 'Besoins Qualifiés' },
-  { id: 'Proposition', label: 'Proposition Émise' },
-  { id: 'Négociation', label: 'Négociation & Clôture' },
-  { id: 'Gagné', label: 'Affaires Gagnées' },
-];
+const Libelle = ({ htmlFor, children }) => (
+  <label className="form-label" htmlFor={htmlFor} style={{ fontSize: '0.8rem', fontWeight: 600 }}>{children}</label>
+);
 
-export const EditLeadModal = ({ isOpen, onClose, lead, onSave }) => {
-  const [formData, setFormData] = useState({
-    nom_prospect: '',
-    contact: '',
-    telephone: '',
-    email: '',
-    branche: 'Automobile',
-    prime_estimee: 0,
-    statut: 'Nouveau',
-    commercial_attribue: 'Koffi Serge',
-    prochaine_action: '',
-    date_action: '',
-    probabilite: 50,
-  });
+const AvecIcone = ({ icone: Icone, children }) => (
+  <div style={{ position: 'relative' }}>
+    <Icone size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+    {children}
+  </div>
+);
+
+/**
+ * Prospect du suivi commercial, en création (lead absent) ou en modification.
+ * onSave(donnees) enregistre en base et renvoie true si c'est fait : la fenêtre se ferme alors.
+ */
+export const EditLeadModal = ({ isOpen, onClose, lead, onSave, commerciaux = [], commercialParDefaut = '' }) => {
+  const [formData, setFormData] = useState(VIDE);
+  const [enregistrement, setEnregistrement] = useState(false);
 
   useEffect(() => {
-    if (lead) {
-      setFormData({
+    if (!isOpen) return;
+    setFormData(lead
+      ? {
         nom_prospect: lead.nom_prospect || '',
         contact: lead.contact || '',
         telephone: lead.telephone || '',
         email: lead.email || '',
         branche: lead.branche || 'Automobile',
-        prime_estimee: lead.prime_estimee || 0,
+        prime_estimee: montantProspect(lead.prime_estimee),
         statut: lead.statut || 'Nouveau',
-        commercial_attribue: lead.commercial_attribue || 'Koffi Serge',
+        commercial_attribue: lead.commercial_attribue || '',
         prochaine_action: lead.prochaine_action || '',
         date_action: lead.date_action || '',
-        probabilite: lead.probabilite || 50,
-      });
-    }
-  }, [lead]);
+      }
+      : { ...VIDE, commercial_attribue: commercialParDefaut, date_action: dansJours(7) });
+  }, [isOpen, lead, commercialParDefaut]);
 
-  if (!isOpen || !lead) return null;
+  if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const champ = (nom) => ({
+    id: `prospect-${nom}`,
+    value: formData[nom],
+    onChange: (e) => setFormData((f) => ({ ...f, [nom]: e.target.value })),
+  });
+  // Une valeur enregistrée hors des listes reste proposée (pas de changement à l'insu de l'utilisateur)
+  const branches = BRANCHES_PROSPECT.includes(formData.branche) || !formData.branche
+    ? BRANCHES_PROSPECT
+    : [formData.branche, ...BRANCHES_PROSPECT];
+  const listeCommerciaux = !formData.commercial_attribue || commerciaux.includes(formData.commercial_attribue)
+    ? commerciaux
+    : [formData.commercial_attribue, ...commerciaux];
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    onSave(lead.id || lead.id_lead, {
+    setEnregistrement(true);
+    const fait = await onSave({
       ...formData,
-      prime_estimee: Number(formData.prime_estimee) || 0,
-      probabilite: Number(formData.probabilite) || 50,
+      nom_prospect: formData.nom_prospect.trim(),
+      prime_estimee: montantProspect(formData.prime_estimee),
+      date_action: formData.date_action || null,
     });
-    onClose();
+    setEnregistrement(false);
+    if (fait) onClose();
   };
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`Modifier le Prospect [${lead.id_lead || lead.id}]`}
+      title={lead ? `Modifier le prospect ${lead.id_lead || ''}` : 'Nouveau prospect'}
+      subtitle={lead ? lead.nom_prospect : 'Opportunité commerciale enregistrée dans le suivi commercial.'}
       size="medium"
     >
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Nom Prospect / Entreprise *</label>
-            <div style={{ position: 'relative' }}>
-              <Briefcase size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="text"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                required
-                value={formData.nom_prospect}
-                onChange={(e) => setFormData({ ...formData, nom_prospect: e.target.value })}
-              />
-            </div>
+            <Libelle htmlFor="prospect-nom_prospect">Prospect / entreprise *</Libelle>
+            <AvecIcone icone={Briefcase}>
+              <input type="text" className="form-control" style={{ paddingLeft: '2.25rem' }} required placeholder="ex : IVOIRE LOGISTIQUE SARL" {...champ('nom_prospect')} />
+            </AvecIcone>
           </div>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Contact Interlocuteur</label>
-            <div style={{ position: 'relative' }}>
-              <Users size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="text"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                value={formData.contact}
-                onChange={(e) => setFormData({ ...formData, contact: e.target.value })}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-          <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Téléphone Direct</label>
-            <div style={{ position: 'relative' }}>
-              <Phone size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="text"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                value={formData.telephone}
-                onChange={(e) => setFormData({ ...formData, telephone: e.target.value })}
-              />
-            </div>
+            <Libelle htmlFor="prospect-contact">Interlocuteur</Libelle>
+            <AvecIcone icone={Users}>
+              <input type="text" className="form-control" style={{ paddingLeft: '2.25rem' }} {...champ('contact')} />
+            </AvecIcone>
           </div>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Email Professionnel</label>
-            <div style={{ position: 'relative' }}>
-              <Mail size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="email"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              />
-            </div>
+            <Libelle htmlFor="prospect-telephone">Téléphone</Libelle>
+            <AvecIcone icone={Phone}>
+              <input type="tel" className="form-control" style={{ paddingLeft: '2.25rem' }} placeholder="+225 …" {...champ('telephone')} />
+            </AvecIcone>
           </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Branche d'Assurance</label>
-            <select
-              className="form-control"
-              value={formData.branche}
-              onChange={(e) => setFormData({ ...formData, branche: e.target.value })}
-            >
-              {trierParLibelle(BRANCHES, (b) => b).map((b) => (
-                <option key={b} value={b}>{b}</option>
-              ))}
+            <Libelle htmlFor="prospect-email">E-mail</Libelle>
+            <AvecIcone icone={Mail}>
+              <input type="email" className="form-control" style={{ paddingLeft: '2.25rem' }} {...champ('email')} />
+            </AvecIcone>
+          </div>
+          <div>
+            <Libelle htmlFor="prospect-branche">Branche ciblée</Libelle>
+            <select className="form-control" {...champ('branche')}>
+              {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
           </div>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Étape du Pipeline</label>
-            <select
-              className="form-control"
-              value={formData.statut}
-              onChange={(e) => setFormData({ ...formData, statut: e.target.value })}
-            >
-              {trierParLibelle(STAGES, (s) => s.label).map((s) => (
-                <option key={s.id} value={s.id}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-          <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Prime Estimée (FCFA)</label>
-            <div style={{ position: 'relative' }}>
-              <Banknote size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="number"
-                min="0"
-                step="5000"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem', fontFamily: 'var(--font-mono)' }}
-                value={formData.prime_estimee}
-                onChange={(e) => setFormData({ ...formData, prime_estimee: e.target.value })}
-              />
-            </div>
+            <Libelle htmlFor="prospect-prime_estimee">Prime estimée</Libelle>
+            <AmountInput
+              id="prospect-prime_estimee"
+              value={formData.prime_estimee}
+              onChange={(v) => setFormData((f) => ({ ...f, prime_estimee: v }))}
+            />
           </div>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Probabilité (%)</label>
-            <div style={{ position: 'relative' }}>
-              <Award size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="number"
-                min="0"
-                max="100"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                value={formData.probabilite}
-                onChange={(e) => setFormData({ ...formData, probabilite: e.target.value })}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-          <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Commercial Assigné</label>
-            <select
-              className="form-control"
-              value={formData.commercial_attribue}
-              onChange={(e) => setFormData({ ...formData, commercial_attribue: e.target.value })}
-            >
-              <option value="Awa Kone">Awa Kone</option>
-              <option value="Franck Gnogouri">Franck Gnogouri</option>
-              <option value="Koffi Serge">Koffi Serge</option>
-              <option value="Mamadou Diarra">Mamadou Diarra</option>
+            <Libelle htmlFor="prospect-statut">Étape</Libelle>
+            <select className="form-control" {...champ('statut')}>
+              {ETAPES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
           </div>
           <div>
-            <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Date Prochaine Relance</label>
-            <div style={{ position: 'relative' }}>
-              <Calendar size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="date"
-                className="form-control"
-                style={{ paddingLeft: '2.25rem' }}
-                value={formData.date_action}
-                onChange={(e) => setFormData({ ...formData, date_action: e.target.value })}
-              />
-            </div>
+            <Libelle htmlFor="prospect-commercial_attribue">Commercial</Libelle>
+            <select className="form-control" {...champ('commercial_attribue')}>
+              <option value="">— À attribuer —</option>
+              {listeCommerciaux.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <Libelle htmlFor="prospect-date_action">Prochaine relance</Libelle>
+            <AvecIcone icone={Calendar}>
+              <input type="date" lang="fr-FR" className="form-control" style={{ paddingLeft: '2.25rem' }} {...champ('date_action')} />
+            </AvecIcone>
+            {formData.date_action && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                {(() => {
+                  const date = formatDateLisible(formData.date_action, { jourSemaine: true });
+                  return `${date.charAt(0).toUpperCase()}${date.slice(1)} · ${echeanceEnClair(formData.date_action)}`;
+                })()}
+              </div>
+            )}
           </div>
         </div>
 
         <div>
-          <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Prochaine Action Commerciale</label>
-          <input
-            type="text"
-            className="form-control"
-            placeholder="ex: Relance téléphonique suite à présentation de l'offre technique"
-            value={formData.prochaine_action}
-            onChange={(e) => setFormData({ ...formData, prochaine_action: e.target.value })}
-          />
+          <Libelle htmlFor="prospect-prochaine_action">Prochaine action</Libelle>
+          <input type="text" className="form-control" placeholder="ex : envoi de l'offre tarifaire et recueil du RCCM" {...champ('prochaine_action')} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={enregistrement}>
             Annuler
           </button>
-          <button type="submit" className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <button type="submit" className="btn btn-primary" disabled={enregistrement} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Save size={16} />
-            <span>Enregistrer les modifications</span>
+            <span>{enregistrement ? 'Enregistrement…' : lead ? 'Enregistrer les modifications' : 'Enregistrer le prospect'}</span>
           </button>
         </div>
       </form>
     </Modal>
   );
 };
+
+export default EditLeadModal;

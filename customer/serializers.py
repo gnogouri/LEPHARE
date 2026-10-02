@@ -48,5 +48,12 @@ class ClientSerializer(serializers.ModelSerializer):
                 representation["civilite"] = qualite.Libelle
             except Qualite.DoesNotExist:
                 pass
-                
+
+        # Activité commerciale annotée par ClientViewSet (absente après une création)
+        for champ in ("devis_en_cours", "contrats_actifs"):
+            if hasattr(instance, champ):
+                representation[champ] = int(getattr(instance, champ) or 0)
+        if hasattr(instance, "total_primes"):
+            representation["total_primes"] = int(round(instance.total_primes or 0))
+
         return representation

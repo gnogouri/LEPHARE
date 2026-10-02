@@ -304,6 +304,12 @@ p {
   border: 1px solid rgba(139, 92, 246, 0.25);
 }
 
+.badge-slate {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
 /* Button Component Styles */
 .btn {
   display: inline-flex;
@@ -584,6 +590,16 @@ select.form-control {
   to { transform: translateY(0); opacity: 1; }
 }
 
+/* Icône de chargement (Loader2 …) qui tourne */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin,
+.animate-spin {
+  animation: spin 0.9s linear infinite;
+}
+
 /* ==========================================================================
    RESPONSIVE UTILITIES, TABLES & MEDIA QUERIES
    ========================================================================== */
@@ -746,6 +762,13 @@ select.form-control {
   }
 }
 
+/* Tablettes : sélecteur de profil (démonstration) réduit, masqué sur téléphone (voir < 480px) */
+@media (max-width: 900px) {
+  .nav-profil-switch select {
+    max-width: 110px !important;
+  }
+}
+
 /* Mobile Screens (< 768px) */
 @media (max-width: 768px) {
   :root {
@@ -806,6 +829,9 @@ select.form-control {
 
 /* Very Small Mobile (< 480px) */
 @media (max-width: 480px) {
+  .nav-profil-switch {
+    display: none !important;
+  }
   .nav-space-btn span {
     display: none;
   }
@@ -958,6 +984,75 @@ select.form-control {
   background: rgba(15, 23, 42, 0.03);
 }
 
+/* Fiche devis (ViewQuoteModal) : Références et Décompte partagent la même grille, leurs champs
+   tombent donc les uns sous les autres. La Prime TTC occupe les deux dernières colonnes ; son
+   encadré déborde à gauche de sa case pour garder le texte aligné sur la colonne. */
+.fiche-devis-grille {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.fiche-devis-champ-libelle {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 0.2rem;
+}
+.fiche-devis-champ-valeur {
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.fiche-devis-ttc {
+  grid-column: span 2;
+  margin: -0.5rem 0 -0.5rem -0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.fiche-devis-ttc .fiche-devis-champ-libelle,
+.fiche-devis-ttc .fiche-devis-champ-valeur {
+  font-weight: 800;
+}
+.fiche-devis-ttc .fiche-devis-champ-valeur {
+  font-size: 1.1rem;
+}
+@media (max-width: 768px) {
+  .fiche-devis-grille {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    row-gap: 1.1rem;
+  }
+}
+@media (max-width: 480px) {
+  .fiche-devis-grille {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Module de devis fermé (utils/modulesActifs.js) : affiché grisé, sans effet au survol. Le bouton
+   est plus nettement grisé qu'un simple bouton désactivé. */
+.btn.module-ferme:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sidebar-sublink-item.disabled,
+.sidebar-sublink-item.disabled:hover,
+[data-theme="light"] .sidebar-sublink-item.disabled:hover,
+.sidebar-nav-item.disabled,
+.sidebar-nav-item.disabled:hover,
+[data-theme="light"] .sidebar-nav-item.disabled:hover {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: var(--text-secondary);
+  background: transparent;
+}
+.sidebar-nav-item.disabled:hover .nav-icon {
+  color: var(--text-muted);
+}
+
 .sidebar-sublink-item.active {
   color: #60a5fa;
   font-weight: 600;
@@ -1080,6 +1175,11 @@ body,
   background: #faf5ff;
   color: #6d28d9;
   border-color: #e9d5ff;
+}
+[data-theme="light"] .badge-slate {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #cbd5e1;
 }
 
 /* Light mode automatic typography adaptation */

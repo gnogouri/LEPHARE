@@ -4,7 +4,7 @@ import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
 import { EditClientModal } from './EditClientModal';
 import { dataStore } from '../../../api/dataStore';
-import { customerApi, configRefApi, secteurActiviteApi, professionApi } from '../../../api/endpoints';
+import { customerApi, configRefApi, secteurActiviteApi, professionApi, sanitizeClientForApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import { useAuth } from '../../../context/AuthContext';
 import { canUser } from '../../../utils/rbac';
@@ -13,6 +13,9 @@ import { exportToPdf, printFicheClient } from '../../../utils/exportUtils';
 import { useNavigate } from 'react-router-dom';
 import { trierParLibelle } from '../../../utils/sortUtils';
 
+// Champs jamais modifiés depuis la fenêtre de modification : identifiants attribués et soldes
+const CHAMPS_CLIENT_NON_MODIFIABLES = ['Matricule', 'numero_assure', 'cle_unique', 'Solde', 'Avoir', 'CreeCie', 'IdCategorie', 'IdProfil'];
+
 export const ClientListPage = () => {
   const { user } = useAuth();
   const [clients, setClients] = useState([]);
@@ -20,7 +23,7 @@ export const ClientListPage = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [archivingClient, setArchivingClient] = useState(null);
-  const { success, error: toastError } = useToast();
+  const { success, error: toastError, info } = useToast();
   const navigate = useNavigate();
 
   const handleConfirmArchive = async () => {
@@ -155,7 +158,7 @@ export const ClientListPage = () => {
       'Type',
       'Téléphone',
       'Email / Ville',
-      'Profession / Activité',
+      'Profession',
       'Total Primes',
     ];
 
@@ -178,8 +181,9 @@ export const ClientListPage = () => {
 
     exportToPdf({
       filename: `Repertoire_Clients_LE_PHARE_${new Date().toISOString().slice(0, 10)}.pdf`,
-      title: 'RÉPERTOIRE OFFICIEL DE LA BASE CLIENTÈLE',
-      subtitle: 'État officiel conforme aux normes d’identification et de conformité du Code CIMA',
+      title: 'Répertoire de la base clientèle',
+      enTete: false,
+      piedDePage: false,
       metadata: {
         'Date d\'édition': today,
         'Édité par': user?.nom ? `${user.nom} (${user.email || ''})` : (user?.email || 'Gestionnaire'),
@@ -188,14 +192,6 @@ export const ClientListPage = () => {
       },
       headers,
       rows,
-      totals: [
-        'TOTAL GLOBAL',
-        `${clients.length} Clients`,
-        '-',
-        '-',
-        '-',
-        '-',
-      ],
     });
   };
 
@@ -209,18 +205,16 @@ export const ClientListPage = () => {
     villes: [],
     professions: [],
     secteurs: [],
-    typesSouscripteur: [],
-    typesAssure: [],
   });
 
   const [modalTab, setModalTab] = useState('identite');
-  const modalTabOrder = ['identite', 'coordonnees', 'professionnel', 'courtage', 'banque'];
+  const modalTabOrder = ['identite', 'coordonnees', 'professionnel', 'banque'];
   // Client venant d'être créé : bascule le modal sur l'écran de confirmation + impression
   const [createdClient, setCreatedClient] = useState(null);
 
   // Form State Exhaustif (41 champs réels de stdclient)
   const initialFormState = {
-    // 1. Identité & État Civil
+    // 1. Identité
     typeclient: 'Particulier',
     Particulier: 'V',
     IdQualite: 1,
@@ -230,7 +224,7 @@ export const ClientListPage = () => {
     DateNaissance: '',
     LieuNaissance: '',
 
-    // 2. Coordonnées complètes
+    // 2. Coordonnées
     telephone: '',
     mobile: '',
     fixe: '',
@@ -242,21 +236,22 @@ export const ClientListPage = () => {
     ville: 'Abidjan',
     CodePostal: '',
 
-    // 3. Professionnel & Entreprise
+    // 3. Domaine d'activité
     Responsable: '',
     Fonction: '',
     IdProfession: 1,
     profession: '',
     IdSecteurActivite: '',
 
-    // 4. Classification & CIMA
+    // Classification : types souscripteur / assuré (1 = personne physique, 2 = personne morale)
+    // déduits du type de personne choisi à l'étape 1 ; VIP, statut et reconquête par défaut
     idtypeclient: 1,
     idtypeassure: 1,
     Vip: 'N',
     Statut: 'V',
     Reconquete: 'N',
 
-    // 5. Données Financières & Fiscales
+    // 4. Données Financières & Fiscales
     Rib: '',
     NumeroCompte: '',
     ExonereDeTaxes: false,
@@ -283,16 +278,12 @@ export const ClientListPage = () => {
       configRefApi.getVilles(),
       configRefApi.getProfessions(),
       configRefApi.getSecteursActivite(),
-      configRefApi.getTypesSouscripteur(),
-      configRefApi.getTypesAssure(),
-    ]).then(([qualites, villes, professions, secteurs, typesSouscripteur, typesAssure]) => {
+    ]).then(([qualites, villes, professions, secteurs]) => {
       setRefData({
         qualites: qualites || [],
         villes: villes || [],
         professions: professions || [],
         secteurs: secteurs || [],
-        typesSouscripteur: typesSouscripteur || [],
-        typesAssure: typesAssure || [],
       });
     }).catch((err) => {
       console.warn('Erreur chargement référentiels:', err);
@@ -398,7 +389,7 @@ export const ClientListPage = () => {
       ville: selectedVille ? selectedVille.Libelle : formData.ville,
       profession: selectedProf ? selectedProf.Libelle : (formData.profession || (isEntreprise ? 'Société' : 'Commerçant')),
       libelleprofession: selectedProf ? selectedProf.Libelle : (formData.profession || (isEntreprise ? 'Société' : 'Commerçant')),
-      secteur_activite: selectedSecteur ? selectedSecteur.LibelleSecteurActivite : '',
+      secteur_activite: selectedSecteur ? (selectedSecteur.Libelle || selectedSecteur.LibelleSecteurActivite) : '',
       contrats_actifs: 0,
       devis_en_cours: 0,
       total_primes: '0 FCFA',
@@ -458,7 +449,7 @@ export const ClientListPage = () => {
 
   const columns = [
     {
-      header: 'Code / Matricule',
+      header: 'Matricule',
       accessor: 'codeclient',
       render: (row) => (
         <div>
@@ -525,7 +516,7 @@ export const ClientListPage = () => {
       ),
     },
     {
-      header: 'Coordonnées & Ville',
+      header: 'Coordonnées',
       render: (row) => {
         const phone = row.mobile || row.telephone;
         const email = row.email;
@@ -725,11 +716,10 @@ export const ClientListPage = () => {
           {/* Navigation par Onglets */}
           <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.5rem', overflowX: 'auto' }}>
             {[
-              { id: 'identite', label: '1. État Civil & Identité' },
-              { id: 'coordonnees', label: '2. Coordonnées & Adresse' },
-              { id: 'professionnel', label: '3. Activité & Entreprise' },
-              { id: 'courtage', label: '4. Courtage & CIMA' },
-              { id: 'banque', label: '5. Banque & Fiscalité' },
+              { id: 'identite', label: '1. Identité' },
+              { id: 'coordonnees', label: '2. Coordonnées' },
+              { id: 'professionnel', label: "3. Domaine d'activité" },
+              { id: 'banque', label: '4. Banque & Fiscalité' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -743,7 +733,7 @@ export const ClientListPage = () => {
             ))}
           </div>
 
-          {/* ONGLET 1: ÉTAT CIVIL & IDENTITÉ */}
+          {/* ONGLET 1: IDENTITÉ */}
           {modalTab === 'identite' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div className="form-group">
@@ -755,9 +745,9 @@ export const ClientListPage = () => {
                       name="typeclient"
                       value="Particulier"
                       checked={formData.typeclient === 'Particulier'}
-                      onChange={() => setFormData({ ...formData, typeclient: 'Particulier', Particulier: 'V', IdQualite: 1 })}
+                      onChange={() => setFormData({ ...formData, typeclient: 'Particulier', Particulier: 'V', IdQualite: 1, idtypeclient: 1, idtypeassure: 1 })}
                     />
-                    Particulier (Personne physique)
+                    Personne physique
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#fff', cursor: 'pointer' }}>
                     <input
@@ -765,16 +755,16 @@ export const ClientListPage = () => {
                       name="typeclient"
                       value="Entreprise"
                       checked={formData.typeclient === 'Entreprise'}
-                      onChange={() => setFormData({ ...formData, typeclient: 'Entreprise', Particulier: 'F', IdQualite: 4, prenom: '' })}
+                      onChange={() => setFormData({ ...formData, typeclient: 'Entreprise', Particulier: 'F', IdQualite: 4, prenom: '', idtypeclient: 2, idtypeassure: 2 })}
                     />
-                    Entreprise (Personne morale)
+                    Personne morale
                   </label>
                 </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: formData.typeclient === 'Entreprise' ? '1fr 2fr' : '1fr 2fr 2fr', gap: '0.75rem' }}>
                 <div className="form-group">
-                  <label className="form-label">Civilité / Qualité</label>
+                  <label className="form-label">Civilité</label>
                   <select
                     className="form-control"
                     value={formData.IdQualite}
@@ -859,7 +849,7 @@ export const ClientListPage = () => {
             </div>
           )}
 
-          {/* ONGLET 2: COORDONNÉES & ADRESSE */}
+          {/* ONGLET 2: COORDONNÉES */}
           {modalTab === 'coordonnees' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
@@ -956,7 +946,7 @@ export const ClientListPage = () => {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Boîte Postale / Code Postal</label>
+                  <label className="form-label">Boîte Postale</label>
                   <input
                     type="text"
                     className="form-control"
@@ -969,13 +959,13 @@ export const ClientListPage = () => {
             </div>
           )}
 
-          {/* ONGLET 3: ACTIVITÉ & PROFESSIONNEL */}
+          {/* ONGLET 3: DOMAINE D'ACTIVITÉ */}
           {modalTab === 'professionnel' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               {formData.typeclient === 'Entreprise' && (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   <div className="form-group">
-                    <label className="form-label">Nom & Prénom du Représentant Légal / Dirigeant</label>
+                    <label className="form-label">Nom & Prénom du Représentant Légal</label>
                     <input
                       type="text"
                       className="form-control"
@@ -1001,7 +991,7 @@ export const ClientListPage = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div className="form-group">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
-                    <label className="form-label" style={{ marginBottom: 0 }}>Profession / Métier (Table stdprofession)</label>
+                    <label className="form-label" style={{ marginBottom: 0 }}>Profession</label>
                     <button
                       type="button"
                       title="Créer une nouvelle profession"
@@ -1039,7 +1029,7 @@ export const ClientListPage = () => {
 
                 <div className="form-group">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
-                    <label className="form-label" style={{ marginBottom: 0 }}>Secteur d'Activité Économique (Table stdsecteuractivite)</label>
+                    <label className="form-label" style={{ marginBottom: 0 }}>Secteur d'Activité Économique</label>
                     <button
                       type="button"
                       title="Créer un nouveau secteur d'activité"
@@ -1074,83 +1064,7 @@ export const ClientListPage = () => {
             </div>
           )}
 
-          {/* ONGLET 4: COURTAGE & CIMA */}
-          {modalTab === 'courtage' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                <div className="form-group">
-                  <label className="form-label">Type de Souscripteur</label>
-                  <select
-                    className="form-control"
-                    value={formData.idtypeclient}
-                    onChange={(e) => setFormData({ ...formData, idtypeclient: Number(e.target.value) })}
-                  >
-                    {trierParLibelle(refData.typesSouscripteur, (ts) => `${ts.libelle_type} (${ts.code_type})`).map((ts) => (
-                      <option key={ts.id} value={ts.id}>
-                        {ts.libelle_type} ({ts.code_type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Type d'Assuré</label>
-                  <select
-                    className="form-control"
-                    value={formData.idtypeassure}
-                    onChange={(e) => setFormData({ ...formData, idtypeassure: Number(e.target.value) })}
-                  >
-                    {trierParLibelle(refData.typesAssure, (ta) => `${ta.libelle_type} (${ta.code_type})`).map((ta) => (
-                      <option key={ta.id} value={ta.id}>
-                        {ta.libelle_type} ({ta.code_type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
-                <div className="form-group">
-                  <label className="form-label">Statut Client VIP</label>
-                  <select
-                    className="form-control"
-                    value={formData.Vip}
-                    onChange={(e) => setFormData({ ...formData, Vip: e.target.value })}
-                  >
-                    <option value="N">Non (Standard)</option>
-                    <option value="V">Oui (Client VIP Prioritaire)</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Statut Administratif</label>
-                  <select
-                    className="form-control"
-                    value={formData.Statut}
-                    onChange={(e) => setFormData({ ...formData, Statut: e.target.value })}
-                  >
-                    <option value="V">Actif (Validé)</option>
-                    <option value="A">Archivé</option>
-                    <option value="S">Suspendu</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Indicateur Reconquête</label>
-                  <select
-                    className="form-control"
-                    value={formData.Reconquete}
-                    onChange={(e) => setFormData({ ...formData, Reconquete: e.target.value })}
-                  >
-                    <option value="N">Non</option>
-                    <option value="V">Oui (Prospect Reconquis)</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ONGLET 5: BANQUE & FISCALITÉ */}
+          {/* ONGLET 4: BANQUE & FISCALITÉ */}
           {modalTab === 'banque' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '0.75rem' }}>
@@ -1242,9 +1156,33 @@ export const ClientListPage = () => {
         isOpen={!!editingClient}
         onClose={() => setEditingClient(null)}
         client={editingClient}
-        onSave={(id, updates) => {
+        onSave={async (id, updates, avant) => {
+          // Enregistrement en base (la modification ne restait jusqu'ici que dans le navigateur).
+          // Seuls les champs changés dans la fenêtre partent (PATCH) : les valeurs par défaut de
+          // l'écran et les champs non affichés (solde, matricule…) restent tels qu'en base.
+          const apres = sanitizeClientForApi(updates);
+          const reference = sanitizeClientForApi(avant);
+          const modifs = Object.fromEntries(Object.entries(apres).filter(
+            ([champ, valeur]) => !CHAMPS_CLIENT_NON_MODIFIABLES.includes(champ) && valeur !== reference[champ],
+          ));
+          if (!Object.keys(modifs).length) {
+            info(`Aucune modification à enregistrer pour ${updates.nomcomplet}.`);
+            return;
+          }
+          try {
+            await customerApi.patchClient(id, modifs);
+          } catch (err) {
+            const reponse = err?.response?.data;
+            const detail = reponse && typeof reponse === 'object'
+              ? Object.values(reponse).flat().filter((m) => typeof m === 'string').join(' ; ')
+              : '';
+            toastError(`La fiche de ${updates.nomcomplet} n'a pas été enregistrée : ${detail || err.message}.`);
+            return;
+          }
           dataStore.updateClient(id, updates);
-          setClients(dataStore.getClients());
+          setClients((prev) => prev.map((c) => (
+            String(c.IdClient) === String(id) || String(c.id) === String(id) ? { ...c, ...updates } : c
+          )));
           success(`Fiche de ${updates.nomcomplet} mise à jour avec succès !`);
         }}
       />
@@ -1346,9 +1284,6 @@ export const ClientListPage = () => {
                   <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
                     Nouveau Secteur d'Activité
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    Table stdsecteuractivite
-                  </div>
                 </div>
               </div>
               <button
@@ -1415,7 +1350,7 @@ export const ClientListPage = () => {
       )}
 
       {/* =====================================================================
-          MODAL AJOUT RAPIDE — Profession / Métier (stdprofession)
+          MODAL AJOUT RAPIDE — Profession (stdprofession)
           ===================================================================== */}
       {isAddProfessionOpen && (
         <div
@@ -1446,7 +1381,7 @@ export const ClientListPage = () => {
                 </div>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
-                    Nouvelle Profession / Métier
+                    Nouvelle Profession
                   </div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                     Table stdprofession

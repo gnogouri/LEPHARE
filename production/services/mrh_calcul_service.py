@@ -21,6 +21,7 @@ from dateutil.relativedelta import relativedelta
 from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
+from django.utils import timezone
 
 from configuration_api.models import (
     Option,
@@ -970,7 +971,8 @@ class MRHCalculService:
             code_categorie=codecategorie,
         )
 
-        dateemission = kwargs.get("dateemission", datetime.now())
+        # Date d'émission imposée : jamais saisie, toujours le jour de l'enregistrement
+        dateemission = timezone.now()
         numero_police_compagnie = kwargs.get("numeropolicecompagnie", "")
 
         # ⚠️ Devis.objects.create peut lever une exception
@@ -1812,6 +1814,9 @@ class MRHCalculService:
         devis.prime_imposee = True
         devis.prime_imposee_date = datetime.now()
         if montant_taxe is not None and montant_taxe > 0:
+            # Accessoire tel que mettre_a_jour_totaux_devis vient de l'enregistrer (imposé ou barème) :
+            # l'objet devis a été lu avant
+            devis.refresh_from_db(fields=["accessoire"])
             accessoire_val = devis.accessoire or Decimal("0")
             devis.taxe = montant_taxe
             devis.primettc = montant_impose + montant_taxe + accessoire_val

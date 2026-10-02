@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from core.date_parser import date_emission_du_jour
 from core.utils import convert_to_date
 
 
@@ -16,7 +17,7 @@ def unpack_ia_quotation_post_data(post_data):
     Coassurance = bool(post_data["Coassurance"])
     DateEffet = convert_to_date(post_data["DateEffet"])
     DateExpiration = convert_to_date(post_data["DateExpiration"])
-    DateEmission = convert_to_date(post_data["DateEmission"])
+    DateEmission = date_emission_du_jour()
     IdTarif = int(post_data["IdTarif"])
     CapitalDeces = Decimal(post_data["CapitalDeces"])
     CapitalIpp = Decimal(post_data["CapitalIpp"])

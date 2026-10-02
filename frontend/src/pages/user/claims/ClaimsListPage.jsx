@@ -403,7 +403,7 @@ export const ClaimsListPage = () => {
       <Modal
         isOpen={showDeclareModal}
         onClose={() => setShowDeclareModal(false)}
-        title="Déclaration & Enregistrement d'un Sinistre"
+        title="Déclaration d'un Sinistre"
         subtitle="Enregistrement dans le cadre du mandat de gestion déléguée CIMA de LE PHARE."
         maxWidth="620px"
       >

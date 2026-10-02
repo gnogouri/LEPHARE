@@ -7,7 +7,9 @@ from typing import cast
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.contenttypes.models import ContentType
+from dateutil.relativedelta import relativedelta
 from django.db import connection, transaction
+from django.db.utils import DatabaseError
 from django.db.models import F, Prefetch, Q
 from django.db.models.expressions import RawSQL
 from django.http import FileResponse, Http404
@@ -19,6 +21,7 @@ from institutionnel.authentication import KnoxOrDemoTokenAuthentication
 from knox.auth import TokenAuthentication
 from rest_framework import generics, permissions, status, viewsets
 from rest_framework.authentication import BasicAuthentication
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.decorators import (
     action,
     api_view,
@@ -64,6 +67,7 @@ from customer.models import Client
 from .anti_doublons.importateur import importer_assures_anti_doublons
 from .anti_doublons.rapport import ConfigurationImport
 from .database import (
+    appliquer_garanties_vehicule_flotte,
     archive_quote,
     cancel_car_input,
     consolider_devis_db,
@@ -96,6 +100,8 @@ from .database import (
     save_contract,
     save_insured_ia,
     save_plate_number,
+    decaisser_cheque_impaye,
+    enregistrer_echeancier_cheques,
     save_premium_collection,
     save_premium_collection_cancellation,
     save_premium_remittance,
@@ -145,6 +151,9 @@ from .serializers import (  # Serializers requêtes; Serializers réponses
     ChangementImmatriculationSerializer,
     ChequeOperationSerializer,
     ChequeSerializer,
+    ChequeListeSerializer,
+    DecaissementChequeSerializer,
+    EcheancierChequesSerializer,
     ConsolidationDevisClientSerializer,
     ContractForPremiumCollectionSerializer,
     ContratDetailSerializer,
@@ -179,6 +188,7 @@ from .serializers import (  # Serializers requêtes; Serializers réponses
     ExtendedQuotationInfoSerializer,
     FinalisationDevisFlotteSerializer,
     GarantieContratFlotteSerializer,
+    GarantiesVehiculeFlotteSerializer,
     GarantieSouscriteSerializer,
     ImportationAssureIaSerializer,
     ImportationTransportSerializer,
@@ -349,11 +359,84 @@ DEVIS_CATEGORIE_SQL = """
 TABLES_CONDITIONS_PARTICULIERES = {
     False: {"entete": "stddevis", "cle": "iddevis", "offre_entete": "d.idoffre",
             "detail": "stddevisdetail", "detail_pk": "iddevisdetail",
-            "garantie": "stddevisdetgarantie", "garantie_fk": "iddevisdet"},
+            "garantie": "stddevisdetgarantie", "garantie_fk": "iddevisdet",
+            "energie": "se.idenergie = dd.essence"},
     True: {"entete": "stdcontrat", "cle": "idcontrat", "offre_entete": "NULL",
            "detail": "stdcontratdetail", "detail_pk": "idcontratdetail",
-           "garantie": "stdcontratdetgarantie", "garantie_fk": "idcontratdetail"},
+           "garantie": "stdcontratdetgarantie", "garantie_fk": "idcontratdetail",
+           "energie": "se.codeenergie = dd.codecarburant"},
 }
+
+
+def vehicules_conditions_particulieres_flotte(pk, contrat=False):
+    """
+    Véhicules d'une flotte automobile pour les Conditions Particulières « Liste des véhicules
+    en Automobile » (modèle NSIA) : caractéristiques, catégorie / tarif, et chaque garantie
+    du véhicule avec son état (acquise), son capital, sa franchise et sa prime nette.
+    """
+    t = TABLES_CONDITIONS_PARTICULIERES[contrat]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT dd.{t['detail_pk']}, dd.matricule, m.libellemarque, dd.modelevehicule,
+                   tv.libelletype, dd.puissancefiscale, dd.chargeutile, se.libelle,
+                   dd.valeurneuve, dd.valeurvenale, dd.nombreplace,
+                   tr.idtarif, tr.libelle, cat.codecategorie, cat.libellecategorie
+            FROM {t['detail']} dd
+            LEFT JOIN stdmarque m ON m.idmarque = dd.idmarque
+            LEFT JOIN stdtypevehicule tv ON tv.id = dd.idtypevehicule
+            LEFT JOIN stdenergie se ON {t['energie']}
+            LEFT JOIN stdtarif tr ON tr.idtarif = dd.idtarif
+            LEFT JOIN stdcategorie cat ON cat.idcategorie = tr.idcategorie
+            WHERE dd.{t['cle']} = %s
+            ORDER BY cat.codecategorie, tr.idtarif, dd.{t['detail_pk']}
+            """,
+            [pk],
+        )
+        vehicules = [
+            {
+                "id": iddetail,
+                "immatriculation": matricule,
+                "marque": marque,
+                "modele": modele,
+                "type_vehicule": type_vehicule,
+                "puissance": puissance,
+                "charge_utile": int(charge or 0),
+                "energie": energie,
+                "valeur_neuve": int(neuve or 0),
+                "valeur_venale": int(venale or 0),
+                "nombre_places": places,
+                "id_tarif": idtarif,
+                "tarif": tarif,
+                "code_categorie": code_categorie,
+                "categorie": categorie,
+                "garanties": [],
+            }
+            for (iddetail, matricule, marque, modele, type_vehicule, puissance, charge, energie,
+                 neuve, venale, places, idtarif, tarif, code_categorie, categorie) in cursor.fetchall()
+        ]
+        cursor.execute(
+            f"""
+            SELECT dg.{t['garantie_fk']}, dg.idgarantie, dg.acquise, dg.capital, dg.franchise,
+                   dg.deces, dg.primenette
+            FROM {t['garantie']} dg
+            JOIN {t['detail']} dd ON dd.{t['detail_pk']} = dg.{t['garantie_fk']}
+            WHERE dd.{t['cle']} = %s AND dg.idgarantie <> 0
+            ORDER BY dg.idgarantie
+            """,
+            [pk],
+        )
+        par_vehicule = {v["id"]: v["garanties"] for v in vehicules}
+        for iddetail, idgarantie, acquise, capital, franchise, deces, prime in cursor.fetchall():
+            par_vehicule[iddetail].append({
+                "id_garantie": idgarantie,
+                "acquise": bool(acquise),
+                "capital": int(capital or 0),
+                "franchise": int(franchise or 0),
+                "deces": int(deces or 0),
+                "prime_nette": int(prime or 0),
+            })
+    return vehicules
 
 
 def donnees_conditions_particulieres(objet, contrat=False):
@@ -604,6 +687,12 @@ class DevisViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         """Données des Conditions Particulières du devis (voir donnees_conditions_particulieres)."""
         devis = cast(Devis, self.get_object())
         return Response(donnees_conditions_particulieres(devis, contrat=False), status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="vehicules-flotte")
+    def vehicules_flotte(self, request, pk=None):
+        """Véhicules et garanties d'une flotte (voir vehicules_conditions_particulieres_flotte)."""
+        devis = cast(Devis, self.get_object())
+        return Response(vehicules_conditions_particulieres_flotte(devis.pk), status=status.HTTP_200_OK)
 
     @action(
         detail=True,
@@ -937,6 +1026,12 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         contrat = cast(Contrat, self.get_object())
         return Response(donnees_conditions_particulieres(contrat, contrat=True), status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["get"], url_path="vehicules-flotte")
+    def vehicules_flotte(self, request, pk=None):
+        """Véhicules et garanties d'une flotte (voir vehicules_conditions_particulieres_flotte)."""
+        contrat = cast(Contrat, self.get_object())
+        return Response(vehicules_conditions_particulieres_flotte(contrat.pk, contrat=True), status=status.HTTP_200_OK)
+
     def get_queryset(self):
         from django.utils import timezone
         from datetime import timedelta
@@ -963,10 +1058,25 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                         Q(dateexpiration__isnull=True) | Q(dateexpiration__gt=seuil)
                     )
 
-        # Portefeuille des Contrats : seuls les contrats émis durant les 3 dernières
-        # années sont affichés (même fenêtre que le Registre des Devis).
-        three_years_ago = timezone.now() - timedelta(days=365 * 3)
-        queryset = queryset.filter(dateemission__gte=three_years_ago)
+        if self.request.query_params.get("a_encaisser") in ("1", "true"):
+            # Caisse : même règle que fn_liste_contrat_encaissement (URANUS), la quittance du
+            # contrat n'est pas soldée. Sans fenêtre de 3 ans : un devis ancien confirmé
+            # aujourd'hui garde sa date d'émission. Derniers contrats confirmés en tête, sinon
+            # ils sortent des 200 lignes de la page.
+            from django.db.models import Value
+            from django.db.models.functions import Coalesce
+
+            queryset = queryset.annotate(
+                solde_quittance=F("idquittance__primettc")
+                - Coalesce(F("idquittance__mt_encaisse"), Value(Decimal(0)))
+            ).filter(
+                idquittance__police=F("numeropolice"), solde_quittance__gt=0
+            ).order_by("-idcontrat")
+        else:
+            # Portefeuille des Contrats : seuls les contrats émis durant les 3 dernières
+            # années sont affichés (même fenêtre que le Registre des Devis).
+            three_years_ago = timezone.now() - timedelta(days=365 * 3)
+            queryset = queryset.filter(dateemission__gte=three_years_ago)
 
         # Filtre par produit (Portefeuille des Contrats : onglets par branche).
         # Le paramètre idproduit peut être un identifiant unique ou une liste
@@ -1486,6 +1596,9 @@ class CreerDevisIAMineneView(APIView):
         devis_data["IdClient"] = contrat_sante.idclient_id
         devis_data["IdAssure"] = client_principal.IdClient
         devis_data["Flotte"] = False
+        # Date de naissance de l'assuré principal : celle de l'adhérent Santé (l'écran ne la saisit pas)
+        if adherent_principal.datenaissanceadherent:
+            devis_data["DateNaissance"] = adherent_principal.datenaissanceadherent
 
         (error, result_list) = save_quotation_ia(devis_data)
         if not result_list:
@@ -1495,6 +1608,9 @@ class CreerDevisIAMineneView(APIView):
         output_msg = result_list[0].OutputMessage or ""
         if error or not id_devis or id_devis <= 0:
             return Response({"Status": "Erreur", "message": output_msg or "Erreur lors de la création du devis IA."}, status=status.HTTP_400_BAD_REQUEST)
+        # sp_creation_devis_ia n'a pas de paramètre terme : posé sur le devis après création
+        if data.get("IdTerme"):
+            enregistrer_terme_devis(id_devis, data.get("IdTerme"))
 
         # 4. Transformation automatique adhérents → assurés IA / affiliés → ayants-droits IA
         try:
@@ -1967,6 +2083,17 @@ class DetailEncaissementViewSet(viewsets.ModelViewSet):
     permission_classes = [
         permissions.IsAuthenticated,
     ]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # Caisse : règlements d'une quittance, le dernier en tête (réimpression du reçu)
+        numeroquittance = self.request.query_params.get("numeroquittance")
+        if numeroquittance:
+            queryset = queryset.filter(
+                numeroquittance_id=numeroquittance,
+                encaissement__piece_annulee=False,
+            ).order_by("-iddetailencaissement")
+        return queryset
 
 
 class ContractListView(APIView):
@@ -2506,7 +2633,7 @@ def creer_ayant_droit_ia(request):
 
 # Change quotation into contract
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, BasicAuthentication])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
 @permission_classes([permissions.IsAuthenticated])
 def create_contract(request):
     confirmationdevis_data = JSONParser().parse(request)
@@ -3115,7 +3242,7 @@ class GarantieSouscriteDevisView(GarantieSouscriteView):
 
 # Save Premium collection
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, BasicAuthentication])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
 @permission_classes([permissions.IsAuthenticated])
 def collect_premium(request):
     enregistrementencaissement_data = JSONParser().parse(request)
@@ -3138,6 +3265,17 @@ def collect_premium(request):
         # Erreur renvoyée par la procédure SQL (id=0)
         return Response(
             {"erreur": str(e.detail)}, status=status.HTTP_400_BAD_REQUEST
+        )
+    except DRFValidationError as e:
+        # Contrôle métier (chèque, reçu opérateur, compensation, réencaissement)
+        return Response(
+            {"erreur": _message_erreur(e)}, status=status.HTTP_400_BAD_REQUEST
+        )
+    except DatabaseError as e:
+        # RAISE EXCEPTION de la procédure : son message est la première ligne
+        return Response(
+            {"erreur": str(e).strip().splitlines()[0]},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     except Exception as e:
@@ -3431,6 +3569,19 @@ class PrimeUpdateAPIView(APIView):
             validated_data = serializer.validated_data
 
             p_numero_devis = validated_data["numero_devis"]
+            # sp_maj_manuelle_primes ne fait rien, sans erreur, si le numéro ne désigne pas un devis
+            # non archivé ; sur un devis confirmé elle réécrirait la police et sa quittance
+            devis = Devis.objects.filter(numerodevis=p_numero_devis, archive=False).first()
+            if devis is None:
+                return Response(
+                    {"message": f"Devis {p_numero_devis} introuvable ou archivé."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if devis.confirme:
+                return Response(
+                    {"message": f"Le devis {p_numero_devis} est déjà confirmé : ses primes ne peuvent plus être imposées."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             p_prime_annuelle = validated_data["prime_annuelle"]
             p_prime_nette = validated_data["prime_nette"]
             p_accessoire = validated_data["accessoire"]
@@ -3464,13 +3615,71 @@ class PrimeUpdateAPIView(APIView):
                 # Handle database or execution errors
                 return Response(
                     {
-                        "message": "Error executing stored procedure.",
+                        "message": "Les primes n'ont pas pu être imposées.",
                         "details": str(e),
                     },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GarantiesVehiculeFlotteAPIView(APIView):
+    """
+    POST /api/garantiesvehiculeflotte/ : garanties d'un seul véhicule d'une flotte automobile
+    (garanties ajoutées, retirées ou à primes imposées), puis totaux du devis recalculés.
+    sp_correction_devis ne convient pas : elle applique sa liste à tous les véhicules du devis.
+    """
+
+    permission_classes = [
+        permissions.IsAuthenticated,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = GarantiesVehiculeFlotteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        donnees = serializer.validated_data
+
+        devis = Devis.objects.filter(pk=donnees["id_devis"], archive=False).first()
+        if devis is None:
+            return Response(
+                {"message": f"Devis {donnees['id_devis']} introuvable ou archivé."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if devis.produit_id != 1 or not devis.flotte:
+            return Response(
+                {"message": f"Le devis {devis.numerodevis} n'est pas une flotte automobile."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if devis.confirme:
+            return Response(
+                {"message": f"Le devis {devis.numerodevis} est déjà confirmé : ses garanties ne peuvent plus être modifiées."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not DevisDetail.objects.filter(pk=donnees["id_devis_detail"], iddevis=devis).exists():
+            return Response(
+                {"message": f"Ce véhicule n'appartient pas au devis {devis.numerodevis}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            primes = appliquer_garanties_vehicule_flotte(
+                devis.pk, donnees["id_devis_detail"], donnees["liste_garantie"]
+            )
+        except Exception as e:
+            logger.exception("Garanties du véhicule %s non appliquées", donnees["id_devis_detail"])
+            return Response(
+                {
+                    "message": "Les garanties du véhicule n'ont pas pu être enregistrées.",
+                    "details": str(e).split("\n")[0],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(
+            {"message": "Garanties du véhicule enregistrées.", **primes},
+            status=status.HTTP_200_OK,
+        )
 
 
 # ============================================================================
@@ -3889,7 +4098,42 @@ def _imposer_mrh(devis, imposition, user):
     )
     if not resultat.get("success", False):
         raise ValueError(resultat.get("message") or resultat.get("erreur") or "Imposition refusée")
+    _aligner_garanties_mrh(ids_maisons)
     return resultat
+
+
+def _aligner_garanties_mrh(ids_maisons):
+    """
+    Prime imposée : les garanties de chaque maison sont ramenées à sa prime nette, au prorata
+    de leurs primes calculées (règle du reliquat de repartir-garanties), la taxe de chaque
+    garantie recalculée à son taux. Sans cela, la proposition imprime des garanties dont la
+    somme n'est pas la prime nette du devis. La répartition reste ajustable ensuite.
+    """
+    from .models import DevisDetail, DevisDetGarantie
+
+    service = MRHCalculService()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT idsousgarantie, code FROM stdmrh_sous_garantie")
+        codes_mrh = dict(cursor.fetchall())
+    for maison in DevisDetail.objects.filter(iddevisdetail__in=ids_maisons):
+        garanties = list(
+            DevisDetGarantie.objects.filter(IdDevisDet_id=maison.iddevisdetail).order_by("pk")
+        )
+        poids = sum((g.PrimeNette or Decimal("0")) for g in garanties)
+        if not garanties or not poids:
+            continue
+        reste = maison.primenette or Decimal("0")
+        for i, garantie in enumerate(garanties):
+            if i == len(garanties) - 1:
+                prime = reste
+            else:
+                prime = service._arrondir(maison.primenette * (garantie.PrimeNette or 0) / poids)
+                reste -= prime
+            taux = service._get_taux_taxe(codes_mrh.get(garantie.IdGarantie_id, ""))
+            taxe = service._arrondir(prime * taux)
+            DevisDetGarantie.objects.filter(pk=garantie.pk).update(
+                PrimeNette=prime, taxe=taxe, primeannuelle=prime + taxe
+            )
 
 
 class DevisMRHViewSet(viewsets.ViewSet):
@@ -3964,6 +4208,14 @@ class DevisMRHViewSet(viewsets.ViewSet):
                 from .models import Devis  # Import local
 
                 devis = Devis.objects.get(iddevis=id_devis)
+                # Téléphone de l'assuré : mobile de sa fiche client, comme à la modification
+                numero_telephone_assure = data.get("numerotelephoneassure")
+                if numero_telephone_assure:
+                    from customer.models import Client
+
+                    Client.objects.filter(IdClient=devis.assure_id).update(
+                        Mobile=numero_telephone_assure
+                    )
                 if maisons:
                     _enregistrer_maisons_mrh(devis, maisons, data["idtarif"])
                 if maisons and request.data.get("imposition"):
@@ -4036,8 +4288,8 @@ class DevisMRHViewSet(viewsets.ViewSet):
                 devis.assure_id = data.get("idassure") or data["idclient"]
                 devis.dateeffet = data["dateeffet"]
                 devis.dateexpiration = dateexpiration
-                if data.get("dateemission"):
-                    devis.dateemission = data["dateemission"]
+                # Date d'émission imposée : celle du jour de la modification
+                devis.dateemission = timezone.now()
                 devis.idduree = idduree
                 devis.idterme = data.get("idterme") or devis.idterme
                 devis.numero_police_compagnie = data.get("numeropolicecompagnie", "")
@@ -4989,6 +5241,12 @@ class RepartirGarantiesView(APIView):
         # sinon redistribution équipondérée.
         sum_poids_non_touches = sum(g.PrimeNette for g in non_touches)
 
+        # Taux de taxe : _get_taux_taxe attend le code MRH (INCENDIE, DOMMAGES_ELECTRIQUES à 25 %),
+        # les garanties du devis portent le code standard (1301, 90001…)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT idsousgarantie, code FROM stdmrh_sous_garantie")
+            codes_mrh = dict(cursor.fetchall())
+
         # Appliquer les nouveaux montants
         for garantie in garanties_actuelles:
             code = garantie.IdGarantie.CodeSousGarantie
@@ -5004,7 +5262,7 @@ class RepartirGarantiesView(APIView):
             else:
                 nouvelle_prime = Decimal("0")
 
-            taux_taxe = service._get_taux_taxe(code)
+            taux_taxe = service._get_taux_taxe(codes_mrh.get(garantie.IdGarantie_id, code))
             nouvelle_taxe = service._arrondir(nouvelle_prime * taux_taxe)
 
             update_kwargs = {
@@ -5040,14 +5298,19 @@ class RepartirGarantiesView(APIView):
         prime_nette_totale = sum(m.primenette for m in maisons)
         taxe_maisons = sum(m.taxeenregistrement for m in maisons)
 
-        accessoire_result = service.calculer_accessoire(
-            prime_nette_totale=prime_nette_totale,
-            id_produit=devis.produit_id,
-            id_compagnie=devis.compagnie_id,
-        )
-        accessoire = accessoire_result["accessoire"]
-        taxe_accessoire = accessoire_result["taxe_accessoire"]
-        taxe_totale = taxe_maisons + taxe_accessoire
+        if devis.prime_imposee:
+            # Prime imposée : la répartition ne touche ni la taxe ni l'accessoire imposés
+            accessoire = devis.accessoire or Decimal("0")
+            taxe_totale = devis.taxe or Decimal("0")
+        else:
+            accessoire_result = service.calculer_accessoire(
+                prime_nette_totale=prime_nette_totale,
+                id_produit=devis.produit_id,
+                id_compagnie=devis.compagnie_id,
+            )
+            accessoire = accessoire_result["accessoire"]
+            taxe_accessoire = accessoire_result["taxe_accessoire"]
+            taxe_totale = taxe_maisons + taxe_accessoire
         primettc = prime_nette_totale + taxe_totale + accessoire
 
         Devis.objects.filter(iddevis=devis_id).update(
@@ -5107,8 +5370,42 @@ class CheckChequeStatusView(APIView):
 
 
 class ChequeListView(generics.ListAPIView):
-    queryset = Cheque.objects.all().order_by("-date_saisie")
-    serializer_class = ChequeSerializer
+    # Portefeuille des chèques : quittances réglées par chaque chèque et leurs clients,
+    # via stdchequeoperation → stddetailencaissement → stdquittance (le tireur n'est pas
+    # renseigné en base : nomtireurcheque vaut « 0 »)
+    queryset = (
+        Cheque.objects.select_related("banque", "client")
+        .annotate(
+            montant_reencaisse=RawSQL(
+                """SELECT SUM(e.montantencaissement) FROM stdencaissement e
+                   WHERE e.idchequeimpaye = stdcheque.idcheque
+                     AND NOT e.piece_annulee AND e.montantencaissement > 0""",
+                [],
+            ),
+            nombre_operations=RawSQL(
+                "SELECT COUNT(*) FROM stdchequeoperation op WHERE op.idcheque = stdcheque.idcheque",
+                [],
+            ),
+            quittances_reglees=RawSQL(
+                """SELECT string_agg(DISTINCT de.numeroquittance, ', ')
+                   FROM stdchequeoperation op
+                   JOIN stddetailencaissement de ON de.idencaissement = op.idencaissement
+                   WHERE op.idcheque = stdcheque.idcheque""",
+                [],
+            ),
+            clients=RawSQL(
+                """SELECT string_agg(DISTINCT TRIM(cl.nom || ' ' || COALESCE(cl.prenoms, '')), ', ')
+                   FROM stdchequeoperation op
+                   JOIN stddetailencaissement de ON de.idencaissement = op.idencaissement
+                   JOIN stdquittance q ON q.numeroquittance = de.numeroquittance
+                   JOIN stdclient cl ON cl.idclient = q.idclient
+                   WHERE op.idcheque = stdcheque.idcheque""",
+                [],
+            ),
+        )
+        .order_by("-date_saisie")
+    )
+    serializer_class = ChequeListeSerializer
     filter_backends = (filters.DjangoFilterBackend,)
     filterset_class = ChequeFilter
 
@@ -5128,6 +5425,141 @@ class ChequeDetailOperationsView(APIView):
         return Response(
             {"chèque": cheque_data, "historique_operations": operations_data}
         )
+
+
+def _message_erreur(exc):
+    """Premier message d'une ValidationError DRF, sans la structure ErrorDetail."""
+    detail = exc.detail
+    while isinstance(detail, (list, dict)):
+        if not detail:
+            return "Requête invalide."
+        detail = next(iter(detail.values())) if isinstance(detail, dict) else detail[0]
+    return str(detail)
+
+
+class ChequeAlertesView(ChequeListView):
+    """
+    Chèques de l'échéancier à déposer d'ici un mois (ou déjà échus) : alertes du
+    portefeuille et de la cloche de notifications. GET /api/cheques/alertes/
+    """
+
+    pagination_class = None
+    filter_backends = ()
+
+    def get_queryset(self):
+        limite = timezone.localdate() + relativedelta(months=1)
+        return (
+            super()
+            .get_queryset()
+            .filter(statut=Cheque.Statut.A_DEPOSER, date_echeance__lte=limite)
+            .order_by("date_echeance")
+        )
+
+
+class ChequeEcheancierView(APIView):
+    """Chèques remis d'avance par un client avec leurs dates de dépôt. POST /api/cheques/echeancier/"""
+
+    authentication_classes = [KnoxOrDemoTokenAuthentication, BasicAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = EcheancierChequesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        donnees = serializer.validated_data
+        try:
+            crees = enregistrer_echeancier_cheques(
+                donnees["id_client"],
+                donnees["id_banque"],
+                donnees["cheques"],
+                donnees.get("observation", ""),
+            )
+        except DRFValidationError as e:
+            return Response({"erreur": _message_erreur(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "message": f"{len(crees)} chèque(s) ajouté(s) à l'échéancier.",
+                "ids": [c.id_cheque for c in crees],
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ChequeDecaissementView(APIView):
+    """Chèque revenu impayé : annule ses encaissements. POST /api/cheques/<id>/decaissement/"""
+
+    authentication_classes = [KnoxOrDemoTokenAuthentication, BasicAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, id_cheque):
+        serializer = DecaissementChequeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        donnees = serializer.validated_data
+        try:
+            resultat = decaisser_cheque_impaye(
+                request.user,
+                id_cheque,
+                donnees["motif"],
+                donnees.get("date_decaissement") or timezone.localdate(),
+            )
+        except DRFValidationError as e:
+            return Response({"erreur": _message_erreur(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except ServiceError as e:
+            return Response({"erreur": str(e.detail)}, status=status.HTTP_400_BAD_REQUEST)
+        except DatabaseError as e:
+            return Response(
+                {"erreur": str(e).strip().splitlines()[0]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(resultat)
+
+
+class ChequeQuittancesView(APIView):
+    """
+    Quittances réglées par un chèque et montants (encaissements d'origine, hors
+    contre-passations) : base du réencaissement d'un chèque impayé.
+    GET /api/cheques/<id>/quittances/
+    """
+
+    def get(self, request, id_cheque):
+        get_object_or_404(Cheque, id_cheque=id_cheque)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT de.numeroquittance, SUM(de.montant_encaissement),
+                          MAX(TRIM(cl.nom || ' ' || COALESCE(cl.prenoms, '')))
+                   FROM stdchequeoperation op
+                   JOIN stdencaissement e ON e.idencaissement = op.idencaissement
+                   JOIN stddetailencaissement de ON de.idencaissement = e.idencaissement
+                   LEFT JOIN stdquittance q ON q.numeroquittance = de.numeroquittance
+                   LEFT JOIN stdclient cl ON cl.idclient = q.idclient
+                   WHERE op.idcheque = %s AND e.montantencaissement > 0
+                   GROUP BY de.numeroquittance
+                   ORDER BY de.numeroquittance""",
+                [id_cheque],
+            )
+            lignes = cursor.fetchall()
+        return Response(
+            [
+                {"numero_quittance": num, "montant": montant, "client": client}
+                for num, montant, client in lignes
+            ]
+        )
+
+
+class ChequeSuppressionView(APIView):
+    """Retire de l'échéancier un chèque à déposer jamais utilisé. DELETE /api/cheques/<id>/"""
+
+    authentication_classes = [KnoxOrDemoTokenAuthentication, BasicAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, id_cheque):
+        cheque = get_object_or_404(Cheque, id_cheque=id_cheque)
+        if cheque.statut != Cheque.Statut.A_DEPOSER or cheque.operations.exists():
+            return Response(
+                {"erreur": "Seul un chèque à déposer, jamais encaissé, peut être retiré."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cheque.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 """

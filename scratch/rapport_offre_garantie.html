@@ -1,0 +1,223 @@
+<title>Offres et garanties</title>
+<meta name="description" content="Chaque offre stdoffre reliée à ses garanties et sous-garanties, avec franchises">
+<style>
+  :root{
+    --bg:#f5f3ef; --surface:#ffffff; --surface-2:#eeece5; --border:#ddd8cc;
+    --ink:#241f1a; --ink-dim:#6b6355; --accent:#8a4a2e; --accent-ink:#ffffff;
+    --chip-bg:#f0e6dc; --chip-ink:#7a3e22; --focus:#2b6cb0;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1c1a17; --surface:#242119; --surface-2:#2c2820; --border:#3a3529;
+      --ink:#efe9df; --ink-dim:#a89e8c; --accent:#e08a5c; --accent-ink:#241f1a;
+      --chip-bg:#3a2c20; --chip-ink:#e5a578; --focus:#6fa8dc;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1c1a17; --surface:#242119; --surface-2:#2c2820; --border:#3a3529;
+    --ink:#efe9df; --ink-dim:#a89e8c; --accent:#e08a5c; --accent-ink:#241f1a;
+    --chip-bg:#3a2c20; --chip-ink:#e5a578; --focus:#6fa8dc;
+    color-scheme: dark;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    padding-inline:16px; padding-block:20px 40px;
+    max-width:1180px; margin-inline:auto;
+  }
+  h1{
+    font-family:"Fraunces","Georgia",serif;
+    font-size:clamp(1.5rem,3vw,2.1rem);
+    font-weight:600; margin:0 0 4px; text-wrap:balance;
+  }
+  .sub{color:var(--ink-dim); font-size:0.92rem; margin:0 0 20px;}
+  .stats{
+    display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;
+  }
+  .stat{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:12px 16px; min-width:140px; flex:1;
+  }
+  .stat .n{
+    font-family:"Fraunces",serif; font-size:1.6rem; font-weight:600;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .l{color:var(--ink-dim); font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em;}
+
+  .controls{
+    display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; position:sticky;
+    top:env(safe-area-inset-top,0px); background:var(--bg); padding-block:8px; z-index:5;
+  }
+  input[type=search], select{
+    background:var(--surface); border:1px solid var(--border); color:var(--ink);
+    padding:9px 12px; border-radius:8px; font-size:0.9rem; flex:1; min-width:160px;
+  }
+  input[type=search]:focus, select:focus{outline:2px solid var(--focus); outline-offset:1px;}
+
+  #status{color:var(--ink-dim); font-size:0.85rem; margin-bottom:10px;}
+
+  .offre-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    margin-bottom:14px; overflow:hidden;
+  }
+  .offre-head{
+    display:flex; justify-content:space-between; align-items:baseline; gap:10px;
+    padding:14px 16px; background:var(--surface-2); flex-wrap:wrap;
+  }
+  .offre-head h2{
+    font-family:"Fraunces",serif; font-size:1.02rem; font-weight:600; margin:0;
+  }
+  .offre-head .id{color:var(--ink-dim); font-size:0.78rem; font-variant-numeric:tabular-nums;}
+  .offre-head .count{
+    color:var(--chip-ink); background:var(--chip-bg); border-radius:999px;
+    padding:2px 10px; font-size:0.78rem; font-weight:600; white-space:nowrap;
+  }
+
+  table{width:100%; border-collapse:collapse; font-size:0.87rem;}
+  th{
+    text-align:left; color:var(--ink-dim); font-weight:600; font-size:0.72rem;
+    text-transform:uppercase; letter-spacing:0.04em; padding:8px 16px; border-bottom:1px solid var(--border);
+  }
+  td{padding:8px 16px; border-bottom:1px solid var(--border); vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  .num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  .garantie-badge{
+    display:inline-block; background:var(--chip-bg); color:var(--chip-ink);
+    border-radius:6px; padding:1px 8px; font-size:0.78rem; font-weight:600;
+  }
+  .table-wrap{overflow-x:auto;}
+  [hidden]{display:none!important;}
+  #empty{color:var(--ink-dim); text-align:center; padding:40px 0;}
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+
+<h1>Offres et garanties</h1>
+<p class="sub">Table <code>stdoffre</code> reliée à ses garanties via <code>stdoffregarantie</code> → <code>stdsousgarantie</code> → <code>stdgarantie</code>.</p>
+
+<div class="stats" id="stats"></div>
+
+<div class="controls">
+  <input type="search" id="search" placeholder="Rechercher une offre, une garantie…">
+  <select id="offreFilter"><option value="">Toutes les offres</option></select>
+</div>
+<div id="status"></div>
+<div id="results"></div>
+<div id="empty" hidden>Aucun résultat.</div>
+
+<script>
+let rows = [];
+const resultsEl = document.getElementById('results');
+const statusEl = document.getElementById('status');
+const emptyEl = document.getElementById('empty');
+const statsEl = document.getElementById('stats');
+const searchEl = document.getElementById('search');
+const offreFilterEl = document.getElementById('offreFilter');
+
+function fmt(n){
+  return new Intl.NumberFormat('fr-FR', {maximumFractionDigits:2}).format(n);
+}
+
+function groupByOffre(list){
+  const map = new Map();
+  for(const r of list){
+    if(!map.has(r.idoffre)) map.set(r.idoffre, {idoffre:r.idoffre, offre:r.offre, items:[]});
+    map.get(r.idoffre).items.push(r);
+  }
+  return [...map.values()].sort((a,b)=>a.idoffre-b.idoffre);
+}
+
+function render(){
+  const q = searchEl.value.trim().toLowerCase();
+  const offreSel = offreFilterEl.value;
+  let filtered = rows;
+  if(offreSel) filtered = filtered.filter(r => String(r.idoffre) === offreSel);
+  if(q){
+    filtered = filtered.filter(r =>
+      r.offre.toLowerCase().includes(q) ||
+      r.garantie.toLowerCase().includes(q) ||
+      r.sousgarantie.toLowerCase().includes(q)
+    );
+  }
+
+  const groups = groupByOffre(filtered);
+  statusEl.textContent = `${groups.length} offre(s) · ${filtered.length} ligne(s) de garantie`;
+  emptyEl.hidden = groups.length > 0;
+  resultsEl.innerHTML = groups.map(g => `
+    <div class="offre-card">
+      <div class="offre-head">
+        <h2>${escapeHtml(g.offre || '(sans libellé)')}</h2>
+        <span class="id">idoffre ${g.idoffre}</span>
+        <span class="count">${g.items.length} garantie${g.items.length>1?'s':''}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Garantie</th><th>Sous-garantie</th>
+            <th class="num">Taux franchise</th><th class="num">Franchise min</th><th class="num">Franchise max</th>
+          </tr></thead>
+          <tbody>
+            ${g.items.map(it => `
+              <tr>
+                <td>${it.garantie ? `<span class="garantie-badge">${escapeHtml(it.garantie)}</span>` : '<span style="color:var(--ink-dim)">—</span>'}</td>
+                <td>${escapeHtml(it.sousgarantie || '—')}</td>
+                <td class="num">${it.taux ? fmt(it.taux)+' %' : '—'}</td>
+                <td class="num">${it.fmin ? fmt(it.fmin) : '—'}</td>
+                <td class="num">${it.fmax ? fmt(it.fmax) : '—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderStats(){
+  const nbOffres = new Set(rows.map(r=>r.idoffre)).size;
+  const nbGaranties = new Set(rows.map(r=>r.garantie).filter(Boolean)).size;
+  const nbSousGaranties = new Set(rows.map(r=>r.sousgarantie).filter(Boolean)).size;
+  statsEl.innerHTML = `
+    <div class="stat"><div class="n">${nbOffres}</div><div class="l">Offres</div></div>
+    <div class="stat"><div class="n">${nbGaranties}</div><div class="l">Garanties distinctes</div></div>
+    <div class="stat"><div class="n">${nbSousGaranties}</div><div class="l">Sous-garanties distinctes</div></div>
+    <div class="stat"><div class="n">${rows.length}</div><div class="l">Liaisons offre ↔ garantie</div></div>
+  `;
+}
+
+function populateOffreFilter(){
+  const seen = new Map();
+  for(const r of rows) if(!seen.has(r.idoffre)) seen.set(r.idoffre, r.offre);
+  [...seen.entries()].sort((a,b)=>a[0]-b[0]).forEach(([id, lib])=>{
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = `${lib} (#${id})`;
+    offreFilterEl.appendChild(opt);
+  });
+}
+
+async function boot(){
+  try{
+    const res = await fetch('rapport_offre_garantie.json');
+    rows = await res.json();
+  }catch(e){
+    statusEl.textContent = 'Erreur de chargement des données.';
+    return;
+  }
+  renderStats();
+  populateOffreFilter();
+  render();
+}
+
+searchEl.addEventListener('input', render);
+offreFilterEl.addEventListener('change', render);
+
+boot();
+</script>

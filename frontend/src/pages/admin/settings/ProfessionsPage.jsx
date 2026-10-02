@@ -382,7 +382,7 @@ export const ProfessionsPage = () => {
       <Modal
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
-        title="Créer une Profession / Métier"
+        title="Créer une Profession"
       >
         <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div className="form-group">

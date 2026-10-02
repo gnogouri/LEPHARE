@@ -29,6 +29,15 @@ from .views import (
     annuler_saisie_affilie,
     annuler_saisie_filiale,
 )
+from .views_devis_sante import (
+    enregistrer_adherent,
+    enregistrer_affilie,
+    enregistrer_devis_sante,
+    enregistrer_filiale,
+    initialiser_devis_sante,
+    lire_devis_sante,
+    supprimer_objet_saisie,
+)
 
 
 router = routers.DefaultRouter()
@@ -105,6 +114,14 @@ urlpatterns = [
         name="filiale_en_saisie",
     ),
     path(r"listeaffiliesante/<int:iddevis>", ListeAffilieSanteView.as_view()),
-    
+    # Saisie Santé depuis LE PHARE (mêmes fonctions qu'URANUS, authentification du projet)
+    path(r"devissante/initialisation/", initialiser_devis_sante, name="initialisation_devis_sante"),
+    path(r"devissante/filiale/", enregistrer_filiale, name="filiale_devis_sante"),
+    path(r"devissante/adherent/", enregistrer_adherent, name="adherent_devis_sante"),
+    path(r"devissante/affilie/", enregistrer_affilie, name="affilie_devis_sante"),
+    path(r"devissante/suppression/", supprimer_objet_saisie, name="suppression_saisie_sante"),
+    path(r"devissante/enregistrement/", enregistrer_devis_sante, name="enregistrement_devis_sante_lephare"),
+    path(r"devissante/<int:iddevis>/", lire_devis_sante, name="lecture_devis_sante"),
+
 ]
 urlpatterns += router.urls

@@ -3,6 +3,9 @@ from django.db import models
 
 class CrmLead(models.Model):
     """Prospect et opportunité commerciale dans le pipeline de vente"""
+    # Étapes du suivi commercial, dans l'ordre du pipeline
+    STATUTS = ("Nouveau", "Qualifié", "Proposition", "Négociation", "Gagné", "Perdu")
+
     id_lead = models.CharField(max_length=50, unique=True, verbose_name="ID Prospect")
     nom_prospect = models.CharField(max_length=150, verbose_name="Nom du Prospect / Entreprise")
     contact = models.CharField(max_length=150, verbose_name="Contact / Interlocuteur", blank=True, default="")

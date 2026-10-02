@@ -39,7 +39,7 @@ class CommissionCalculService:
         return DetailReversement.objects.select_related(
             'ligne_encaissement__numeroquittance__client',
             'ligne_encaissement__numeroquittance__contrat__idcompagnie',
-            'reversement'
+            'reversement__compagnie'
         ).annotate(
             # Calcul du montant commission dû
             montant_commission_du=F('montant_reverse') * F('ligne_encaissement__numeroquittance__taux_commission') / 100,
@@ -413,13 +413,13 @@ class AffaireCommissionService:
         # Appliquer les filtres
         if filtres.get('compagnie_id'):
             queryset = queryset.filter(
-                quittance__contrat__compagnie_IdCompagnie=filtres['compagnie_id']
+                reversement__compagnie_id=filtres['compagnie_id']
             )
         
         if filtres.get('client_nom'):
             queryset = queryset.filter(
-                Q(quittance__client__Nom__icontains=filtres['client_nom']) |
-                Q(quittance__client__Prenoms__icontains=filtres['client_nom'])
+                Q(ligne_encaissement__numeroquittance__client__Nom__icontains=filtres['client_nom']) |
+                Q(ligne_encaissement__numeroquittance__client__Prenoms__icontains=filtres['client_nom'])
             )
         
         if filtres.get('date_reversement_debut'):
@@ -444,12 +444,12 @@ class AffaireCommissionService:
         
         if filtres.get('quittance_numero'):
             queryset = queryset.filter(
-                quittance__numeroquittance__icontains=filtres['quittance_numero']
+                ligne_encaissement__numeroquittance__numeroquittance__icontains=filtres['quittance_numero']
             )
         
         if filtres.get('contrat_numero'):
             queryset = queryset.filter(
-                quittance__police__icontains=filtres['contrat_numero']
+                ligne_encaissement__numeroquittance__police__icontains=filtres['contrat_numero']
             )
         
         if filtres.get('statut'):
@@ -480,25 +480,34 @@ class AffaireCommissionService:
         Sérialise une affaire en dictionnaire
         """
         
+        # DetailReversement -> DetailEncaissement -> Quittance ; le contrat (relation inverse) peut manquer
+        quittance = affaire.ligne_encaissement.numeroquittance
+        contrat = getattr(quittance, 'contrat', None)
+        client = quittance.client
+        compagnie = affaire.reversement.compagnie
+
+        def _montant(valeur):
+            return None if valeur is None else str(valeur)
+
         return {
             'detail_reversement_id': affaire.id_detail_reversement,
-            'quittance_id': affaire.quittance.id,
-            'quittance_numero': affaire.quittance.numero,
-            'contrat_id': affaire.quittance.contrat.id,
-            'contrat_numero': affaire.quittance.contrat.numero,
-            'client_id': affaire.quittance.contrat.client.id,
-            'client_nom': affaire.quittance.contrat.client.nom,
-            'client_prenom': affaire.quittance.contrat.client.prenom,
-            'client_nom_complet': f"{affaire.quittance.contrat.client.prenom} {affaire.quittance.contrat.client.nom}",
-            'compagnie_id': affaire.quittance.contrat.compagnie.id,
-            'compagnie_nom': affaire.quittance.contrat.compagnie.nom,
-            'reversement_id': affaire.reversement.id,
+            'quittance_id': quittance.idquittance,
+            'quittance_numero': quittance.numeroquittance,
+            'contrat_id': contrat.idcontrat if contrat else None,
+            'contrat_numero': contrat.numeropolice if contrat else quittance.police,
+            'client_id': client.IdClient if client else None,
+            'client_nom': client.Nom if client else None,
+            'client_prenom': client.Prenoms if client else None,
+            'client_nom_complet': " ".join(filter(None, [client.Prenoms, client.Nom])) if client else None,
+            'compagnie_id': compagnie.IdCompagnie,
+            'compagnie_nom': compagnie.RaisonSociale,
+            'reversement_id': affaire.reversement.id_reversement,
             'date_reversement': affaire.reversement.date_reversement,
             'montant_prime_reversee': str(affaire.montant_reverse),
-            'taux_commission': str(affaire.taux_commission),
-            'montant_commission_du': str(affaire.montant_commission_du),
-            'montant_commission_paye': str(affaire.montant_commission_paye),
-            'montant_commission_restant': str(affaire.montant_commission_restant),
+            'taux_commission': _montant(quittance.taux_commission),
+            'montant_commission_du': _montant(affaire.montant_commission_du),
+            'montant_commission_paye': _montant(affaire.montant_commission_paye),
+            'montant_commission_restant': _montant(affaire.montant_commission_restant),
             'derniere_date_paiement': AffaireCommissionService._get_derniere_date_paiement(affaire),
             'statut_paiement': affaire.statut_paiement,
         }

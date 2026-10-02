@@ -1,312 +1,260 @@
-import { isRegistryQuote } from '../../../utils/quoteRegistry';
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { customerApi, contractApi, quoteApi } from '../../../api/endpoints';
+import { customerApi } from '../../../api/endpoints';
 import { StatusBadge } from '../../../components/common/StatusBadge';
-import { ArrowLeft, User, Phone, Mail, MapPin, Building, Shield, FileText, CreditCard } from 'lucide-react';
+import { LoadingSpinner } from '../../../components/common/LoadingSpinner';
+import { printFicheClient } from '../../../utils/exportUtils';
+import { ArrowLeft, User, Phone, Building, Shield, FileText, CreditCard, Printer } from 'lucide-react';
 import { formatDate } from '../../../utils/dateUtils';
 
+// Lignes affichées d'emblée par tableau : un gros compte (plus de 1 000 émissions de contrats)
+// reste fluide, le reste s'affiche à la demande
+const LIGNES_PAR_PAGE = 50;
+
+const montant = (v) => `${Math.round(Number(v) || 0).toLocaleString('fr-FR')} FCFA`;
+const texte = (v) => (v === undefined || v === null ? '' : String(v).trim());
+
+const COULEUR_ENCAISSEMENT = { Soldé: 'emerald', Partiel: 'amber', 'À encaisser': 'rose', 'Sans quittance': 'slate' };
+
+const Champ = ({ libelle, valeur, mono }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem' }}>
+    <span className="text-muted">{libelle} :</span>
+    {texte(valeur)
+      ? <strong style={{ textAlign: 'right', overflowWrap: 'anywhere', fontFamily: mono ? 'var(--font-mono)' : undefined }}>{texte(valeur)}</strong>
+      : <span style={{ color: 'var(--text-muted)' }}>Non renseigné</span>}
+  </div>
+);
+
+const Carte = ({ icone, couleur, titre, children }) => (
+  <div className="glass-panel" style={{ padding: '1.5rem' }}>
+    <h3 className="title-md" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+      {React.createElement(icone, { size: 18, color: couleur })}
+      {titre}
+    </h3>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>{children}</div>
+  </div>
+);
+
+const Indicateur = ({ libelle, valeur, detail }) => (
+  <div className="glass-panel" style={{ padding: '1rem 1.25rem' }}>
+    <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600 }}>{libelle}</div>
+    <div style={{ fontSize: '1.3rem', fontWeight: 800, fontFamily: 'var(--font-mono)', marginTop: '0.2rem' }}>{valeur}</div>
+    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>{detail}</div>
+  </div>
+);
+
+// Tableau d'une liste du dossier, avec « Tout afficher » au-delà de LIGNES_PAR_PAGE lignes
+const TableauDossier = ({ colonnes, lignes, vide }) => {
+  const [toutAfficher, setToutAfficher] = useState(false);
+  if (!lignes.length) return <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{vide}</p>;
+  const affichees = toutAfficher ? lignes : lignes.slice(0, LIGNES_PAR_PAGE);
+  return (
+    <>
+      <div className="table-wrapper">
+        <table className="data-table">
+          <thead>
+            <tr>{colonnes.map((c) => <th key={c.titre} style={c.droite ? { textAlign: 'right' } : undefined}>{c.titre}</th>)}</tr>
+          </thead>
+          <tbody>
+            {affichees.map((l) => (
+              <tr key={l.id}>
+                {colonnes.map((c) => <td key={c.titre} style={c.droite ? { textAlign: 'right', whiteSpace: 'nowrap' } : undefined}>{c.rendu(l)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {lignes.length > LIGNES_PAR_PAGE && (
+        <button type="button" className="btn btn-secondary" style={{ marginTop: '0.75rem' }} onClick={() => setToutAfficher((v) => !v)}>
+          {toutAfficher ? `Afficher les ${LIGNES_PAR_PAGE} premières lignes` : `Tout afficher (${lignes.length.toLocaleString('fr-FR')} lignes)`}
+        </button>
+      )}
+    </>
+  );
+};
+
+/**
+ * Dossier 360° d'un client (bouton « 360° » de la Clientèle) : une seule requête,
+ * /api/client/:id/dossier/, qui filtre en base les devis et contrats du client.
+ */
 export const ClientDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const [clientData, setClientData] = useState(null);
-  const [contracts, setContracts] = useState([]);
-  const [quotes, setQuotes] = useState([]);
+  const [dossier, setDossier] = useState(null);
+  const [erreur, setErreur] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
-    const fetchClientData = async () => {
-      setLoading(true);
-      try {
-        const [cData, cList, qList] = await Promise.all([
-          customerApi.getClientDetail(id),
-          contractApi.getContracts(),
-          quoteApi.getQuotes(),
-        ]);
-        if (isMounted) {
-          setClientData(cData);
-          const clientNameLower = String(cData?.nom || cData?.nomcomplet || '').toLowerCase();
-          setContracts(cList.filter((c) => (clientNameLower && String(c.client_nom || '').toLowerCase().includes(clientNameLower)) || String(c.client_id) === String(cData?.id)));
-          setQuotes(qList.filter(isRegistryQuote).filter((q) => String(q.client_id) === String(cData?.id) || (clientNameLower && String(q.client_nom || '').toLowerCase().includes(clientNameLower))));
-        }
-      } catch (err) {
-        console.error('Erreur chargement détail client:', err);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
-    if (id) {
-      fetchClientData();
-    }
+    setLoading(true);
+    setErreur('');
+    customerApi.getDossierClient(id)
+      .then((d) => { if (isMounted) setDossier(d); })
+      .catch((err) => {
+        console.error('Erreur chargement dossier client:', err);
+        if (isMounted) setErreur(err?.response?.status === 404 ? 'Client introuvable.' : 'Impossible de charger le dossier de ce client. Veuillez réessayer.');
+      })
+      .finally(() => { if (isMounted) setLoading(false); });
     return () => { isMounted = false; };
   }, [id]);
 
-  const client = clientData || {};
-  const clientContracts = contracts;
-  const clientQuotes = quotes;
+  const retour = (
+    <button className="btn btn-secondary" onClick={() => navigate('/user/clients')} style={{ padding: '0.4rem 0.8rem' }}>
+      <ArrowLeft size={16} />
+      Retour
+    </button>
+  );
+
+  if (loading) {
+    return (
+      <div style={{ padding: '5rem 1rem', display: 'flex', justifyContent: 'center' }}>
+        <LoadingSpinner size={42} />
+      </div>
+    );
+  }
+  if (erreur || !dossier) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'flex-start' }}>
+        {retour}
+        <p style={{ color: '#f87171' }}>{erreur || 'Client introuvable.'}</p>
+      </div>
+    );
+  }
+
+  const c = dossier.client || {};
+  const s = dossier.synthese || {};
+  const devis = dossier.devis || [];
+  const contrats = dossier.contrats || [];
+  const entreprise = Boolean(c.entreprise);
+  const nomComplet = [texte(c.nom), texte(c.prenoms)].filter(Boolean).join(' ') || `Client n° ${c.id}`;
+  const devisEnAttente = devis.filter((d) => !d.expire);
+  const policesEnVigueur = Number(s.polices_en_vigueur) || 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Back button & Page Title */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-        <button className="btn btn-secondary" onClick={() => navigate('/user/clients')} style={{ padding: '0.4rem 0.8rem' }}>
-          <ArrowLeft size={16} />
-          Retour
+      {/* En-tête */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          {retour}
+          <div>
+            <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+              {nomComplet}
+              {c.vip && <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>VIP</span>}
+            </h1>
+            <span style={{ fontSize: '0.8rem', color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>
+              N° client {c.id}{texte(c.matricule) ? ` • Matricule ${c.matricule}` : ''} • {texte(c.categorie) || (entreprise ? 'Personne morale' : 'Personne physique')}
+            </span>
+          </div>
+        </div>
+        <button className="btn btn-secondary" onClick={() => printFicheClient({ IdClient: c.id, codeclient: c.matricule })}>
+          <Printer size={16} />
+          <span>Imprimer la fiche</span>
         </button>
-        <div>
-          <h1 className="title-xl">{client.nomcomplet || (loading ? '' : 'Client non trouvé')}</h1>
-          <span style={{ fontSize: '0.8rem', color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>
-            Code: {client.codeclient || id} • {client.typeclient || ''}
-          </span>
-        </div>
       </div>
 
-      {/* Overview Cards Exhaustives stdclient */}
+      {/* Synthèse commerciale */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+        <Indicateur
+          libelle="Devis en cours"
+          valeur={devis.length.toLocaleString('fr-FR')}
+          detail={`${devisEnAttente.length} en attente, ${devis.length - devisEnAttente.length} expiré(s)`}
+        />
+        <Indicateur
+          libelle="Polices en vigueur"
+          valeur={policesEnVigueur.toLocaleString('fr-FR')}
+          detail={`sur ${(Number(s.nombre_polices) || 0).toLocaleString('fr-FR')} police(s) émise(s) • ${montant(s.primes_en_vigueur)}`}
+        />
+        <Indicateur
+          libelle="Total des primes émises"
+          valeur={montant(s.total_primes)}
+          detail={s.dernier_contrat ? `Dernier contrat le ${formatDate(s.dernier_contrat)}` : 'Aucun contrat'}
+        />
+      </div>
+
+      {/* Identité et coordonnées, telles qu'enregistrées */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem' }}>
-        {/* 1. Identité & Conformité CIMA */}
-        <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <User size={18} color="#3b82f6" />
-            Identité & Conformité CIMA
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Type de Personne :</span>
-              <strong>{client.typeclient} {client.civilite ? `(${client.civilite})` : ''}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">N° Assuré CIMA :</span>
-              <strong style={{ color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>{client.numero_assure || 'N/A'}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Matricule Interne :</span>
-              <strong style={{ fontFamily: 'var(--font-mono)' }}>{client.codeclient || client.Matricule || 'N/A'}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">{client.typeclient === 'Entreprise' ? 'RCCM / Patente :' : 'N° Pièce / CNI :'}</span>
-              <strong style={{ color: '#fbbf24' }}>{client.CniPat || 'Non renseigné'}</strong>
-            </div>
-            {client.typeclient === 'Particulier' && (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="text-muted">Date de Naissance :</span>
-                  <span>{client.DateNaissance || 'Non renseignée'}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="text-muted">Lieu de Naissance :</span>
-                  <span>{client.LieuNaissance || 'Non renseigné'}</span>
-                </div>
-              </>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.25rem' }}>
-              <span className="text-muted">Statut VIP :</span>
-              <span className={`badge ${client.Vip === 'V' || client.is_vip ? 'badge-warning' : 'badge-neutral'}`} style={{ fontSize: '0.7rem' }}>
-                {client.Vip === 'V' || client.is_vip ? 'VIP Prioritaire' : 'Standard'}
-              </span>
-            </div>
-          </div>
-        </div>
+        <Carte icone={User} couleur="#3b82f6" titre={entreprise ? 'Identité de l\'entreprise' : 'Identité'}>
+          {!entreprise && <Champ libelle="Civilité" valeur={c.civilite} />}
+          <Champ libelle={entreprise ? 'RCCM / Patente' : 'Pièce d\'identité'} valeur={c.piece_identite} />
+          <Champ libelle={entreprise ? 'Date de création' : 'Date de naissance'} valeur={c.date_naissance ? formatDate(c.date_naissance) : ''} />
+          <Champ libelle={entreprise ? 'Siège' : 'Lieu de naissance'} valeur={c.lieu_naissance} />
+          {entreprise && <Champ libelle="Interlocuteur" valeur={c.responsable} />}
+        </Carte>
 
-        {/* 2. Coordonnées & Localisation */}
-        <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Phone size={18} color="#60a5fa" />
-            Coordonnées & Localisation
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-              <Phone size={14} color="var(--text-muted)" />
-              <span>Mobile : <strong>{client.mobile || client.telephone || 'Non renseigné'}</strong></span>
-            </div>
-            {client.fixe && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-                <Phone size={14} color="var(--text-muted)" />
-                <span>Fixe : {client.fixe}</span>
-              </div>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-              <Mail size={14} color="var(--text-muted)" />
-              <span>Email : {client.email || client.Email || 'Non renseigné'}</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-              <MapPin size={14} color="var(--text-muted)" />
-              <span>Adresse : {client.adresse || client.Adresse1 || 'Abidjan'}</span>
-            </div>
-            {client.Adresse2 && (
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', paddingLeft: '1.4rem' }}>
-                Complément : {client.Adresse2}
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '0.25rem' }}>
-              <span className="text-muted">Ville :</span>
-              <strong>{client.ville || 'Abidjan'}</strong>
-            </div>
-            {client.CodePostal && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span className="text-muted">Boîte Postale :</span>
-                <span>{client.CodePostal}</span>
-              </div>
-            )}
-          </div>
-        </div>
+        <Carte icone={Phone} couleur="#60a5fa" titre="Coordonnées">
+          <Champ libelle="Téléphone" valeur={c.telephone} />
+          <Champ libelle="Mobile" valeur={c.mobile} />
+          <Champ libelle="Fixe" valeur={c.fixe} />
+          <Champ libelle="Email" valeur={c.email} />
+          <Champ libelle="Adresse" valeur={[c.adresse, c.adresse_complement].map(texte).filter(Boolean).join(', ')} />
+          <Champ libelle="Ville" valeur={c.ville} />
+          <Champ libelle="Code postal" valeur={c.code_postal} />
+        </Carte>
 
-        {/* 3. Activité & Données Entreprise */}
-        <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Building size={18} color="#a855f7" />
-            Activité & Profil Courtage
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Profession :</span>
-              <strong>{client.profession || client.libelleprofession || 'Non renseignée'}</strong>
-            </div>
-            {client.secteur_activite && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span className="text-muted">Secteur d'Activité :</span>
-                <span>{client.secteur_activite}</span>
-              </div>
-            )}
-            {client.typeclient === 'Entreprise' && client.Responsable && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span className="text-muted">Représentant Légal :</span>
-                <strong>{client.Responsable}</strong>
-              </div>
-            )}
-            {client.Fonction && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span className="text-muted">Fonction Contact :</span>
-                <span>{client.Fonction}</span>
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Type Souscripteur :</span>
-              <span>{client.type_souscripteur || (client.typeclient === 'Entreprise' ? 'Personne Morale' : 'Personne Physique')}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Type Assuré :</span>
-              <span>{client.type_assure || (client.typeclient === 'Entreprise' ? 'Personne Morale' : 'Personne Physique')}</span>
-            </div>
-          </div>
-        </div>
+        <Carte icone={Building} couleur="#a855f7" titre="Activité professionnelle">
+          <Champ libelle={entreprise ? 'Activité' : 'Profession'} valeur={c.profession} />
+          <Champ libelle="Secteur d'activité" valeur={c.secteur_activite} />
+          <Champ libelle={entreprise ? 'Fonction de l\'interlocuteur' : 'Poste occupé'} valeur={c.fonction} />
+        </Carte>
 
-        {/* 4. Banque & Données Fiscales */}
-        <div className="glass-panel" style={{ padding: '1.5rem' }}>
-          <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <CreditCard size={18} color="#10b981" />
-            Banque & Fiscalité
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
-            <div>
-              <span className="text-muted" style={{ fontSize: '0.75rem' }}>RIB Bancaire (24 car.) :</span>
-              <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: client.Rib ? '#34d399' : 'var(--text-muted)', fontSize: '0.8rem', wordBreak: 'break-all' }}>
-                {client.Rib || 'Non renseigné'}
-              </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">N° Compte Client :</span>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{client.NumeroCompte || 'Non assigné'}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Exonéré de Taxes :</span>
-              <strong style={{ color: client.ExonereDeTaxes ? '#34d399' : '#94a3b8' }}>
-                {client.ExonereDeTaxes ? 'Oui (Exonération Légale)' : 'Non (Soumis)'}
-              </strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span className="text-muted">Exonéré d'Accessoires :</span>
-              <strong style={{ color: client.ExonereDeAccess ? '#34d399' : '#94a3b8' }}>
-                {client.ExonereDeAccess ? 'Oui' : 'Non'}
-              </strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.4rem', marginTop: '0.2rem' }}>
-              <span className="text-muted">Total Primes Émises :</span>
-              <strong style={{ color: '#fff', fontFamily: 'var(--font-mono)' }}>{client.total_primes || '0 FCFA'}</strong>
-            </div>
-          </div>
-        </div>
+        <Carte icone={CreditCard} couleur="#10b981" titre="Informations financières">
+          <Champ libelle="N° compte client" valeur={c.numero_compte} mono />
+          <Champ libelle="RIB" valeur={c.rib} mono />
+          <Champ libelle="Exonéré de taxe" valeur={c.exonere_taxes ? 'Oui' : 'Non'} />
+          <Champ libelle="Exonéré d'accessoires" valeur={c.exonere_accessoires ? 'Oui' : 'Non'} />
+        </Carte>
       </div>
 
-      {/* Policies section */}
+      {/* Contrats : une ligne par émission (affaire nouvelle, renouvellement, avenant) */}
       <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <h3 className="title-md" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Shield size={18} color="#8b5cf6" />
-          Contrats d'Assurance du Client ({clientContracts.length})
+          Contrats ({contrats.length.toLocaleString('fr-FR')} émission{contrats.length > 1 ? 's' : ''})
         </h3>
-        {clientContracts.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {clientContracts.map((ctr) => (
-              <div
-                key={ctr.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '1rem',
-                  borderRadius: 'var(--radius-md)',
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700, color: '#fff' }}>{ctr.numeropolice} - {ctr.produit}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {ctr.compagnie} • Du {formatDate(ctr.date_effet)} au {formatDate(ctr.date_expiration)}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700, color: '#f8fafc', fontFamily: 'var(--font-mono)' }}>
-                    {ctr.prime_totale.toLocaleString('fr-FR')} FCFA
-                  </div>
-                  <StatusBadge label={ctr.statut_encaissement} color={ctr.statut_encaissement === 'Soldé' ? 'emerald' : 'amber'} />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Aucun contrat actif pour ce client.</p>
-        )}
+        <TableauDossier
+          lignes={contrats}
+          vide="Aucun contrat pour ce client."
+          colonnes={[
+            { titre: 'N° police', rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{l.numero_police}</strong> },
+            { titre: 'Mouvement', rendu: (l) => l.avenant || '—' },
+            { titre: 'Branche', rendu: (l) => `${l.branche || '—'}${l.flotte ? ' (flotte)' : ''}` },
+            { titre: 'Compagnie', rendu: (l) => l.compagnie || '—' },
+            { titre: 'Émis le', rendu: (l) => formatDate(l.date_emission) },
+            { titre: 'Période', rendu: (l) => `${formatDate(l.date_effet)} au ${formatDate(l.date_expiration)}` },
+            { titre: 'Prime TTC', droite: true, rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{montant(l.prime_ttc)}</strong> },
+            {
+              titre: 'Encaissement',
+              rendu: (l) => (
+                <span title={l.numero_quittance ? `Quittance ${l.numero_quittance} : ${montant(l.encaissement?.montant)} encaissés` : undefined}>
+                  <StatusBadge label={l.encaissement?.statut || '—'} color={COULEUR_ENCAISSEMENT[l.encaissement?.statut]} />
+                </span>
+              ),
+            },
+            { titre: 'Statut', rendu: (l) => <StatusBadge label={l.en_vigueur ? 'En vigueur' : 'Expiré'} color={l.en_vigueur ? 'emerald' : 'slate'} /> },
+          ]}
+        />
       </div>
 
-      {/* Quotes section */}
+      {/* Devis en cours : ni confirmés ni archivés */}
       <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <h3 className="title-md" style={{ color: '#fff', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <h3 className="title-md" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <FileText size={18} color="#0ea5e9" />
-          Devis & Propositions Récentes ({clientQuotes.length})
+          Devis en cours ({devis.length.toLocaleString('fr-FR')})
         </h3>
-        {clientQuotes.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {clientQuotes.map((q) => (
-              <div
-                key={q.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '1rem',
-                  borderRadius: 'var(--radius-md)',
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700, color: '#fff' }}>{q.numerodevis} - {q.produit}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Émis le {formatDate(q.date_emission)} • {q.compagnie}</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700, color: '#f8fafc', fontFamily: 'var(--font-mono)' }}>
-                    {Number(q.prime_totale || 0).toLocaleString('fr-FR')} FCFA
-                  </div>
-                  <StatusBadge label={q.statut} color={q.statut_badge} />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Aucun devis en cours pour ce client.</p>
-        )}
+        <TableauDossier
+          lignes={devis}
+          vide="Aucun devis en cours pour ce client."
+          colonnes={[
+            { titre: 'N° devis', rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{l.numero}</strong> },
+            { titre: 'Branche', rendu: (l) => `${l.branche || '—'}${l.flotte ? ' (flotte)' : ''}` },
+            { titre: 'Compagnie', rendu: (l) => l.compagnie || '—' },
+            { titre: 'Émis le', rendu: (l) => formatDate(l.date_emission) },
+            { titre: 'Période', rendu: (l) => `${formatDate(l.date_effet)} au ${formatDate(l.date_expiration)}` },
+            { titre: 'Prime TTC', droite: true, rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{montant(l.prime_ttc)}</strong> },
+            { titre: 'Statut', rendu: (l) => <StatusBadge label={l.expire ? 'Expiré' : 'En attente'} color={l.expire ? 'slate' : 'amber'} /> },
+          ]}
+        />
       </div>
     </div>
   );

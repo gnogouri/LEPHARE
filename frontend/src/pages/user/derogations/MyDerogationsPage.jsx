@@ -178,7 +178,7 @@ export const MyDerogationsPage = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Justification & Motif détaillé</label>
+            <label className="form-label">Motif détaillé</label>
             <textarea
               className="form-control"
               rows={4}

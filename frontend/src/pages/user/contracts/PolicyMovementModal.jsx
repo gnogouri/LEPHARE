@@ -489,13 +489,13 @@ export const PolicyMovementModal = ({
 
                 {/* Duration Picker */}
                 <div>
-                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 600 }}>Durée de Prorogation / Reconduction</label>
+                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 600 }}>Durée de Reconduction</label>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
                     {[
-                      { id: '12', label: '12 Mois (1 An)', desc: 'Tacite reconduction' },
-                      { id: '6', label: '6 Mois', desc: 'Semestriel' },
-                      { id: '3', label: '3 Mois', desc: 'Trimestriel' },
-                      { id: '1', label: '1 Mois', desc: 'Temporaire' },
+                      { id: '12', label: 'Annuelle' },
+                      { id: '6', label: 'Semestrielle' },
+                      { id: '3', label: 'Trimestrielle' },
+                      { id: '1', label: 'Mensuelle' },
                     ].map((opt) => (
                       <div
                         key={opt.id}
@@ -512,7 +512,6 @@ export const PolicyMovementModal = ({
                         <div style={{ fontWeight: 700, color: periodeMois === opt.id ? '#34d399' : '#fff', fontSize: '0.9rem' }}>
                           {opt.label}
                         </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{opt.desc}</div>
                       </div>
                     ))}
                   </div>
@@ -531,7 +530,7 @@ export const PolicyMovementModal = ({
                     />
                   </div>
                   <div>
-                    <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Nouvelle Date d'Échéance / Expiration</label>
+                    <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Nouvelle Date d'Échéance</label>
                     <input
                       type="date"
                       className="form-control"
@@ -559,7 +558,7 @@ export const PolicyMovementModal = ({
                       </div>
                     </div>
                     <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Frais & Accessoires :</span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Accessoires :</span>
                       <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#fff', fontFamily: 'monospace' }}>
                         15 000 F
                       </div>
@@ -654,7 +653,7 @@ export const PolicyMovementModal = ({
                     onChange={(e) => setAvenantType(e.target.value)}
                   >
                     <option value="autre">Autre modification des conditions particulières</option>
-                    <option value="immatriculation">Changement d'immatriculation / Numéro de plaque</option>
+                    <option value="immatriculation">Changement d'immatriculation</option>
                     <option value="beneficiaire">Changement de bénéficiaire / Souscripteur</option>
                     <option value="adresse">Changement de zone géographique ou d'adresse</option>
                     <option value="garanties">Modification / Adjonction de garanties</option>
@@ -693,7 +692,7 @@ export const PolicyMovementModal = ({
                 </div>
 
                 <div>
-                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Motif & Justification de l'Avenant</label>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Motif de l'Avenant</label>
                   <textarea
                     className="form-control"
                     rows={3}

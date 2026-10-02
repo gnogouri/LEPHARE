@@ -9,10 +9,15 @@ fn_saisie_ayant_droit_ia et sp_finalisation_devis.
 
 En modification, une ligne marquée « Recalculer: false » n'est pas renvoyée à
 sp_creation_devis_ia : ses primes, imposées ou non, restent telles quelles.
+
+Catégories à tarif personnalisé (offres « SPECIFIQUE ») : la prime nette et
+l'accessoire saisis pour l'assuré sont passés à la procédure avec la prime TTC,
+comme URANUS. La base redéduit l'accessoire de la TTC : celle-ci est donc
+calculée ici au franc près, pour que le devis garde l'accessoire saisi.
 """
 
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db import connection, transaction
 from rest_framework import permissions, status
@@ -78,6 +83,22 @@ def _message(exc):
     return texte.split("\n")[0] if "\n" in texte else texte
 
 
+def _taux_taxe(cursor, id_compagnie, id_offre, date_effet):
+    """Taux de taxe (%) de l'offre IA à la date d'effet (fn_get_taux_taxe)."""
+    cursor.execute(
+        "SELECT fn_get_taux_taxe(%s, %s, %s, %s)",
+        [id_compagnie, ID_PRODUIT_IA, id_offre, date_effet],
+    )
+    ligne = cursor.fetchone()
+    return Decimal(ligne[0] or 0) if ligne else Decimal("0")
+
+
+def _prime_ttc_imposee(prime_nette, accessoire, taux):
+    """TTC dont sp_enregistrement_assure_ia redéduit exactement l'accessoire saisi."""
+    taxe = ((prime_nette + accessoire) * taux / 100).quantize(Decimal("1"), ROUND_HALF_UP)
+    return prime_nette + accessoire + taxe
+
+
 def _enregistrer(data):
     assures = data.get("Assures") or []
     if not assures:
@@ -137,6 +158,7 @@ def _enregistrer(data):
             DevisDetail.objects.filter(iddevisdetail__in=lignes_retirees).delete()
 
     lignes_calculees = 0
+    taux_taxe = None
     with connection.cursor() as cursor:
         for rang, assure in enumerate(assures, start=1):
             libelle = f"Assuré n° {rang}"
@@ -192,6 +214,19 @@ def _enregistrer(data):
             if id_devis and id_devis_detail and not assure.get("Recalculer", True):
                 continue  # ligne inchangée : primes conservées
 
+            # Tarif personnalisé : primes de l'assuré saisies (0 = primes du barème)
+            prime_nette = _montant(assure.get("PrimeNette"))
+            accessoire = _montant(assure.get("Accessoire"))
+            if prime_nette < 0 or accessoire < 0:
+                raise ErreurDevisIa(f"{libelle} : la prime nette et l'accessoire ne peuvent pas être négatifs.")
+            prime_ttc = Decimal("0")
+            if prime_nette > 0:
+                if taux_taxe is None:
+                    taux_taxe = _taux_taxe(cursor, id_compagnie, id_offre, date_effet)
+                prime_ttc = _prime_ttc_imposee(prime_nette, accessoire, taux_taxe)
+            else:
+                accessoire = Decimal("0")
+
             try:
                 cursor.execute(
                     "CALL sp_creation_devis_ia(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
@@ -221,9 +256,9 @@ def _enregistrer(data):
                         numero_police_connexe,
                         numero_police_compagnie,
                         id_duree,
-                        Decimal("0"),
-                        Decimal("0"),
-                        Decimal("0"),
+                        prime_nette,
+                        accessoire,
+                        prime_ttc,
                         id_devis,
                         id_devis_detail,
                         "",
@@ -296,3 +331,65 @@ def enregistrer_devis_ia_complet(request):
         return Response({"error": _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
     code = status.HTTP_200_OK if int(request.data.get("IdDevis") or 0) else status.HTTP_201_CREATED
     return Response(resultat, status=code)
+
+
+@api_view(["GET"])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
+@permission_classes([permissions.IsAuthenticated])
+def taux_taxe_devis_ia(request):
+    """
+    GET /api/devisia/taux-taxe/?IdCompagnie=1&IdOffre=173&DateEffet=2026-10-01
+
+    Taux de taxe (%) appliqué par la base aux primes imposées de l'offre : l'écran
+    affiche ainsi la taxe et la TTC que le devis enregistrera.
+    """
+    try:
+        id_compagnie = int(request.query_params.get("IdCompagnie") or 0)
+        id_offre = int(request.query_params.get("IdOffre") or 0)
+        date_effet = _date(request.query_params.get("DateEffet"), "Date d'effet")
+    except (ValueError, ErreurDevisIa) as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    with connection.cursor() as cursor:
+        taux = _taux_taxe(cursor, id_compagnie, id_offre, date_effet)
+    return Response({"taux": float(taux)})
+
+
+@api_view(["GET"])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
+@permission_classes([permissions.IsAuthenticated])
+def garanties_devis_ia(request, iddevis):
+    """
+    GET /api/devisia/<iddevis>/garanties/
+
+    Garanties enregistrées de chaque assuré du devis (stddevisdetgarantie), pour le
+    tableau Garantie / Acquise / Capital / P. annuelle / P. nette du récapitulatif.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT g.iddevisdet, g.idgarantie, s.libellesousgarantie, g.acquise,
+                   g.capital, g.primeannuelle, g.primenette, g.taxe
+            FROM stddevisdetgarantie g
+            JOIN stddevisdetail d ON d.iddevisdetail = g.iddevisdet
+            LEFT JOIN stdsousgarantie s ON s.idsousgarantie = g.idgarantie
+            WHERE d.iddevis = %s AND g.idgarantie <> 0
+            ORDER BY g.iddevisdet, g.idgarantie
+            """,
+            [iddevis],
+        )
+        lignes = cursor.fetchall()
+    return Response(
+        [
+            {
+                "id_devis_detail": l[0],
+                "id_garantie": l[1],
+                "libelle": (l[2] or "").strip(),
+                "acquise": bool(l[3]),
+                "capital": float(l[4] or 0),
+                "prime_annuelle": float(l[5] or 0),
+                "prime_nette": float(l[6] or 0),
+                "taxe": float(l[7] or 0),
+            }
+            for l in lignes
+        ]
+    )

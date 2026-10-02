@@ -44,76 +44,8 @@ except Exception:
 # Seed initial demonstration data if tables are empty
 def check_and_seed_data():
     try:
-        if CrmLead.objects.count() == 0:
-            CrmLead.objects.bulk_create([
-                CrmLead(
-                    id_lead="PROSP-2026-001",
-                    nom_prospect="Groupe SIFCA Côte d'Ivoire",
-                    contact="M. Bamba Souleymane (DRH)",
-                    telephone="+225 07 07 11 22 33",
-                    email="s.bamba@sifca.ci",
-                    branche="Flotte Automobile",
-                    prime_estimee=45000000,
-                    statut="Proposition",
-                    commercial_attribue="Koffi Serge",
-                    prochaine_action="Présentation de l'offre groupe au comité de direction",
-                    date_action=datetime.date(2026, 9, 15),
-                    historique_echanges=[
-                        {"date": "2026-08-20", "auteur": "Koffi Serge", "action": "Premier contact téléphonique et recueil du cahier des charges"},
-                        {"date": "2026-09-02", "auteur": "Koffi Serge", "action": "Envoi de la proposition tarifaire flotte 120 véhicules"}
-                    ]
-                ),
-                CrmLead(
-                    id_lead="PROSP-2026-002",
-                    nom_prospect="Clinique Médicale Prima",
-                    contact="Dr. Kouassi Patricia (Directrice)",
-                    telephone="+225 05 55 44 33 22",
-                    email="direction@prima-clinique.ci",
-                    branche="Responsabilité Civile Médicale",
-                    prime_estimee=18500000,
-                    statut="Négociation",
-                    commercial_attribue="Amina Diallo",
-                    prochaine_action="Finalisation des clauses de délégation sinistres",
-                    date_action=datetime.date(2026, 9, 10),
-                    historique_echanges=[
-                        {"date": "2026-08-15", "auteur": "Amina Diallo", "action": "Rendez-vous sur site et étude des risques spécifiques"},
-                        {"date": "2026-09-01", "auteur": "Amina Diallo", "action": "Négociation du barème de franchise avec SANLAM"}
-                    ]
-                ),
-                CrmLead(
-                    id_lead="PROSP-2026-003",
-                    nom_prospect="Société Ivoirienne de Béton (SIB)",
-                    contact="M. Yao Fernand (DAF)",
-                    telephone="+225 01 02 03 04 05",
-                    email="f.yao@sib-beton.ci",
-                    branche="Tous Risques Chantier & MRH",
-                    prime_estimee=24000000,
-                    statut="Qualifié",
-                    commercial_attribue="Marcelle Toure",
-                    prochaine_action="Visite de l'usine d'Abobo et chiffrage des capitaux",
-                    date_action=datetime.date(2026, 9, 18),
-                    historique_echanges=[
-                        {"date": "2026-09-03", "auteur": "Marcelle Toure", "action": "Qualification des besoins lors du salon Batimat"}
-                    ]
-                ),
-                CrmLead(
-                    id_lead="PROSP-2026-004",
-                    nom_prospect="Transport & Logistique Ouest (TLO)",
-                    contact="M. Diarra Bakary (Gérant)",
-                    telephone="+225 07 48 99 00 11",
-                    email="b.diarra@tlo-ci.com",
-                    branche="Automobile",
-                    prime_estimee=32000000,
-                    statut="Gagné",
-                    commercial_attribue="Koffi Serge",
-                    prochaine_action="Émission définitive des attestations ASACI sécurisées",
-                    date_action=datetime.date(2026, 9, 7),
-                    historique_echanges=[
-                        {"date": "2026-08-10", "auteur": "Koffi Serge", "action": "Réception du parc 45 camions"},
-                        {"date": "2026-09-04", "auteur": "Koffi Serge", "action": "Validation du contrat et réception du chèque d'acompte"}
-                    ]
-                )
-            ])
+        # Les prospects CRM ne sont plus créés d'office : supprimer ses prospects les faisait
+        # réapparaître au premier appel de n'importe quelle vue (table vide = démonstration).
 
         if ConventionAssureur.objects.count() == 0:
             ConventionAssureur.objects.bulk_create([
@@ -402,14 +334,23 @@ def check_and_seed_data():
 # 1. CRM PIPELINE & LEADS
 # =========================================================================
 class CrmLeadViewSet(viewsets.ModelViewSet):
+    """Prospects du suivi commercial : réservés aux utilisateurs connectés (écriture comprise)."""
+
     queryset = CrmLead.objects.all().order_by("-date_creation")
     serializer_class = CrmLeadSerializer
     pagination_class = ResultsOnlyPagination
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
-    def list(self, request, *args, **kwargs):
-        check_and_seed_data()
-        return super().list(request, *args, **kwargs)
+    def perform_create(self, serializer):
+        # Référence PROSP-<année>-<n° à 3 chiffres> suivant la plus haute de l'année (jamais
+        # calculée par l'écran, qui la dupliquait après une suppression)
+        prefixe = f"PROSP-{datetime.date.today().year}-"
+        numeros = [
+            int(ref[len(prefixe):])
+            for ref in CrmLead.objects.filter(id_lead__startswith=prefixe).values_list("id_lead", flat=True)
+            if ref[len(prefixe):].isdigit()
+        ]
+        serializer.save(id_lead=f"{prefixe}{(max(numeros) if numeros else 0) + 1:03d}")
 
     @action(detail=True, methods=["post", "patch"])
     def changer_statut(self, request, pk=None):
@@ -417,7 +358,12 @@ class CrmLeadViewSet(viewsets.ModelViewSet):
         nouveau_statut = request.data.get("statut")
         if not nouveau_statut:
             return Response({"error": "Paramètre 'statut' obligatoire"}, status=status.HTTP_400_BAD_REQUEST)
-        
+        if nouveau_statut not in CrmLead.STATUTS:
+            return Response(
+                {"error": f"Étape inconnue : {nouveau_statut} (attendu : {', '.join(CrmLead.STATUTS)})"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         ancien_statut = lead.statut
         lead.statut = nouveau_statut
         
@@ -435,7 +381,6 @@ class CrmLeadViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def stats(self, request):
-        check_and_seed_data()
         total_leads = CrmLead.objects.count()
         total_valeur = CrmLead.objects.aggregate(total=Sum("prime_estimee"))["total"] or 0
         gagnes = CrmLead.objects.filter(statut="Gagné")

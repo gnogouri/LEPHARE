@@ -15,6 +15,15 @@ class CrmLeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = CrmLead
         fields = "__all__"
+        # Référence attribuée par le serveur à la création (CrmLeadViewSet.perform_create)
+        read_only_fields = ("id_lead", "date_creation", "date_maj")
+        # « — À attribuer — » dans l'écran : un prospect peut ne pas encore avoir de commercial
+        extra_kwargs = {"commercial_attribue": {"allow_blank": True}}
+
+    def validate_statut(self, valeur):
+        if valeur not in CrmLead.STATUTS:
+            raise serializers.ValidationError(f"Étape inconnue (attendu : {', '.join(CrmLead.STATUTS)}).")
+        return valeur
 
 
 class CrmInteractionSerializer(serializers.ModelSerializer):

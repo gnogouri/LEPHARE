@@ -219,7 +219,7 @@ export const CatalogProductsPage = ({ initialTab = 'guarantees' }) => {
       render: (r) => <span className="badge badge-purple">{r.branche}</span>,
     },
     {
-      header: 'Nature / Caractère',
+      header: 'Nature',
       render: (r) => (
         <span style={{ fontSize: '0.8rem', fontWeight: 600, color: r.type.includes('Obligatoire') ? '#f43f5e' : 'var(--text-secondary)' }}>
           {r.type}
@@ -465,7 +465,7 @@ export const CatalogProductsPage = ({ initialTab = 'guarantees' }) => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Nature / Caractère</label>
+              <label className="form-label">Nature</label>
               <select
                 className="form-control"
                 value={newGuaranteeForm.type}

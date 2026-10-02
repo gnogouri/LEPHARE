@@ -4,7 +4,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { Shield, User, LogOut, Bell, Compass, Settings, Menu, Sun, Moon, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { dataStore } from '../../api/dataStore';
-import { authApi } from '../../api/endpoints';
+import { authApi, cashApi } from '../../api/endpoints';
 import { sortUniqueBy } from '../../utils/sortUtils';
 
 export const Navbar = ({ onToggleMobileSidebar }) => {
@@ -13,6 +13,17 @@ export const Navbar = ({ onToggleMobileSidebar }) => {
   const navigate = useNavigate();
 
   const [availableUsers, setAvailableUsers] = useState(() => dataStore.getUsers());
+  // Chèques de l'échéancier à déposer d'ici un mois ou échus, relus toutes les 10 minutes
+  const [alertesCheques, setAlertesCheques] = useState(0);
+  useEffect(() => {
+    let actif = true;
+    const charger = () => cashApi.getChequesAlertes()
+      .then((liste) => { if (actif) setAlertesCheques(Array.isArray(liste) ? liste.length : 0); })
+      .catch(() => {});
+    charger();
+    const minuterie = setInterval(charger, 10 * 60 * 1000);
+    return () => { actif = false; clearInterval(minuterie); };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -214,8 +225,13 @@ export const Navbar = ({ onToggleMobileSidebar }) => {
           )}
         </button>
 
-        {/* Notification Bell */}
+        {/* Cloche : chèques de l'échéancier à déposer (alerte un mois avant, rappel 15 jours après) */}
         <button
+          type="button"
+          onClick={() => navigate('/user/cheques')}
+          title={alertesCheques > 0
+            ? `${alertesCheques} chèque${alertesCheques > 1 ? 's' : ''} à déposer (échéancier)`
+            : 'Aucun chèque à déposer'}
           style={{
             position: 'relative',
             background: 'var(--bg-surface-elevated)',
@@ -232,21 +248,31 @@ export const Navbar = ({ onToggleMobileSidebar }) => {
           }}
         >
           <Bell size={15} />
-          <span
-            style={{
-              position: 'absolute',
-              top: '6px',
-              right: '6px',
-              width: '6px',
-              height: '6px',
-              borderRadius: '50%',
-              background: '#f43f5e',
-            }}
-          ></span>
+          {alertesCheques > 0 && (
+            <span
+              style={{
+                position: 'absolute',
+                top: '-4px',
+                right: '-4px',
+                minWidth: '16px',
+                height: '16px',
+                padding: '0 4px',
+                borderRadius: '9999px',
+                background: '#f43f5e',
+                color: '#fff',
+                fontSize: '0.62rem',
+                fontWeight: 700,
+                lineHeight: '16px',
+                textAlign: 'center',
+              }}
+            >
+              {alertesCheques}
+            </span>
+          )}
         </button>
 
         {/* Role & Habilitation Quick Switcher (Mode Démo & Audit Métier) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        <div className="nav-profil-switch" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           <select
             value={user?.username || ''}
             onChange={(e) => {

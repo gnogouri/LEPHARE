@@ -2,23 +2,60 @@ import React, { useState, useEffect } from 'react';
 import { DataTable } from '../../../components/common/DataTable';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
-import { dataStore } from '../../../api/dataStore';
-import { cashApi, contractApi } from '../../../api/endpoints';
+import { cashApi, contractApi, settingsApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
-import { CreditCard, Check, Banknote, Smartphone, Landmark, Receipt } from 'lucide-react';
+import { CreditCard, Check, Receipt } from 'lucide-react';
 import { formatDate } from '../../../utils/dateUtils';
+import { printRecuEncaissement } from '../../../utils/exportUtils';
+import {
+  ChampsReglement,
+  champsReglementApi,
+  modesProposes,
+  natureMode,
+  reglementVide,
+} from '../../../components/cash/ChampsReglement';
+
+// Date du jour au format du champ date (AAAA-MM-JJ), en heure locale
+const aujourdhui = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+// Quittance générée à la confirmation du devis (sp_confirmation_devis → sp_generation_quittance)
+const numeroQuittance = (contract) => contract?.raw?.idquittance?.numeroquittance || '';
+
+// Fenêtre du reçu ouverte au clic : ouverte après les appels API, le navigateur la bloquerait
+const ouvrirFenetreRecu = (message) => {
+  const fenetre = window.open('', '_blank');
+  if (fenetre) fenetre.document.write(`<p style="font-family:Arial;padding:20px;">${message}</p>`);
+  return fenetre;
+};
+
+// Message d'erreur de /api/enregistrementencaissement : { erreur, details } ou erreurs de validation
+const messageErreurEncaissement = (err) => {
+  const d = err.response?.data;
+  if (d?.erreur) return d.details ? `${d.erreur} ${d.details}` : d.erreur;
+  if (d?.detail) return d.detail;
+  if (d && typeof d === 'object') {
+    const premier = Object.values(d).flat()[0];
+    if (typeof premier === 'string') return premier;
+  }
+  return "L'encaissement n'a pas pu être enregistré. Veuillez réessayer.";
+};
 
 export const CashCollectionPage = () => {
   const [contracts, setContracts] = useState([]);
   const [selectedContract, setSelectedContract] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isQuittanceModalOpen, setIsQuittanceModalOpen] = useState(false);
-  const [currentQuittance, setCurrentQuittance] = useState(null);
+  const [modes, setModes] = useState([]);
+  const [banques, setBanques] = useState([]);
   const { success, error: toastError } = useToast();
 
   const loadContracts = async () => {
     try {
-      const data = await contractApi.getContracts();
+      // Contrats dont la quittance reste à encaisser, derniers confirmés en tête
+      const data = await contractApi.getContracts({ a_encaisser: 1 });
       if (Array.isArray(data)) {
         setContracts(data);
       }
@@ -29,89 +66,79 @@ export const CashCollectionPage = () => {
 
   useEffect(() => {
     loadContracts();
+    Promise.all([settingsApi.getModesEncaissement(), settingsApi.getBanques()])
+      .then(([listeModes, listeBanques]) => {
+        setModes(modesProposes(listeModes));
+        setBanques(Array.isArray(listeBanques) ? listeBanques : []);
+      })
+      .catch((err) => console.error('Erreur chargement modes de paiement / banques :', err));
   }, []);
 
   // Payment Form State
-  const [modePaiement, setModePaiement] = useState('ESPECES');
   const [montantEncaisse, setMontantEncaisse] = useState(0);
-  const [banque, setBanque] = useState('SGBCI');
-  const [numeroCheque, setNumeroCheque] = useState('');
-  const [numeroTelephoneMobile, setNumeroTelephoneMobile] = useState('');
+  const [dateEncaissement, setDateEncaissement] = useState(aujourdhui());
+  const [reglement, setReglement] = useState(reglementVide());
+  const [enregistrement, setEnregistrement] = useState(false);
+  const changerReglement = (champ, valeur) => setReglement((prev) => ({ ...prev, [champ]: valeur }));
 
   const handleOpenPayment = (contract) => {
     setSelectedContract(contract);
     const reste = contract.prime_totale - (contract.montant_encaisse || 0);
     setMontantEncaisse(reste > 0 ? reste : contract.prime_totale);
+    const especes = modes.find((m) => natureMode(m).especes);
+    setReglement({
+      ...reglementVide(String(contract.client_nom || '').slice(0, 50)),
+      idMode: String((especes || modes[0])?.idmodeencaissement || ''),
+    });
+    setDateEncaissement(aujourdhui());
     setIsModalOpen(true);
   };
 
-  const handleShowQuittance = (contract) => {
-    const quitData = {
-      numero_quittance: `QUIT-CIMA-2026-${String(contract.id).padStart(3, '0')}`,
-      police_num: contract.numeropolice,
-      souscripteur: contract.client_nom,
-      compagnie: contract.compagnie,
-      branche: contract.produit,
-      montant_encaisse: contract.montant_encaisse || contract.prime_totale,
-      mode_paiement: 'VIREMENT / CHÈQUE / ESPÈCES',
-      reference_paiement: 'RÈGLEMENT ENREGISTRÉ CONFORME',
-      date_encaissement: new Date().toLocaleDateString('fr-FR') + ' à ' + new Date().toLocaleTimeString('fr-FR'),
-      mention_legale: "Conformément à l'Article 13 du Code des Assurances CIMA (« Pas de prime, pas d'assurance »), la présente quittance atteste du paiement effectif de la prime et confère validité immédiate aux garanties souscrites.",
-      emetteur: 'Caisse Centrale LE PHARE'
-    };
-    setCurrentQuittance(quitData);
-    setIsQuittanceModalOpen(true);
+  // Réimpression du reçu du dernier règlement de la quittance
+  const handleShowQuittance = async (contract) => {
+    const fenetre = ouvrirFenetreRecu('Préparation de la quittance…');
+    try {
+      const reglement = await cashApi.getDernierReglementQuittance(numeroQuittance(contract));
+      await printRecuEncaissement(reglement?.iddetailencaissement, fenetre);
+    } catch (err) {
+      console.error('Erreur recherche du dernier règlement :', err);
+      if (fenetre) fenetre.close();
+      toastError('Le dernier règlement de cette quittance est introuvable.');
+    }
   };
 
   const handleSavePayment = async (e) => {
     e.preventDefault();
-    if (!selectedContract) return;
-
-    const reference =
-      modePaiement === 'CHEQUE'
-        ? (numeroCheque || `CHQ-${banque}`)
-        : modePaiement === 'DISTRIPAY'
-        ? (numeroTelephoneMobile || 'DISTRIPAY-MOBILE')
-        : 'Caisse Espèces Centrale';
-
-    const result = dataStore.savePayment({
-      contractId: selectedContract.id,
-      numeropolice: selectedContract.numeropolice,
-      montant: montantEncaisse,
-      modePaiement,
-      reference,
-      banque,
-      emetteur: 'Caisse Centrale LE PHARE',
-    });
-
-    const modeCodeMap = { ESPECES: 1, CHEQUE: 2, VIREMENT: 3, DISTRIPAY: 4 };
-    const quitNum = `QUIT-${selectedContract.numeropolice || selectedContract.id}`;
-
-    try {
-      await cashApi.collectPremium({
-        mode_encaissement: modeCodeMap[modePaiement] || 1,
-        date_encaissement: new Date().toISOString().split('T')[0],
-        banque: 1,
-        montant_total: Number(montantEncaisse),
-        numero_cheque: modePaiement === 'CHEQUE' ? numeroCheque : null,
-        reference_encaissement: reference,
-        nom_emetteur: selectedContract.client_nom || 'Souscripteur',
-        liste_quittance: [
-          {
-            numero_quittance: quitNum,
-            montant_encaisse: Number(montantEncaisse),
-          },
-        ],
-      });
-    } catch (err) {
-      console.warn('API collect premium fallback to dataStore');
+    if (!selectedContract || enregistrement) return;
+    const quittance = numeroQuittance(selectedContract);
+    if (!quittance) {
+      toastError("Ce contrat n'a pas de quittance : encaissement impossible.");
+      return;
     }
 
-    setContracts(dataStore.getContracts());
-    setIsModalOpen(false);
-    setCurrentQuittance(result.quittance);
-    setIsQuittanceModalOpen(true);
-    success(`Règlement de ${montantEncaisse.toLocaleString('fr-FR')} FCFA validé ! Quittance CIMA ${result.quittance.numero_quittance} enregistrée.`);
+    const fenetre = ouvrirFenetreRecu("Enregistrement de l'encaissement…");
+    setEnregistrement(true);
+    try {
+      const [annee, mois, jour] = dateEncaissement.split('-');
+      const mode = modes.find((m) => String(m.idmodeencaissement) === String(reglement.idMode));
+      const res = await cashApi.collectPremium({
+        ...champsReglementApi(reglement, mode),
+        date_encaissement: `${jour}-${mois}-${annee}`,
+        montant_total: Number(montantEncaisse),
+        liste_quittance: [{ numero_quittance: quittance, montant_encaissement: Number(montantEncaisse) }],
+      });
+      setIsModalOpen(false);
+      loadContracts();
+      success(res.data?.message || `Règlement de ${Number(montantEncaisse).toLocaleString('fr-FR')} FCFA enregistré.`);
+      const [ligne] = await cashApi.getDetailsEncaissement(res.data?.id_encaissement);
+      await printRecuEncaissement(ligne?.iddetailencaissement, fenetre);
+    } catch (err) {
+      console.error('Erreur encaissement :', err.response?.data || err);
+      if (fenetre) fenetre.close();
+      toastError(messageErreurEncaissement(err));
+    } finally {
+      setEnregistrement(false);
+    }
   };
 
   const columns = [
@@ -122,6 +149,11 @@ export const CashCollectionPage = () => {
     },
     { header: 'Souscripteur', accessor: 'client_nom' },
     { header: 'Compagnie', accessor: 'compagnie' },
+    {
+      // Date réelle du contrat en base : normalizeContrat met le 01/01/2026 quand elle manque
+      header: "Date d'émission",
+      render: (row) => formatDate(row.raw ? (row.raw.dateemission || row.raw.date_emission) : row.date_emission),
+    },
     {
       header: 'Prime Totale',
       render: (row) => <span>{row.prime_totale.toLocaleString('fr-FR')} F</span>,
@@ -161,7 +193,7 @@ export const CashCollectionPage = () => {
             <button
               className="btn btn-secondary"
               style={{ padding: '0.35rem 0.55rem', fontSize: '0.75rem' }}
-              title="Afficher la Quittance Officielle CIMA"
+              title="Réimprimer la quittance du dernier règlement"
               onClick={() => handleShowQuittance(row)}
             >
               <Receipt size={14} /> Quittance
@@ -177,10 +209,10 @@ export const CashCollectionPage = () => {
       <div>
         <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
           <CreditCard size={26} color="#10b981" />
-          Caisse & Encaissement des Primes
+          Encaissement des Primes
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-          Enregistrement des règlements (espèces, chèques, virements, Wave / Orange Money DistriPay) et émission des reçus.
+          Enregistrement des règlements (espèces, chèques, virements, Wave / Orange Money DistriPay) et émission des quittances.
         </p>
       </div>
 
@@ -245,237 +277,54 @@ export const CashCollectionPage = () => {
                 <span>Assuré: <strong>{selectedContract.client_nom}</strong></span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', marginTop: '0.35rem' }}>
+                <span>Quittance: <strong>{numeroQuittance(selectedContract) || '—'}</strong></span>
                 <span>Prime globale: {selectedContract.prime_totale.toLocaleString('fr-FR')} F</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: '0.875rem', marginTop: '0.35rem' }}>
                 <span>Reste dû: <strong style={{ color: '#fb7185' }}>{(selectedContract.prime_totale - selectedContract.montant_encaisse).toLocaleString('fr-FR')} F</strong></span>
               </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label">Montant perçu (FCFA)</label>
-              <input
-                type="number"
-                className="form-control"
-                required
-                value={montantEncaisse}
-                onChange={(e) => setMontantEncaisse(parseInt(e.target.value) || 0)}
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Mode de Règlement</label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.5rem' }}>
-                {[
-                  { id: 'ESPECES', label: 'Espèces', icon: Banknote },
-                  { id: 'CHEQUE', label: 'Chèque', icon: Receipt },
-                  { id: 'VIREMENT', label: 'Virement', icon: Landmark },
-                  { id: 'DISTRIPAY', label: 'Mobile Money', icon: Smartphone },
-                ].map((item) => {
-                  const Icon = item.icon;
-                  const isSel = modePaiement === item.id;
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => setModePaiement(item.id)}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '0.35rem',
-                        padding: '0.65rem 0.25rem',
-                        borderRadius: 'var(--radius-md)',
-                        background: isSel ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.02)',
-                        border: `1px solid ${isSel ? '#10b981' : 'var(--border-subtle)'}`,
-                        cursor: 'pointer',
-                        textAlign: 'center',
-                        minHeight: '60px',
-                      }}
-                    >
-                      <Icon size={18} color={isSel ? '#34d399' : 'var(--text-muted)'} />
-                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: isSel ? '#fff' : 'var(--text-secondary)' }}>
-                        {item.label}
-                      </span>
-                    </div>
-                  );
-                })}
+            <div className="responsive-form-row">
+              <div className="form-group">
+                <label className="form-label">Montant perçu (FCFA)</label>
+                <input
+                  type="number"
+                  className="form-control"
+                  required
+                  min="1"
+                  value={montantEncaisse}
+                  onChange={(e) => setMontantEncaisse(parseInt(e.target.value) || 0)}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Date de paiement</label>
+                <input
+                  type="date"
+                  className="form-control"
+                  required
+                  value={dateEncaissement}
+                  onChange={(e) => setDateEncaissement(e.target.value)}
+                />
               </div>
             </div>
 
-            {modePaiement === 'CHEQUE' && (
-              <div className="responsive-form-row" style={{ marginTop: '1rem' }}>
-                <div className="form-group">
-                  <label className="form-label">Banque Émettrice</label>
-                  <select className="form-control" value={banque} onChange={(e) => setBanque(e.target.value)}>
-                    <option value="BICICI">BICICI</option>
-                    <option value="BOA">BOA</option>
-                    <option value="ECOBANK">ECOBANK</option>
-                    <option value="NSIA BANQUE">NSIA BANQUE</option>
-                    <option value="SGBCI">SGBCI</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Numéro du Chèque</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    required
-                    placeholder="Ex: CHQ-994120"
-                    value={numeroCheque}
-                    onChange={(e) => setNumeroCheque(e.target.value)}
-                  />
-                </div>
-              </div>
-            )}
-
-            {modePaiement === 'DISTRIPAY' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1rem' }}>
-                <div className="form-group">
-                  <label className="form-label">Numéro Mobile Money (Wave / Orange / MTN)</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder="+225 07..."
-                    value={numeroTelephoneMobile}
-                    onChange={(e) => setNumeroTelephoneMobile(e.target.value)}
-                  />
-                </div>
-                <div
-                  style={{
-                    padding: '0.75rem',
-                    background: 'rgba(59, 130, 246, 0.08)',
-                    border: '1px solid rgba(59, 130, 246, 0.25)',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: '0.78rem',
-                    color: '#93c5fd',
-                  }}
-                >
-                  ℹ️ <strong>Passerelle Distripay Mobile Money :</strong> Clés marchandes en phase d'activation finale (DISTRIPAY_ENABLED=0). L'encaissement est enregistré et certifié au niveau de la caisse avec le numéro de téléphone et la quittance officielle CIMA.
-                </div>
-              </div>
-            )}
+            <ChampsReglement modes={modes} banques={banques} valeurs={reglement} onChange={changerReglement} />
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setIsModalOpen(false)}>
                 Annuler
               </button>
-              <button type="submit" className="btn btn-primary" style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}>
-                <Check size={18} /> Valider l'Encaissement
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={enregistrement}
+                style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}
+              >
+                <Check size={18} /> {enregistrement ? 'Enregistrement…' : "Valider l'Encaissement"}
               </button>
             </div>
           </form>
-        )}
-      </Modal>
-
-      {/* Official CIMA Quittance Modal */}
-      <Modal
-        isOpen={isQuittanceModalOpen}
-        onClose={() => setIsQuittanceModalOpen(false)}
-        title="Quittance d'Encaissement CIMA Officielle (Art. 13)"
-        subtitle="Document probant attestant de la validité de la couverture d'assurance."
-        maxWidth="600px"
-      >
-        {currentQuittance && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div
-              style={{
-                border: '2px solid rgba(16, 185, 129, 0.4)',
-                background: 'rgba(15, 23, 42, 0.6)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '1.5rem',
-                position: 'relative',
-              }}
-            >
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: '1.1rem', color: 'var(--text-primary)', letterSpacing: '0.05em' }}>
-                    LE PHARE ASSURANCES
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Courtage & Gestion Déléguée CIMA • Agrément N° 021/MEF/DGTCP/DA
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <span className="badge badge-success">{currentQuittance.numero_quittance}</span>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                    {formatDate(currentQuittance.date_encaissement)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Body */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', margin: '1.25rem 0', fontSize: '0.85rem' }}>
-                <div>
-                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Souscripteur / Assuré</span>
-                  <strong style={{ color: 'var(--text-primary)' }}>{currentQuittance.souscripteur}</strong>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>N° Police d'Assurance</span>
-                  <strong style={{ color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>{currentQuittance.police_num}</strong>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Compagnie Mandante</span>
-                  <strong style={{ color: '#34d399' }}>{currentQuittance.compagnie}</strong>
-                </div>
-                <div>
-                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Mode de Règlement</span>
-                  <strong>{currentQuittance.mode_paiement}</strong>
-                </div>
-              </div>
-
-              {/* Amount */}
-              <div
-                style={{
-                  background: 'rgba(16, 185, 129, 0.1)',
-                  padding: '1rem',
-                  borderRadius: 'var(--radius-md)',
-                  textAlign: 'center',
-                  border: '1px dashed rgba(16, 185, 129, 0.4)',
-                }}
-              >
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>MONTANT ENCAISSÉ ET VALIDÉ</div>
-                <div style={{ fontSize: '1.6rem', fontWeight: 900, color: '#34d399', fontFamily: 'var(--font-mono)' }}>
-                  {Number(currentQuittance.montant_encaisse).toLocaleString('fr-FR')} FCFA
-                </div>
-              </div>
-
-              {/* Legal Notice */}
-              <div
-                style={{
-                  marginTop: '1rem',
-                  padding: '0.75rem',
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '0.725rem',
-                  color: 'var(--text-muted)',
-                  fontStyle: 'italic',
-                  lineHeight: '1.4',
-                }}
-              >
-                {currentQuittance.mention_legale}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                <span>Émetteur : {currentQuittance.emetteur}</span>
-                <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Cachet & Horodatage Numérique Certifiés</span>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setIsQuittanceModalOpen(false)}>
-                Fermer
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  window.print();
-                }}
-              >
-                <Receipt size={16} /> Imprimer Quittance CIMA
-              </button>
-            </div>
-          </div>
         )}
       </Modal>
     </div>

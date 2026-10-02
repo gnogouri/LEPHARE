@@ -1827,11 +1827,13 @@ class Encaissement(models.Model):
         db_column="idbanque",
         on_delete=models.SET_NULL,
     )
+    # Numéro du chèque, du virement ou de la traite selon le mode
     numerocheque = models.CharField(
-        max_length=20, blank=True, null=True, db_column="numerocheque"
+        max_length=50, blank=True, null=True, db_column="numerocheque"
     )
+    # Référence de la compensation
     compte_compensation = models.CharField(
-        max_length=10, blank=True, null=True, db_column="compte_compensation"
+        max_length=50, blank=True, null=True, db_column="compte_compensation"
     )
     utilisateur = models.ForeignKey(
         User,
@@ -1850,7 +1852,7 @@ class Encaissement(models.Model):
         max_length=50, blank=True, null=True, db_column="nomannulation"
     )
     motifannulation = models.CharField(
-        max_length=60, blank=True, null=True, db_column="motifannulation"
+        max_length=255, blank=True, null=True, db_column="motifannulation"
     )
     datesaisieannulation = models.DateTimeField(
         blank=True, null=True, db_column="datesaisieannulation"
@@ -1865,6 +1867,29 @@ class Encaissement(models.Model):
         default=uuid.uuid4,
         editable=False,
         null=True,
+    )
+    # Compléments de saisie : sp_enregistrement_encaissement ne les connaît pas, ils sont
+    # écrits par save_premium_collection juste après elle (même transaction)
+    numero_bordereau = models.CharField(
+        max_length=50, blank=True, null=True, db_column="numerobordereau"
+    )  # Espèces
+    numero_recu_operateur = models.CharField(
+        max_length=50, blank=True, null=True, db_column="numerorecuoperateur"
+    )  # Paiement mobile : reçu remis par l'opérateur
+    motif_compensation = models.CharField(
+        max_length=255, blank=True, null=True, db_column="motifcompensation"
+    )
+    # Réencaissement d'un chèque impayé : références saisies et chèque concerné
+    reference_reencaissement = models.CharField(
+        max_length=100, blank=True, null=True, db_column="referencereencaissement"
+    )
+    cheque_impaye = models.ForeignKey(
+        "Cheque",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reencaissements",
+        db_column="idchequeimpaye",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -3723,6 +3748,49 @@ class Cheque(models.Model):
     )
     date_saisie = models.DateTimeField(
         auto_now_add=True, db_column="datesaisie"
+    )
+
+    class Statut(models.TextChoices):
+        # Chèque remis d'avance par un client (échéancier), à déposer à sa date d'échéance
+        A_DEPOSER = "A_DEPOSER", "À déposer"
+        ENCAISSE = "ENCAISSE", "Encaissé"
+        # Revenu impayé : ses encaissements ont été annulés (décaissement)
+        IMPAYE = "IMPAYE", "Impayé"
+        REENCAISSE = "REENCAISSE", "Réencaissé"
+
+    statut = models.CharField(
+        max_length=12,
+        choices=Statut.choices,
+        default=Statut.ENCAISSE,
+        db_column="statut",
+    )
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="cheques",
+        db_column="idclient",
+    )
+    # Date à laquelle le chèque doit être déposé (alerte 1 mois avant, rappel 15 jours après)
+    date_echeance = models.DateField(null=True, blank=True, db_column="dateecheance")
+    date_depot = models.DateField(null=True, blank=True, db_column="datedepot")
+    observation = models.CharField(
+        max_length=255, null=True, blank=True, db_column="observation"
+    )
+    motif_decaissement = models.CharField(
+        max_length=255, null=True, blank=True, db_column="motifdecaissement"
+    )
+    date_decaissement = models.DateField(
+        null=True, blank=True, db_column="datedecaissement"
+    )
+    # Total des encaissements annulés au décaissement, à réencaisser
+    montant_impaye = models.DecimalField(
+        max_digits=19,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        db_column="montantimpaye",
     )
 
     class Meta:

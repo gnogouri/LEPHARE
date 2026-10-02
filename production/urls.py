@@ -1,8 +1,20 @@
 from django.urls import include, path
 from rest_framework import routers
 
-from .views_devis_ia import enregistrer_devis_ia_complet
+from .views_devis_ia import (
+    enregistrer_devis_ia_complet,
+    garanties_devis_ia,
+    taux_taxe_devis_ia,
+)
 from .views_devis_risques_divers import lire_devis_risques_divers
+from .views_devis_voyage import enregistrer_devis_voyage_vue, lire_devis_voyage
+from .views_transport_guce import (
+    analyser_bordereau,
+    certificats_transport,
+    exporter_bordereau,
+    importer_bordereau,
+    liste_bordereaux,
+)
 from .importation_views import (
     ImportAssuresAPIView,
     ImportsHistoriqueDetailAPIView,
@@ -24,7 +36,12 @@ from .views import (  # cancel_premium_collection,
     CertificatTransportView,
     CheckChequeStatusView,
     ChequeDetailOperationsView,
+    ChequeAlertesView,
+    ChequeDecaissementView,
+    ChequeEcheancierView,
     ChequeListView,
+    ChequeQuittancesView,
+    ChequeSuppressionView,
     ConsolidationDevisView,
     ContractListView,
     ContratDetailInfoView,
@@ -48,6 +65,7 @@ from .views import (  # cancel_premium_collection,
     ExtendedQuotationInfoView,
     QuotationCountsView,
     GarantieContratView,
+    GarantiesVehiculeFlotteAPIView,
     GarantieSouscriteContratView,
     GarantieSouscriteDevisView,
     HistoriqueImpositionsView,
@@ -216,6 +234,39 @@ urlpatterns = [
         r"devisia/enregistrement/",
         enregistrer_devis_ia_complet,
         name="enregistrement_devis_ia_complet",
+    ),
+    # Taux de taxe d'une offre IA (taxe des primes imposées affichée comme la base la calcule)
+    path(
+        r"devisia/taux-taxe/",
+        taux_taxe_devis_ia,
+        name="taux_taxe_devis_ia",
+    ),
+    # Garanties enregistrées de chaque assuré d'un devis IA
+    path(
+        r"devisia/<int:iddevis>/garanties/",
+        garanties_devis_ia,
+        name="garanties_devis_ia",
+    ),
+    # Transport : bordereaux GUCE (analyse sans écriture, import tout ou rien, consultation, export)
+    path(r"transport/guce/analyse/", analyser_bordereau, name="transport_guce_analyse"),
+    path(r"transport/guce/import/", importer_bordereau, name="transport_guce_import"),
+    path(r"transport/guce/bordereaux/", liste_bordereaux, name="transport_guce_bordereaux"),
+    path(
+        r"transport/guce/bordereaux/<int:id_importation>/excel/",
+        exporter_bordereau,
+        name="transport_guce_bordereau_excel",
+    ),
+    path(r"transport/certificats/", certificats_transport, name="transport_certificats"),
+    # Devis Voyage (création / « Modifier ») et relecture complète
+    path(
+        r"devisvoyage/enregistrement/",
+        enregistrer_devis_voyage_vue,
+        name="enregistrement_devis_voyage_complet",
+    ),
+    path(
+        r"devisvoyage/<int:iddevis>/",
+        lire_devis_voyage,
+        name="lecture_devis_voyage",
     ),
     path(
         r"enregistrementdevisvoyage",
@@ -474,6 +525,11 @@ urlpatterns = [
         name="maj_recap_primes",
     ),
     path(
+        "garantiesvehiculeflotte/",
+        GarantiesVehiculeFlotteAPIView.as_view(),
+        name="garanties_vehicule_flotte",
+    ),
+    path(
         "listecontratperiode/",
         ContractListView.as_view(),
         name="liste_contrat_periode",
@@ -635,6 +691,22 @@ urlpatterns = [
     ),
     # Endpoint 1 : Liste filtrée des chèques
     path("cheques/", ChequeListView.as_view(), name="cheque-liste"),
+    # Échéancier : chèques à déposer d'ici un mois (alertes), saisie d'un échéancier
+    path("cheques/alertes/", ChequeAlertesView.as_view(), name="cheque-alertes"),
+    path("cheques/echeancier/", ChequeEcheancierView.as_view(), name="cheque-echeancier"),
+    # Chèque à déposer retiré de l'échéancier (DELETE)
+    path("cheques/<int:id_cheque>/", ChequeSuppressionView.as_view(), name="cheque-suppression"),
+    # Chèque impayé : décaissement, puis quittances à réencaisser
+    path(
+        "cheques/<int:id_cheque>/decaissement/",
+        ChequeDecaissementView.as_view(),
+        name="cheque-decaissement",
+    ),
+    path(
+        "cheques/<int:id_cheque>/quittances/",
+        ChequeQuittancesView.as_view(),
+        name="cheque-quittances",
+    ),
     # Endpoint 2 : Détails et opérations d'un chèque
     path(
         "cheques/<int:id_cheque>/operations/",

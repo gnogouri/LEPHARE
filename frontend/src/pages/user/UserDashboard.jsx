@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 
 import { isRegistryQuote } from '../../utils/quoteRegistry';
+import { moduleActif, TITRE_MODULE_INACTIF } from '../../utils/modulesActifs';
 import { formatDate } from '../../utils/dateUtils';
 export const UserDashboard = () => {
   const navigate = useNavigate();
@@ -121,7 +122,12 @@ export const UserDashboard = () => {
             <Car size={16} />
             <span>Nouveau Devis Auto</span>
           </button>
-          <button className="btn btn-secondary" onClick={() => navigate('/user/quotes/mrh')}>
+          <button
+            className={`btn btn-secondary${moduleActif('mrh') ? '' : ' module-ferme'}`}
+            onClick={() => navigate('/user/quotes/mrh')}
+            disabled={!moduleActif('mrh')}
+            title={moduleActif('mrh') ? undefined : TITRE_MODULE_INACTIF}
+          >
             <Home size={16} />
             <span>Devis MRH</span>
           </button>
@@ -178,7 +184,7 @@ export const UserDashboard = () => {
         <div className="glass-panel" style={{ padding: '1.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
             <div>
-              <h2 className="title-md" style={{ color: '#fff' }}>Dernières Propositions & Devis</h2>
+              <h2 className="title-md" style={{ color: '#fff' }}>Derniers Devis</h2>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Propositions prêtes à être converties en police</p>
             </div>
             <button

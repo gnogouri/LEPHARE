@@ -1,5 +1,17 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
+
+from django.utils import timezone
+
+
+def date_emission_du_jour() -> date:
+    """
+    Date d'émission de tout document (devis, contrat, avenant) : elle n'est jamais saisie,
+    c'est toujours la date du jour de l'enregistrement (fuseau du serveur, UTC = heure d'Abidjan).
+    La date éventuellement envoyée par l'écran est ignorée.
+    """
+    return timezone.localdate()
+
 
 def parse_date_string(date_str: str) -> Optional[datetime]:
     """

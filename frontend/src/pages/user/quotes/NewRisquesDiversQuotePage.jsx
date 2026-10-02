@@ -7,7 +7,8 @@ import { ArrowLeft, ArrowRight, Check, Plus, Shield, AlertTriangle } from 'lucid
 import { ViewQuoteModal } from './ViewQuoteModal';
 import { QuickAddClientModal } from '../clients/QuickAddClientModal';
 import { TermeContratSelect } from '../../../components/common/TermeContratSelect';
-import { ID_TERME_PAR_DEFAUT, idTermeValide } from '../../../utils/termesContrat';
+import { DureeContratSelect } from '../../../components/common/DureeContratSelect';
+import { ID_TERME_PAR_DEFAUT, dureeSelonTerme, termeEtDureeEnregistres } from '../../../utils/termesContrat';
 import { sortUniqueBy, trierParLibelle } from '../../../utils/sortUtils';
 import { AmountInput } from '../../../components/common/AmountInput';
 
@@ -18,14 +19,6 @@ const PRODUITS = {
 };
 // Offre RC chef de famille MINENE : primes calculées par la base, n° de police Santé connexe exigé
 const ID_OFFRE_MINENE = 67;
-
-const DUREES = [
-  { id: 1, duree: '1 Mois' },
-  { id: 2, duree: '3 Mois' },
-  { id: 3, duree: '6 Mois' },
-  { id: 4, duree: '12 Mois (Annuel)' },
-  { id: 5, duree: 'Divers / Période Spécifique' },
-];
 
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
 const aujourdhui = () => new Date().toISOString().split('T')[0];
@@ -102,7 +95,8 @@ export const NewRisquesDiversQuotePage = ({ produit }) => {
   const [idOffre, setIdOffre] = useState(0);
   const [dureeId, setDureeId] = useState(4);
   const [termeId, setTermeId] = useState(ID_TERME_PAR_DEFAUT);
-  const [dateEmission, setDateEmission] = useState(aujourdhui);
+  // Date d'émission : toujours la date du jour, jamais saisie (le serveur l'impose aussi)
+  const dateEmission = aujourdhui();
   const [dateEffet, setDateEffet] = useState(aujourdhui);
   const [expirationPersonnalisee, setExpirationPersonnalisee] = useState('');
   const [reduction, setReduction] = useState(0);
@@ -286,10 +280,10 @@ export const NewRisquesDiversQuotePage = ({ produit }) => {
         });
         setIdTarif(Number(ligne.IdTarif) || 0);
         setIdOffre(Number(ligne.IdOffre) || 0);
-        const duree = [1, 2, 3, 4, 5].includes(Number(raw.idduree)) ? Number(raw.idduree) : 5;
-        setDureeId(duree);
-        setTermeId(idTermeValide(raw.idterme));
-        setDateEmission(jour(raw.dateemission) || aujourdhui());
+        // Durée libre et terme « Autre » vont ensemble (anciens devis « Divers » compris)
+        const charge = termeEtDureeEnregistres(raw.idterme, raw.idduree);
+        setDureeId(charge.dureeId);
+        setTermeId(charge.termeId);
         setDateEffet(jour(raw.dateeffet) || aujourdhui());
         setExpirationPersonnalisee(jour(raw.dateexpiration));
         setReduction(Number(ligne.TauxReduction) || 0);
@@ -381,6 +375,14 @@ export const NewRisquesDiversQuotePage = ({ produit }) => {
       return;
     }
     if (!souscripteurId) { toastError('Choisissez le souscripteur.'); setStep(3); return; }
+    // Nom tapé dans la recherche sans cliquer sur un client de la liste : l'ancien souscripteur
+    // resterait celui du devis
+    const souscripteurChoisi = clients.find((c) => String(c.id) === String(souscripteurId));
+    if (souscripteurChoisi && rechercheSouscripteur.trim() !== (souscripteurChoisi.nomcomplet || '').trim()) {
+      toastError('Le souscripteur n\'a pas été choisi dans la liste : cliquez sur le client voulu sous le champ de recherche.');
+      setStep(3);
+      return;
+    }
 
     const payload = {
       IdIntermediaire: 1,
@@ -605,17 +607,22 @@ export const NewRisquesDiversQuotePage = ({ produit }) => {
             </div>
             <div className="form-group">
               <label className="form-label">Terme du contrat</label>
-              <TermeContratSelect value={termeId} onChange={setTermeId} />
+              <TermeContratSelect
+                value={termeId}
+                onChange={(id) => {
+                  setTermeId(id);
+                  // « Autre » ouvre la durée libre (date d'expiration saisie)
+                  setDureeId((d) => dureeSelonTerme(id, d));
+                }}
+              />
             </div>
             <div className="form-group">
               <label className="form-label">Durée du contrat</label>
-              <select className="form-control" value={dureeId} onChange={(e) => setDureeId(Number(e.target.value))}>
-                {DUREES.map((d) => (<option key={d.id} value={d.id}>{d.duree}</option>))}
-              </select>
+              <DureeContratSelect value={dureeId} onChange={setDureeId} />
             </div>
             <div className="form-group">
               <label className="form-label">Date d'émission</label>
-              <input type="date" className="form-control" value={dateEmission} onChange={(e) => setDateEmission(e.target.value)} />
+              <input type="date" className="form-control" value={dateEmission} readOnly disabled title="Date du jour, non modifiable" />
             </div>
             <div className="form-group">
               <label className="form-label">Date d'effet (* requis)</label>

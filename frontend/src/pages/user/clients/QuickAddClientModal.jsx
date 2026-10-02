@@ -34,8 +34,6 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
     villes: [],
     professions: [],
     secteurs: [],
-    typesSouscripteur: [],
-    typesAssure: [],
   });
 
   useEffect(() => {
@@ -46,16 +44,12 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
         configRefApi.getVilles().catch(() => []),
         configRefApi.getProfessions().catch(() => []),
         configRefApi.getSecteursActivite().catch(() => []),
-        configRefApi.getTypesSouscripteur().catch(() => []),
-        configRefApi.getTypesAssure().catch(() => []),
-      ]).then(([qualites, villes, professions, secteurs, typesSouscripteur, typesAssure]) => {
+      ]).then(([qualites, villes, professions, secteurs]) => {
         setRefData({
           qualites: qualites || [],
           villes: villes || [],
           professions: professions || [],
           secteurs: secteurs || [],
-          typesSouscripteur: typesSouscripteur || [],
-          typesAssure: typesAssure || [],
         });
       });
     }
@@ -63,7 +57,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
 
   // Formulaire complet exhaustif (standards stdclient)
   const [formData, setFormData] = useState({
-    // Étape 1 : État Civil & Identité
+    // Étape 1 : Identité
     typeclient: 'Particulier',
     Particulier: 'V',
     IdQualite: 1,
@@ -77,7 +71,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
     Nationalite: 'Ivoirienne',
     SituationMatrimoniale: 'Célibataire',
 
-    // Étape 2 : Coordonnées & Contact
+    // Étape 2 : Coordonnées
     telephone: '',
     Mobile: '',
     email: '',
@@ -88,7 +82,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
     Commune: '',
     Quartier: '',
 
-    // Étape 3 : Activité & Entreprise
+    // Étape 3 : Domaine d'activité
     IdProfession: '',
     profession: '',
     IdSecteurActivite: '',
@@ -99,11 +93,14 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
     NomContact: '',
     Fonction: '',
 
-    // Étape 4 : Courtage, CIMA & Banque
+    // Types souscripteur / assuré (1 = personne physique, 2 = personne morale) déduits du type
+    // de personne choisi à l'étape 1 ; VIP et statut par défaut
     idtypeclient: 1,
     idtypeassure: 1,
     Vip: 'N',
     Statut: 'V',
+
+    // Étape 4 : Banque & Fiscalité
     Rib: '',
     NumeroCompte: '',
     ExonereDeTaxes: false,
@@ -113,10 +110,10 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
   const isEntreprise = formData.typeclient === 'Entreprise';
 
   const steps = [
-    { id: 1, title: '1. État Civil & Identité' },
-    { id: 2, title: '2. Coordonnées & Adresse' },
-    { id: 3, title: '3. Activité & Entreprise' },
-    { id: 4, title: '4. CIMA & Banque' },
+    { id: 1, title: '1. Identité' },
+    { id: 2, title: '2. Coordonnées' },
+    { id: 3, title: "3. Domaine d'activité" },
+    { id: 4, title: '4. Banque & Fiscalité' },
   ];
 
   const handleNext = (e) => {
@@ -177,7 +174,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
         Ville: selectedVille ? selectedVille.Libelle : (formData.ville || 'Abidjan'),
         profession: selectedProf ? selectedProf.Libelle : (formData.profession || (isEntreprise ? 'Entreprise' : 'Cadre / Salarié')),
         libelleprofession: selectedProf ? selectedProf.Libelle : (formData.profession || (isEntreprise ? 'Entreprise' : 'Cadre / Salarié')),
-        secteur_activite: selectedSecteur ? selectedSecteur.LibelleSecteurActivite : '',
+        secteur_activite: selectedSecteur ? (selectedSecteur.Libelle || selectedSecteur.LibelleSecteurActivite) : '',
         telephone: formData.telephone.trim(),
         Telephone: formData.telephone.trim(),
         Mobile: formData.Mobile.trim() || formData.telephone.trim(),
@@ -230,7 +227,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Création Complète d'un Client Souscripteur (Parcours Multi-Étapes CIMA)"
+      title="Enregistrement d'un Nouveau Client"
       maxWidth="780px"
     >
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -255,7 +252,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
           ))}
         </div>
 
-        {/* ÉTAPE 1 : ÉTAT CIVIL & IDENTITÉ */}
+        {/* ÉTAPE 1 : IDENTITÉ */}
         {step === 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div className="form-group">
@@ -278,11 +275,11 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
                     type="radio"
                     name="modalQuickType"
                     checked={!isEntreprise}
-                    onChange={() => setFormData({ ...formData, typeclient: 'Particulier', Particulier: 'V', IdQualite: 1 })}
+                    onChange={() => setFormData({ ...formData, typeclient: 'Particulier', Particulier: 'V', IdQualite: 1, idtypeclient: 1, idtypeassure: 1 })}
                     style={{ accentColor: '#3b82f6' }}
                   />
                   <User size={16} color="#60a5fa" />
-                  <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem' }}>Particulier (Personne physique)</span>
+                  <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem' }}>Personne physique</span>
                 </label>
 
                 <label
@@ -302,18 +299,18 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
                     type="radio"
                     name="modalQuickType"
                     checked={isEntreprise}
-                    onChange={() => setFormData({ ...formData, typeclient: 'Entreprise', Particulier: 'F', IdQualite: 4, prenom: '' })}
+                    onChange={() => setFormData({ ...formData, typeclient: 'Entreprise', Particulier: 'F', IdQualite: 4, prenom: '', idtypeclient: 2, idtypeassure: 2 })}
                     style={{ accentColor: '#3b82f6' }}
                   />
                   <Building2 size={16} color="#60a5fa" />
-                  <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem' }}>Entreprise (Personne morale)</span>
+                  <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem' }}>Personne morale</span>
                 </label>
               </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: isEntreprise ? '1.2fr 2.5fr' : '1fr 1.5fr 1.5fr', gap: '0.75rem' }}>
               <div className="form-group">
-                <label className="form-label">Civilité / Qualité</label>
+                <label className="form-label">Civilité</label>
                 <select
                   className="form-control"
                   value={formData.IdQualite}
@@ -553,12 +550,12 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
           </div>
         )}
 
-        {/* ÉTAPE 3 : ACTIVITÉ & ENTREPRISE */}
+        {/* ÉTAPE 3 : DOMAINE D'ACTIVITÉ */}
         {step === 3 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div className="responsive-form-row">
               <div className="form-group">
-                <label className="form-label">Profession / Métier (Table stdprofession)</label>
+                <label className="form-label">Profession</label>
                 <select
                   className="form-control"
                   value={formData.IdProfession}
@@ -578,7 +575,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Secteur d'Activité (Table stdsecteuractivite)</label>
+                <label className="form-label">Secteur d'Activité</label>
                 <select
                   className="form-control"
                   value={formData.IdSecteurActivite}
@@ -608,7 +605,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Interlocuteur / Contact Principal</label>
+                  <label className="form-label">Contact Principal</label>
                   <input
                     type="text"
                     className="form-control"
@@ -632,7 +629,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
             ) : (
               <div className="responsive-form-row">
                 <div className="form-group">
-                  <label className="form-label">Employeur / Société</label>
+                  <label className="form-label">Employeur</label>
                   <input
                     type="text"
                     className="form-control"
@@ -657,61 +654,9 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated }) => {
           </div>
         )}
 
-        {/* ÉTAPE 4 : CIMA, COURTAGE & BANQUE */}
+        {/* ÉTAPE 4 : BANQUE & FISCALITÉ */}
         {step === 4 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div className="responsive-form-row">
-              <div className="form-group">
-                <label className="form-label">Type de Souscripteur</label>
-                <select
-                  className="form-control"
-                  value={formData.idtypeclient}
-                  onChange={(e) => setFormData({ ...formData, idtypeclient: Number(e.target.value) })}
-                >
-                  {refData.typesSouscripteur.length > 0 ? (
-                    trierParLibelle(refData.typesSouscripteur, (ts) => `${ts.libelle_type} (${ts.code_type})`).map((ts) => (
-                      <option key={ts.id} value={ts.id}>
-                        {ts.libelle_type} ({ts.code_type})
-                      </option>
-                    ))
-                  ) : (
-                    <option value={1}>Souscripteur Direct</option>
-                  )}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Type d'Assuré</label>
-                <select
-                  className="form-control"
-                  value={formData.idtypeassure}
-                  onChange={(e) => setFormData({ ...formData, idtypeassure: Number(e.target.value) })}
-                >
-                  {refData.typesAssure.length > 0 ? (
-                    trierParLibelle(refData.typesAssure, (ta) => `${ta.libelle_type} (${ta.code_type})`).map((ta) => (
-                      <option key={ta.id} value={ta.id}>
-                        {ta.libelle_type} ({ta.code_type})
-                      </option>
-                    ))
-                  ) : (
-                    <option value={1}>Assuré Principal</option>
-                  )}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Statut VIP</label>
-                <select
-                  className="form-control"
-                  value={formData.Vip}
-                  onChange={(e) => setFormData({ ...formData, Vip: e.target.value })}
-                >
-                  <option value="N">Non (Standard)</option>
-                  <option value="V">Oui (Client VIP)</option>
-                </select>
-              </div>
-            </div>
-
             <div className="responsive-form-row">
               <div className="form-group" style={{ flex: 2 }}>
                 <label className="form-label">Relevé d'Identité Bancaire (RIB - 24 car. UEMOA)</label>

@@ -788,6 +788,8 @@ def get_garanties_offre_rc(
 
 def get_offre_par_produit(idproduit, idtarif=None):
     msg = ""
+    liste_offre_produit = []
+    cursor = None
     if idtarif is None:
         idtarif = 0
     queryset_vide = OffreParProduit.objects.none()
@@ -806,7 +808,6 @@ def get_offre_par_produit(idproduit, idtarif=None):
             )
 
             result = cursor.fetchall()
-            liste_offre_produit = []
             for row in result:
                 lop = OffreParProduit(
                     IdOffre=row[0],
@@ -829,6 +830,8 @@ def get_offre_par_produit(idproduit, idtarif=None):
 
 def get_offre_voyage(idcompagnie, idtarif, idzone):
     msg = ""
+    liste_offre_voyage = []
+    cursor = None
     queryset_vide = OffreParProduit.objects.none()
     try:
         idcompagnie, idtarif, idzone = (
@@ -847,7 +850,6 @@ def get_offre_voyage(idcompagnie, idtarif, idzone):
             )
 
             result = cursor.fetchall()
-            liste_offre_voyage = []
             for row in result:
                 lop = OffreParProduit(
                     IdOffre=row[0],
@@ -860,8 +862,9 @@ def get_offre_voyage(idcompagnie, idtarif, idzone):
         msg = str(error)
 
     finally:
-        if connection:
+        if cursor:
             cursor.close()
+        if connection:
             connection.close()
 
     return (msg, list(chain(queryset_vide, liste_offre_voyage)))
@@ -870,6 +873,7 @@ def get_offre_voyage(idcompagnie, idtarif, idzone):
 #####################################################################
 def get_offre_sante_par_tarif(idtarif):
     msg = ""
+    liste_offre_tarif = []
     queryset_vide = OffreSanteParTarif.objects.none()
     try:
         with connection.cursor() as cursor:
@@ -881,7 +885,6 @@ def get_offre_sante_par_tarif(idtarif):
             )
 
             result = cursor.fetchall()
-            liste_offre_tarif = []
             for row in result:
                 lot = OffreSanteParTarif(
                     IdOffre=row[0],
@@ -932,6 +935,7 @@ def get_college_sante_par_offre(id_offre):
 ####################################################################
 def get_zone_couverture_sante(idzone):
     msg = ""
+    liste_zone = []
     queryset_vide = ZoneCouvertureSante.objects.none()
     try:
         with connection.cursor() as cursor:
@@ -943,7 +947,6 @@ def get_zone_couverture_sante(idzone):
             )
 
             result = cursor.fetchall()
-            liste_zone = []
             for row in result:
                 zone = ZoneCouvertureSante(
                     idzone=row[0],
@@ -999,6 +1002,7 @@ def get_formule_securite_routiere(idcompagnie):
 
 def get_tarif_par_produit(idproduit):
     msg = ""
+    liste_tarif_produit = []
     queryset_vide = TarifParProduit.objects.none()
     try:
         with connection.cursor() as cursor:
@@ -1010,7 +1014,6 @@ def get_tarif_par_produit(idproduit):
             )
 
             result = cursor.fetchall()
-            liste_tarif_produit = []
             for row in result:
                 ltp = TarifParProduit(
                     IdTarif=row[0],
@@ -1033,6 +1036,7 @@ def get_tarif_par_produit(idproduit):
 
 def get_tarif_voyage(idcompagnie):
     msg = ""
+    liste_tarif_voyage = []
     queryset_vide = TarifParProduit.objects.none()
     try:
         with connection.cursor() as cursor:
@@ -1044,7 +1048,6 @@ def get_tarif_voyage(idcompagnie):
             )
 
             result = cursor.fetchall()
-            liste_tarif_voyage = []
             for row in result:
                 ltp = TarifParProduit(
                     IdTarif=row[0],

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { contractApi, asaciApi } from '../../../api/endpoints';
+import { contractApi, asaciApi, transportApi } from '../../../api/endpoints';
 import { dataStore } from '../../../api/dataStore';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
@@ -24,10 +24,13 @@ import {
   User,
   Building2,
   Banknote,
+  Ship,
+  Eye,
 } from 'lucide-react';
 import { useToast } from '../../../context/ToastContext';
 import { formatDate } from '../../../utils/dateUtils';
-import { printContratFacture, printContratConditionsParticulieres } from '../../../utils/exportUtils';
+import { printContratFacture, printContratConditionsParticulieres, printBordereauTransport, estDevisTransport } from '../../../utils/exportUtils';
+import { CertificatsTransportModal } from '../quotes/NewTransportQuotePage';
 
 export const ContractDetailPage = () => {
   const { id } = useParams();
@@ -64,6 +67,21 @@ export const ContractDetailPage = () => {
   }, [id]);
 
   const contract = currentContract || dataStore.getContractById(id) || {};
+
+  // Contrat Transport : certificats GUCE du bordereau dont il est issu (une ligne de contrat par certificat)
+  const contratTransport = estDevisTransport(contract);
+  const [bordereauTransport, setBordereauTransport] = useState(null);
+  const [certificatsOuverts, setCertificatsOuverts] = useState(false);
+  useEffect(() => {
+    let actif = true;
+    setBordereauTransport(null);
+    if (id && contratTransport) {
+      transportApi.getCertificats({ idcontrat: id })
+        .then((d) => { if (actif) setBordereauTransport(d); })
+        .catch(() => { if (actif) setBordereauTransport({ erreur: true }); });
+    }
+    return () => { actif = false; };
+  }, [id, contratTransport]);
   const [endorsements, setEndorsements] = useState(() =>
     dataStore.getEndorsementsByPolicy(contract.numeropolice || contract.id)
   );
@@ -219,7 +237,7 @@ export const ContractDetailPage = () => {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span className="text-muted">Immatriculation / Réf. Risque :</span>
               <strong style={{ color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>
-                {contract.details?.immatriculation || contract.immatriculation || '1234 AB 01'}
+                {contract.details?.immatriculation || contract.immatriculation || '—'}
               </strong>
             </div>
             {contract.details?.marque && (
@@ -347,6 +365,41 @@ export const ContractDetailPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Transport : bordereau GUCE d'origine */}
+      {contratTransport && (
+        <div className="glass-panel" style={{ padding: '1.5rem' }}>
+          <h3 className="title-md" style={{ color: 'var(--text-primary)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Ship size={18} color="#38bdf8" />
+            Certificats GUCE du contrat
+          </h3>
+          {!bordereauTransport && <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Chargement des certificats…</div>}
+          {bordereauTransport && (bordereauTransport.erreur || !bordereauTransport.Certificats?.length) && (
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Aucun certificat GUCE rattaché à ce contrat (contrat repris d'URANUS ou saisi hors GUCE).</div>
+          )}
+          {bordereauTransport?.Certificats?.length > 0 && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.75rem', fontSize: '0.85rem' }}>
+                <div><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Bordereau</div><strong>du {formatDate(bordereauTransport.DebutPeriode)} au {formatDate(bordereauTransport.FinPeriode)}</strong></div>
+                <div><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Certificats</div><strong>{bordereauTransport.Totaux.Certificats}</strong></div>
+                <div><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Valeur assurée</div><strong>{Math.round(bordereauTransport.Totaux.ValeurAssurance).toLocaleString('fr-FR')} FCFA</strong></div>
+                <div><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total général</div><strong>{Math.round(bordereauTransport.Totaux.TotalGeneral).toLocaleString('fr-FR')} FCFA</strong></div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setCertificatsOuverts(true)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Eye size={15} /> Voir les certificats</button>
+                <button type="button" className="btn btn-secondary" onClick={() => printBordereauTransport({ idcontrat: id })} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Printer size={15} /> Imprimer le bordereau</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {certificatsOuverts && (
+        <CertificatsTransportModal
+          filtres={{ idcontrat: id }}
+          titre={`Certificats du contrat ${contract.numeropolice || ''}`.trim()}
+          onClose={() => setCertificatsOuverts(false)}
+        />
+      )}
 
       {/* SECTION 3 : Situation d'Encaissement & Recouvrement */}
       <div className="glass-panel" style={{ padding: '1.5rem' }}>

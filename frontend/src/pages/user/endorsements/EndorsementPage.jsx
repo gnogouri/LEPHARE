@@ -95,7 +95,7 @@ export const EndorsementPage = () => {
 
   const columns = [
     {
-      header: 'N° Avenant / Réf.',
+      header: 'N° Avenant',
       accessor: 'numero_avenant',
       render: (row) => (
         <div>
@@ -190,7 +190,7 @@ export const EndorsementPage = () => {
       ),
     },
     {
-      header: 'Actions & Impression',
+      header: 'Actions',
       render: (row) => {
         const associatedContract = contracts.find(
           (c) => String(c.id) === String(row.police_id) || c.numeropolice === row.police_num

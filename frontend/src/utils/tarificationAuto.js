@@ -19,6 +19,21 @@ export const ID_SOUS_GARANTIE_NSIA_AUTO_PLUS = 175;
 export const estGarantieRc = (g) => Number(g.id_garantie) === ID_SOUS_GARANTIE_RC || g.code === 'RC';
 export const estGarantieCedeao = (g) => Number(g.id_garantie) === ID_SOUS_GARANTIE_CEDEAO;
 
+// La prime nette enregistrée (stddevis.primenette, comprenant le FGA) contient-elle la CEDEAO ?
+// Oui pour un devis calculé (TTC = prime nette + accessoire + taxe) ; non pour un devis à primes
+// imposées, que sp_maj_manuelle_primes enregistre sans elle. On retient le modèle qui retombe sur
+// la TTC enregistrée (NSIA : TTC éventuellement arrondie au multiple de 5 supérieur), sinon celui
+// du devis (imposé ou non).
+export const cedeaoDansPrimeNette = ({ primenette, accessoire, taxe, cedeao, primettc, primeImposee = false, arrondiNsia = false }) => {
+  const entier = (x) => Math.round(Number(x) || 0);
+  const ttc = entier(primettc);
+  const retombe = (somme) => ttc === somme || (arrondiNsia && ttc === Math.ceil(somme / 5) * 5);
+  const sansCedeao = entier(primenette) + entier(accessoire) + entier(taxe);
+  if (retombe(sansCedeao)) return true;
+  if (entier(cedeao) > 0 && retombe(sansCedeao + entier(cedeao))) return false;
+  return !primeImposee;
+};
+
 // Taxe d'une garantie : celle calculée par le moteur (fn_calcul_montant_taxe). Si la prime
 // nette a été imposée à la main, on applique le même taux à la nouvelle prime.
 export const taxeGarantie = (g) => {
@@ -27,6 +42,13 @@ export const taxeGarantie = (g) => {
   const pnOrigine = Number(g.primeNetteOrigine);
   if (pnOrigine > 0 && pn !== pnOrigine) return Math.round((pn * taxe) / pnOrigine);
   return taxe;
+};
+
+// Base de l'accessoire (fn_get_accessoire) : prime nette des garanties acquises, CEDEAO comprise,
+// plus le FGA — comme prime_nette_totale du moteur et stddevis.primenette à l'enregistrement
+export const baseAccessoireAuto = (garanties) => {
+  const totaux = calculerTotauxDevisAuto({ garanties });
+  return totaux.pn + totaux.cedeao + totaux.fga;
 };
 
 // Ligne cumul (IdGarantie = 0) du moteur : l'accessoire (fn_get_accessoire, fonction de la

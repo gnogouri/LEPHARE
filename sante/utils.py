@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db import connection
 from openpyxl import load_workbook
 
+from core.date_parser import date_emission_du_jour
 from core.utils import convert_to_date
 from production.models import ComplementDevisDetailSante, DataInsertionResult, DevisDetail
 
@@ -42,6 +43,20 @@ importation_col_list = [
     "LibelleAffections",
     "Matricule",
 ]
+
+
+def message_erreur_base(error):
+    """
+    Message d'une erreur de procédure à afficher : certaines procédures Santé lèvent un
+    texte de plusieurs lignes commençant par « Got exception: », dont la vraie cause est
+    sur la ligne « message: ». Sinon, la première ligne.
+    """
+    lignes = str(error).splitlines() or [""]
+    for ligne in lignes:
+        ligne = ligne.strip()
+        if ligne.startswith("message:"):
+            return ligne[len("message:"):].strip()
+    return lignes[0]
 
 
 def remove_unwanted_keys(data):
@@ -347,9 +362,7 @@ def save_quotation_sante(user_id, input_data):
     except Exception as error:
         error_occurred = True
         print(error)
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
         sql_output = DataInsertionResult(ObjectId=IdDevis, OutputMessage=msg)
         data_insertion_result_list.append(sql_output)
     finally:
@@ -526,9 +539,7 @@ def enregistrer_adherent_sante(user_id, input_data, fichier_piece=None):
     except Exception as error:
         error_occurred = True
         print(error)
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
         sql_output = AdherentSanteInsertionResult(
             idadherent=idadherent, devis=devis, outputmessage=msg
         )
@@ -704,9 +715,7 @@ def enregistrer_affilie_sante(userid, input_data, fichier_piece=None):
     except Exception as error:
         error_occurred = True
         print(error)
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
         sql_output = AffilieSanteInsertionResult(
             idaffilie=idaffilie,
             adherent=adherent,
@@ -736,9 +745,7 @@ def enregistrer_filiale_sante(userid, input_data):
     college = int(input_data["college"])
     offresante = int(input_data["offresante"])
     zonecouverture = int(input_data["zonecouverture"])
-    date_emission = datetime.strptime(
-        input_data["date_emission"], "%d-%m-%Y"
-    ).date()
+    date_emission = date_emission_du_jour()
     date_effet = datetime.strptime(input_data["date_effet"], "%d-%m-%Y").date()
     date_expiration = datetime.strptime(
         input_data["date_expiration"], "%d-%m-%Y"
@@ -776,9 +783,7 @@ def enregistrer_filiale_sante(userid, input_data):
     except Exception as error:
         error_occurred = True
         print(error)
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
         sql_output = FilialeSanteInsertionResult(
             idfiliale=idfiliale,
             devis=devis,
@@ -815,9 +820,7 @@ def get_quotation_id(userid):
     except Exception as error:
         print(error)
         id_devis = 0
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
     finally:
         if connection:
             cursor.close()
@@ -849,9 +852,7 @@ def get_saisie_sante_en_cours(user_id):
                 # print(dev)
     except Exception as error:
         print(error)
-        msg = str(error)
-        if msg.find("\n") > 0:
-            msg = msg.split("\n")[0]
+        msg = message_erreur_base(error)
     else:
         if len(saisie_list) > 0:
             res = list(chain(res, saisie_list))

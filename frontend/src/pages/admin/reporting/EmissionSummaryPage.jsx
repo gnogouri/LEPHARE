@@ -152,7 +152,7 @@ export const EmissionSummaryPage = () => {
       <div className="no-print" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-            <span className="badge badge-success">Production & Émissions Réelles</span>
+            <span className="badge badge-success">Émissions Réelles</span>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Conformité Fiscale & CIMA</span>
           </div>
           <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>

@@ -7,11 +7,13 @@ from itertools import chain
 from typing import cast
 
 from django.db import connection, connections, transaction
+from django.db.models import Sum
 from django.db.utils import DatabaseError
 from rest_framework.exceptions import APIException, ValidationError
 
-from core.date_parser import parse_date_string
+from core.date_parser import date_emission_du_jour, parse_date_string
 from core.services import ServiceError
+from configuration_api.models import ModeEncaissement
 from customer.models import Client
 from uranus.settings import MAX_LIMIT_FOR_SEARCH
 
@@ -268,9 +270,7 @@ def save_insured_ia(input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     CapitalDeces = Decimal(input_data["CapitalDeces"])
     CapitalIpp = Decimal(input_data["CapitalIpp"])
     FraisTraitement = Decimal(input_data["FraisTraitement"])
@@ -354,9 +354,7 @@ def save_quotation_voyage(input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     IdTarif = int(input_data["IdTarif"])
     TauxReduction = Decimal(input_data["TauxReduction"])
     DateNaissance = datetime.strptime(
@@ -502,9 +500,7 @@ def save_quotation_mrh(user_id, input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     IdTarif = int(input_data["IdTarif"])
     Gardien = bool(input_data["Gardien"])
     Locataire = bool(input_data["Locataire"])
@@ -641,9 +637,7 @@ def save_quotation_tousrisquesinfo(user_id, input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     IdTarif = int(input_data["IdTarif"])
     TauxPrime = Decimal(input_data["TauxPrime"])
     TauxReduction = Decimal(input_data["TauxReduction"])
@@ -820,7 +814,7 @@ def save_quotation_risques_divers(user_id: int, input_data: dict):
     Coassurance = bool(input_data.get("Coassurance", False))
     DateEffet = input_data.get("DateEffet", None)
     DateExpiration = input_data.get("DateExpiration", None)
-    DateEmission = input_data.get("DateEmission", None)
+    DateEmission = date_emission_du_jour()
     DateDebut = input_data.get("DateDebut", None)
     IdDomaineActivite = get_int("IdDomaineActivite")
     Activite = get_str("Activite")
@@ -965,9 +959,7 @@ def save_quotation_globaledebanque(user_id, input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     IdTarif = int(input_data["IdTarif"])
     TauxPrime = Decimal(input_data["TauxPrime"])
     TauxReduction = Decimal(input_data["TauxReduction"])
@@ -1091,9 +1083,7 @@ def save_quotation(input_data):
     DateExpiration = datetime.strptime(
         input_data["DateExpiration"], "%d-%m-%Y"
     ).date()
-    DateEmission = datetime.strptime(
-        input_data["DateEmission"], "%d-%m-%Y"
-    ).date()
+    DateEmission = date_emission_du_jour()
     IdTarif = int(input_data["IdTarif"])
     CodeUsage = int(input_data["CodeUsage"])
     IdCarrosserie = int(input_data["IdCarrosserie"])
@@ -2622,34 +2612,50 @@ def get_quotation_counts(idproduit):
 #####################################################################
 # Save premium collection
 def save_premium_collection(user, input_data):
+    def texte(cle):
+        return str(input_data.get(cle) or "").strip()
+
     mode_encaissement = int(input_data["mode_encaissement"])
+    mode = ModeEncaissement.objects.filter(
+        idmodeencaissement=mode_encaissement
+    ).first()
+    abrege = (mode.abregereglement or "").strip().upper() if mode else ""
+    compensation = bool(mode and mode.compensation)
+
     banque = 1
-    if "banque" in input_data:
-        if input_data["banque"]:
-            banque = int(input_data["banque"])
+    if input_data.get("banque"):
+        banque = int(input_data["banque"])
 
     montant_total = Decimal(input_data["montant_total"])
-    numero_cheque = ""
-    if "numero_cheque" in input_data:
-        if input_data["numero_cheque"]:
-            numero_cheque = str(input_data["numero_cheque"]).strip()
-    utilisation_cheque = banque != 1 and numero_cheque != ""
-    if utilisation_cheque:
-        montant_initial_cheque = None
-        if "montant_initial_cheque" in input_data:
-            if input_data["montant_initial_cheque"]:
-                montant_initial_cheque = Decimal(
-                    input_data["montant_initial_cheque"]
-                )
-    reference_encaissement = ""
-    if "reference_encaissement" in input_data:
-        if input_data["reference_encaissement"]:
-            reference_encaissement = str(input_data["reference_encaissement"])
+    # Numéro du chèque, du virement ou de la traite selon le mode
+    numero_cheque = texte("numero_cheque")
+    # Seuls les chèques passent par le portefeuille (stdcheque) : un virement ou une traite
+    # garde son numéro sur l'encaissement sans y créer de chèque
+    utilisation_cheque = abrege == "CHQ" and banque != 1 and numero_cheque != ""
+    montant_initial_cheque = None
+    if input_data.get("montant_initial_cheque"):
+        montant_initial_cheque = Decimal(input_data["montant_initial_cheque"])
 
-    reference_compensation = ""
-    if "reference_compensation" in input_data:
-        if input_data["reference_compensation"]:
-            reference_compensation = str(input_data["reference_compensation"])
+    reference_encaissement = texte("reference_encaissement")
+    # Paiement mobile saisi à la caisse : le reçu remis par l'opérateur tient lieu de
+    # référence (sp_enregistrement_encaissement v4 ne vérifie DistriPay que sur un UUID)
+    numero_recu_operateur = texte("numero_recu_operateur") if abrege == "PYM" else ""
+    if numero_recu_operateur:
+        reference_encaissement = numero_recu_operateur
+    numero_bordereau = texte("numero_bordereau") if abrege == "ESP" else ""
+    reference_compensation = texte("reference_compensation")
+    motif_compensation = texte("motif_compensation") if compensation else ""
+    reference_reencaissement = texte("reference_reencaissement")
+    id_cheque_impaye = input_data.get("id_cheque_impaye")
+
+    if compensation and not motif_compensation:
+        raise ValidationError("Le motif de la compensation doit être précisé.")
+    if numero_recu_operateur and Encaissement.objects.filter(
+        numero_recu_operateur__iexact=numero_recu_operateur, piece_annulee=False
+    ).exists():
+        raise ValidationError(
+            "Ce numéro de reçu de l'opérateur a déjà servi pour un autre encaissement."
+        )
 
     nom_emetteur = str(input_data["nom_emetteur"])
     date_encaissement = datetime.strptime(
@@ -2663,8 +2669,26 @@ def save_premium_collection(user, input_data):
 
     id_encaissement = 0
     output_message = ""
+    cheque = None
 
     with transaction.atomic():
+        # Réencaissement d'un chèque impayé : ses références sont obligatoires
+        cheque_impaye = None
+        if id_cheque_impaye:
+            cheque_impaye = (
+                Cheque.objects.select_for_update()
+                .filter(id_cheque=int(id_cheque_impaye), statut=Cheque.Statut.IMPAYE)
+                .first()
+            )
+            if not cheque_impaye:
+                raise ValidationError(
+                    "Chèque impayé introuvable ou déjà réencaissé."
+                )
+            if not reference_reencaissement:
+                raise ValidationError(
+                    "Les références du réencaissement doivent être renseignées."
+                )
+
         # 1. Tentative de récupération ou création du chèque
         # On verrouille la ligne pour éviter les accès concurrents (select_for_update)
         if utilisation_cheque:
@@ -2673,6 +2697,10 @@ def save_premium_collection(user, input_data):
                 .filter(numero_cheque=numero_cheque, banque_id=banque)
                 .first()
             )
+            if cheque and cheque.statut == Cheque.Statut.IMPAYE:
+                raise ValidationError(
+                    "Ce chèque est revenu impayé : il ne peut plus régler de quittance."
+                )
 
             if not cheque:
                 # Premier usage : le montant_initial est obligatoire
@@ -2721,9 +2749,23 @@ def save_premium_collection(user, input_data):
         if id_enc_genere == 0:
             raise ServiceError(detail=msg_retour)
 
+        # 3. Compléments de saisie que la procédure ne connaît pas
+        Encaissement.objects.filter(idencaissement=id_enc_genere).update(
+            numero_bordereau=numero_bordereau or None,
+            numero_recu_operateur=numero_recu_operateur or None,
+            motif_compensation=motif_compensation or None,
+            reference_reencaissement=reference_reencaissement or None,
+            cheque_impaye=cheque_impaye,
+        )
+
         # 4. Mise à jour du chèque et enregistrement de l'opération
         if utilisation_cheque:
             cheque.solde_disponible -= montant_total
+            # Chèque de l'échéancier : il est déposé et encaissé ce jour
+            if cheque.statut == Cheque.Statut.A_DEPOSER:
+                cheque.statut = Cheque.Statut.ENCAISSE
+            if not cheque.date_depot:
+                cheque.date_depot = date_encaissement
             cheque.save()
 
             ChequeOperation.objects.create(
@@ -2734,6 +2776,17 @@ def save_premium_collection(user, input_data):
                 date_operation=date_encaissement,
             )
 
+        # 5. Chèque impayé entièrement réencaissé
+        if cheque_impaye:
+            reencaisse = Encaissement.objects.filter(
+                cheque_impaye=cheque_impaye,
+                piece_annulee=False,
+                montantencaissement__gt=0,
+            ).aggregate(total=Sum("montantencaissement"))["total"] or Decimal("0")
+            if reencaisse >= (cheque_impaye.montant_impaye or Decimal("0")):
+                cheque_impaye.statut = Cheque.Statut.REENCAISSE
+                cheque_impaye.save(update_fields=["statut"])
+
     res_dict = {
         "id_encaissement": id_enc_genere,
         "message": msg_retour,
@@ -2741,6 +2794,103 @@ def save_premium_collection(user, input_data):
     if utilisation_cheque:
         res_dict["solde_restant_cheque"] = cheque.solde_disponible
     return res_dict
+
+
+def decaisser_cheque_impaye(user, id_cheque, motif, date_decaissement):
+    """
+    Chèque revenu impayé : annule chacun des encaissements qu'il a réglés
+    (sp_annulation_encaissement : contre-passation, quittances de nouveau à encaisser,
+    solde client rétabli) et le marque impayé avec le motif du décaissement.
+    """
+    motif = str(motif or "").strip()
+    if not motif:
+        raise ValidationError("Le motif du décaissement doit être précisé.")
+    with transaction.atomic():
+        cheque = Cheque.objects.select_for_update().filter(id_cheque=id_cheque).first()
+        if not cheque:
+            raise ValidationError("Chèque introuvable.")
+        if cheque.statut != Cheque.Statut.ENCAISSE:
+            raise ValidationError(
+                f"Ce chèque est « {cheque.get_statut_display()} » : décaissement impossible."
+            )
+        ids = list(cheque.operations.values_list("id_encaissement", flat=True))
+        encaissements = list(
+            Encaissement.objects.filter(idencaissement__in=ids, piece_annulee=False)
+        )
+        if not encaissements:
+            raise ValidationError(
+                "Aucun encaissement en cours n'a été réglé par ce chèque."
+            )
+        montant = Decimal("0")
+        for encaissement in encaissements:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CALL sp_annulation_encaissement(%s, %s, %s, %s, %s, %s);",
+                    (
+                        encaissement.idencaissement,
+                        user.id,
+                        date_decaissement,
+                        f"Chèque impayé : {motif}"[:255],
+                        0,
+                        "",
+                    ),
+                )
+                row = cursor.fetchone()
+            if not row or not row[0]:
+                raise ServiceError(
+                    detail=(row[1] if row and row[1] else "Annulation de l'encaissement impossible.")
+                )
+            montant += encaissement.montantencaissement
+        cheque.statut = Cheque.Statut.IMPAYE
+        cheque.motif_decaissement = motif
+        cheque.date_decaissement = date_decaissement
+        cheque.montant_impaye = montant
+        cheque.solde_disponible = Decimal("0")
+        cheque.save()
+    return {
+        "id_cheque": cheque.id_cheque,
+        "montant_impaye": montant,
+        "encaissements_annules": len(encaissements),
+        "message": f"Chèque déclaré impayé : {len(encaissements)} encaissement(s) annulé(s).",
+    }
+
+
+def enregistrer_echeancier_cheques(id_client, id_banque, cheques, observation=""):
+    """
+    Chèques remis d'avance par un client, à déposer à des dates précises : ils entrent au
+    portefeuille « à déposer » et servent ensuite à l'encaissement par leur numéro.
+    """
+    if not cheques:
+        raise ValidationError("Saisissez au moins un chèque.")
+    if not Client.objects.filter(IdClient=id_client).exists():
+        raise ValidationError("Client introuvable.")
+    crees = []
+    with transaction.atomic():
+        for ligne in cheques:
+            numero = str(ligne.get("numero_cheque") or "").strip()
+            montant = Decimal(str(ligne.get("montant") or 0))
+            echeance = ligne.get("date_echeance")
+            if not numero or montant <= 0 or not echeance:
+                raise ValidationError(
+                    "Chaque chèque doit avoir un numéro, un montant et une date de dépôt."
+                )
+            if Cheque.objects.filter(numero_cheque=numero, banque_id=id_banque).exists():
+                raise ValidationError(
+                    f"Le chèque n° {numero} de cette banque est déjà enregistré."
+                )
+            crees.append(
+                Cheque.objects.create(
+                    numero_cheque=numero,
+                    banque_id=id_banque,
+                    montant_initial=montant,
+                    solde_disponible=montant,
+                    statut=Cheque.Statut.A_DEPOSER,
+                    client_id=id_client,
+                    date_echeance=echeance,
+                    observation=str(observation or "").strip() or None,
+                )
+            )
+    return crees
 
 
 #####################################################################
@@ -2788,9 +2938,7 @@ def save_premium_collection_cancellation(user_id, input_data):
 def save_plate_number(user_id, input_data):
     sql_output = None
     error_occured = False
-    date_emission = datetime.strptime(
-        input_data["date_emission"], "%d-%m-%Y"
-    ).date()
+    date_emission = date_emission_du_jour()
     date_effet = datetime.strptime(input_data["date_effet"], "%d-%m-%Y").date()
     id_devis_ancien = int(input_data["id_devis_ancien"])
     id_devis_detail_ancien = int(input_data["id_devis_detail_ancien"])
@@ -2872,11 +3020,7 @@ def policy_modification(user_id, input_data):
 
     sql_output = None
     error_occured = False
-    date_emission = None
-    if "date_emission" in input_data and input_data["date_emission"]:
-        date_emission = parse_date_string(input_data["date_emission"])
-        if date_emission:
-            date_emission = date_emission.date()
+    date_emission = date_emission_du_jour()
 
     date_effet = None
     if "date_effet" in input_data and input_data["date_effet"]:
@@ -3122,6 +3266,9 @@ def correction_devis(data):
         if "id_produit" in data:
             id_produit = data_dict.pop("id_produit", 0)
 
+        # Date d'émission imposée : celle du jour de la correction
+        data_dict["date_emission"] = date_emission_du_jour()
+
         # Convertir les données validées du sérialiseur en une chaîne JSON
         json_data = json.dumps(data, default=str)
 
@@ -3169,6 +3316,125 @@ def correction_devis(data):
             "success": False,
             "message": f"Une erreur inattendue est survenue : {e}",
         }
+
+
+def appliquer_garanties_vehicule_flotte(id_devis, id_devis_detail, garanties):
+    """
+    Garanties d'un seul véhicule d'une flotte : la liste reçue remplace celles du véhicule
+    (stddevisdetgarantie), puis les totaux du véhicule et du devis sont recalculés
+    (sp_finalisation_devis).
+
+    Reprend, pour ce seul véhicule, la boucle de sp_correction_devis : celle-ci ignore
+    l'id_devis_detail de chaque garantie et appliquerait la liste à tous les véhicules du devis.
+    Comme elle, le FGA (2) n'est jamais une ligne de garantie et la CEDEAO (3) n'est jamais retirée.
+    Une garantie absente de la liste est supprimée : le serveur additionne toutes les lignes
+    d'un véhicule, acquises ou non.
+
+    garanties : [{"id_garantie", "prime_annuelle", "prime_nette", "capital" (None = inchangé)}]
+    Renvoie les primes enregistrées du véhicule et du devis.
+    """
+    ids = [int(g["id_garantie"]) for g in garanties]
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT idclient, idassure, dateeffet FROM stddevis WHERE iddevis = %s FOR UPDATE;",
+                [id_devis],
+            )
+            id_client, id_assure, date_effet = cursor.fetchone()
+
+            cursor.execute(
+                "SELECT idgarantie FROM stddevisdetgarantie WHERE iddevisdet = %s;",
+                [id_devis_detail],
+            )
+            existantes = {row[0] for row in cursor.fetchall()}
+
+            cursor.execute(
+                "DELETE FROM stddevisdetgarantie"
+                " WHERE iddevisdet = %s AND idgarantie NOT IN (2, 3) AND NOT (idgarantie = ANY(%s));",
+                [id_devis_detail, ids],
+            )
+
+            for g in garanties:
+                id_garantie = int(g["id_garantie"])
+                if id_garantie == 2:
+                    continue
+                capital = g.get("capital")
+                if id_garantie in existantes:
+                    cursor.execute(
+                        "UPDATE stddevisdetgarantie"
+                        " SET primeannuelle = %s, primenette = %s, acquise = true, capital = COALESCE(%s, capital)"
+                        " WHERE iddevisdet = %s AND idgarantie = %s;",
+                        [g["prime_annuelle"], g["prime_nette"], capital, id_devis_detail, id_garantie],
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO stddevisdetgarantie(iddevisdet, idgarantie, acquise, capital, franchise, formule,"
+                        " primenette, old_acquise, old_capital, old_franchise, old_formule, old_places, old_primenette,"
+                        " deces, ipp, fraismed, hosp, minfranchise, maxfranchise, primeannuelle, taxe, textefranchise)"
+                        " VALUES (%s, %s, true, %s, 0, 0, %s, '0', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s, 0, 'NEANT');",
+                        [id_devis_detail, id_garantie, capital or 0, g["prime_nette"], g["prime_annuelle"]],
+                    )
+
+            # Taxe de chaque garantie reçue au taux du produit Automobile (comme sp_correction_devis)
+            cursor.execute(
+                "UPDATE stddevisdetgarantie AS dd"
+                " SET taxe = ROUND((dd.primenette * tt.tauxtaxe) / 100, 0)"
+                " FROM stdtauxtaxegarantieproduit AS tt"
+                " WHERE tt.idgarantie = dd.idgarantie AND tt.idproduit = 1"
+                " AND %s BETWEEN tt.debutvalidite AND tt.finvalidite"
+                " AND dd.iddevisdet = %s AND dd.idgarantie <> 2 AND dd.idgarantie = ANY(%s);",
+                [date_effet, id_devis_detail, ids],
+            )
+
+            # Totaux du véhicule : FGA = 2 % de la RC, primes et taxes sommées sur ses garanties
+            cursor.execute(
+                "UPDATE stddevisdetail AS dd"
+                " SET primeannuelle = m.primeannuelle + m.fgaannuelle, primenette = m.primenette,"
+                " fga = m.fganette, taxeenregistrement = m.taxe"
+                " FROM (SELECT iddevisdet, SUM(primeannuelle) AS primeannuelle, SUM(primenette) AS primenette,"
+                " SUM(CASE WHEN idgarantie = 1 THEN ROUND(primenette * 0.02, 0) ELSE 0 END) AS fganette,"
+                " SUM(CASE WHEN idgarantie = 1 THEN ROUND(primeannuelle * 0.02, 0) ELSE 0 END) AS fgaannuelle,"
+                " SUM(taxe) AS taxe"
+                " FROM stddevisdetgarantie WHERE iddevisdet = %s AND idgarantie <> 2 GROUP BY iddevisdet) AS m"
+                " WHERE m.iddevisdet = dd.iddevisdetail;",
+                [id_devis_detail],
+            )
+
+            cursor.execute(
+                "CALL sp_finalisation_devis(%s, %s, %s, %s, %s);",
+                [id_devis, id_client, id_assure, True, ""],
+            )
+            # Primes saisies à la main, comme après sp_correction_devis
+            cursor.execute("UPDATE stddevis SET primeimposee = true WHERE iddevis = %s;", [id_devis])
+
+            cursor.execute(
+                "SELECT primeannuelle, primenette, fga, taxeenregistrement FROM stddevisdetail WHERE iddevisdetail = %s;",
+                [id_devis_detail],
+            )
+            pa_vehicule, pn_vehicule, fga_vehicule, taxe_vehicule = cursor.fetchone()
+            cursor.execute(
+                "SELECT primeannuelle, primenette, fga, cedeao, taxe, accessoire, primettc FROM stddevis WHERE iddevis = %s;",
+                [id_devis],
+            )
+            pa, pn, fga, cedeao, taxe, accessoire, ttc = cursor.fetchone()
+
+    return {
+        "vehicule": {
+            "prime_annuelle": pa_vehicule,
+            "prime_nette": pn_vehicule,
+            "fga": fga_vehicule,
+            "taxe": taxe_vehicule,
+        },
+        "devis": {
+            "prime_annuelle": pa,
+            "prime_nette": pn,
+            "fga": fga,
+            "cedeao": cedeao,
+            "taxe": taxe,
+            "accessoire": accessoire,
+            "prime_ttc": ttc,
+        },
+    }
 
 
 def execute_maj_manuelle_primes(

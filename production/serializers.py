@@ -1,7 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, cast
 
+from dateutil.relativedelta import relativedelta
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import serializers
 
 # Import des modèles MRH
@@ -15,6 +18,7 @@ from configuration_api.models import (
     Option,
     OptionUsage,
     ParametresCalcul,
+    SousGarantie,
     SousGarantieMRH,
     SousGarantieUsage,
     Tarif,
@@ -1575,19 +1579,19 @@ class EnregistrementDevisAutoSerializer(EnregistrementDevisBaseSerializer):
         if val_accessoire > val_venale:
             raise serializers.ValidationError(
                 {
-                    "Valeur accessoire": "La valeur accessoire ne peut supérieure à la valeur venale."
+                    "Valeur accessoire": "La valeur accessoire ne peut être supérieure à la valeur venale."
                 }
             )
         if val_accessoire > val_neuve:
             raise serializers.ValidationError(
                 {
-                    "Valeur accessoire": "La valeur accessoire ne peut supérieure à la valeur neuve."
+                    "Valeur accessoire": "La valeur accessoire ne peut être supérieure à la valeur neuve."
                 }
             )
         if val_venale > val_neuve:
             raise serializers.ValidationError(
                 {
-                    "Valeur venale": "La valeur venale ne peut supérieure à la valeur neuve."
+                    "Valeur venale": "La valeur venale ne peut être supérieure à la valeur neuve."
                 }
             )
 
@@ -2722,15 +2726,31 @@ class EncaissementGroupeQuittanceSerializer(serializers.Serializer):
         allow_null=True,
         default=0,
     )
+    # Numéro du chèque, du virement ou de la traite selon le mode
     numero_cheque = serializers.CharField(
-        max_length=20, required=False, default="", allow_null=True
+        max_length=50, required=False, default="", allow_null=True
     )
     reference_encaissement = serializers.CharField(
         max_length=50, required=False, default="", allow_null=True
     )
     reference_compensation = serializers.CharField(
-        max_length=10, required=False, default="", allow_null=True
+        max_length=50, required=False, default="", allow_null=True
     )
+    motif_compensation = serializers.CharField(
+        max_length=255, required=False, default="", allow_null=True, allow_blank=True
+    )
+    # Espèces : bordereau ; paiement mobile : reçu remis par l'opérateur
+    numero_bordereau = serializers.CharField(
+        max_length=50, required=False, default="", allow_null=True, allow_blank=True
+    )
+    numero_recu_operateur = serializers.CharField(
+        max_length=50, required=False, default="", allow_null=True, allow_blank=True
+    )
+    # Réencaissement d'un chèque impayé
+    reference_reencaissement = serializers.CharField(
+        max_length=100, required=False, default="", allow_null=True, allow_blank=True
+    )
+    id_cheque_impaye = serializers.IntegerField(required=False, allow_null=True)
     nom_emetteur = serializers.CharField(required=True, max_length=50)
     liste_quittance = serializers.ListField(
         required=True,
@@ -3262,26 +3282,66 @@ class PrimeUpdateSerializer(serializers.Serializer):
 
     # NUMERIC (Use DecimalField for precision)
     prime_annuelle = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     prime_nette = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     accessoire = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     taxe = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     fga = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     cedeao = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
     prime_ttc = serializers.DecimalField(
-        max_digits=19, decimal_places=4, allow_null=True
+        max_digits=19, decimal_places=4, allow_null=True, min_value=0
     )
+
+
+class GarantieVehiculeFlotteSerializer(serializers.Serializer):
+    """Une garantie d'un véhicule de flotte, telle que saisie dans « Garanties de l'offre »."""
+
+    id_garantie = serializers.IntegerField(min_value=1)
+    prime_annuelle = serializers.DecimalField(max_digits=19, decimal_places=4, min_value=0)
+    prime_nette = serializers.DecimalField(max_digits=19, decimal_places=4, min_value=0)
+    # None : capital enregistré inchangé (garantie déjà présente sur le véhicule)
+    capital = serializers.DecimalField(
+        max_digits=19, decimal_places=4, min_value=0, allow_null=True, required=False, default=None
+    )
+
+
+class GarantiesVehiculeFlotteSerializer(serializers.Serializer):
+    """Liste complète des garanties d'un véhicule de flotte (remplace celles enregistrées)."""
+
+    id_devis = serializers.IntegerField(min_value=1)
+    id_devis_detail = serializers.IntegerField(min_value=1)
+    liste_garantie = GarantieVehiculeFlotteSerializer(many=True, allow_empty=False)
+
+    def validate_liste_garantie(self, garanties):
+        ids = [g["id_garantie"] for g in garanties]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("Une garantie figure deux fois dans la liste.")
+        if 1 not in ids:
+            raise serializers.ValidationError("La Responsabilité Civile est obligatoire.")
+        if 2 in ids:
+            raise serializers.ValidationError(
+                "Le FGA est calculé sur la Responsabilité Civile : ce n'est pas une garantie à saisir."
+            )
+        connues = set(
+            SousGarantie.objects.filter(pk__in=ids).values_list("pk", flat=True)
+        )
+        inconnues = sorted(set(ids) - connues)
+        if inconnues:
+            raise serializers.ValidationError(
+                f"Garantie(s) inexistante(s) : {', '.join(str(i) for i in inconnues)}."
+            )
+        return garanties
 
 
 """
@@ -4592,6 +4652,110 @@ class ChequeSerializer(serializers.ModelSerializer):
             "solde_disponible",
             "date_saisie",
         ]
+
+
+class ChequeListeSerializer(ChequeSerializer):
+    """
+    Chèque du portefeuille, avec les annotations de ChequeListView.
+
+    Échéancier : un chèque « à déposer » est signalé un mois avant sa date de dépôt
+    (ALERTE), rappelé quinze jours après cette alerte (RAPPEL), puis ECHU si la date
+    est passée sans dépôt.
+    """
+
+    nombre_operations = serializers.IntegerField(read_only=True)
+    quittances_reglees = serializers.CharField(read_only=True, allow_null=True)
+    clients = serializers.CharField(read_only=True, allow_null=True)
+    montant_reencaisse = serializers.DecimalField(
+        max_digits=19, decimal_places=4, read_only=True, allow_null=True
+    )
+    statut_libelle = serializers.CharField(source="get_statut_display", read_only=True)
+    client_nom = serializers.SerializerMethodField()
+    date_alerte = serializers.SerializerMethodField()
+    date_rappel = serializers.SerializerMethodField()
+    niveau_alerte = serializers.SerializerMethodField()
+
+    class Meta(ChequeSerializer.Meta):
+        fields = ChequeSerializer.Meta.fields + [
+            "nombre_operations",
+            "quittances_reglees",
+            "clients",
+            "statut",
+            "statut_libelle",
+            "client",
+            "client_nom",
+            "date_echeance",
+            "date_depot",
+            "observation",
+            "motif_decaissement",
+            "date_decaissement",
+            "montant_impaye",
+            "montant_reencaisse",
+            "date_alerte",
+            "date_rappel",
+            "niveau_alerte",
+        ]
+
+    def get_client_nom(self, obj):
+        if obj.client_id:
+            return f"{obj.client.Nom or ''} {obj.client.Prenoms or ''}".strip()
+        return getattr(obj, "clients", None)
+
+    @staticmethod
+    def _dates_alerte(obj):
+        if obj.statut != Cheque.Statut.A_DEPOSER or not obj.date_echeance:
+            return None
+        alerte = obj.date_echeance - relativedelta(months=1)
+        return alerte, alerte + timedelta(days=15)
+
+    def get_date_alerte(self, obj):
+        dates = self._dates_alerte(obj)
+        return dates[0] if dates else None
+
+    def get_date_rappel(self, obj):
+        dates = self._dates_alerte(obj)
+        return dates[1] if dates else None
+
+    def get_niveau_alerte(self, obj):
+        dates = self._dates_alerte(obj)
+        if not dates:
+            return None
+        aujourdhui = timezone.localdate()
+        if aujourdhui > obj.date_echeance:
+            return "ECHU"
+        if aujourdhui >= dates[1]:
+            return "RAPPEL"
+        if aujourdhui >= dates[0]:
+            return "ALERTE"
+        return None
+
+
+class EcheancierChequeLigneSerializer(serializers.Serializer):
+    numero_cheque = serializers.CharField(max_length=50)
+    montant = serializers.DecimalField(max_digits=19, decimal_places=4, min_value=1)
+    date_echeance = serializers.DateField(
+        input_formats=["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]
+    )
+
+
+class EcheancierChequesSerializer(serializers.Serializer):
+    """Chèques remis d'avance par un client, chacun avec sa date de dépôt."""
+
+    id_client = serializers.IntegerField()
+    id_banque = serializers.IntegerField()
+    observation = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default=""
+    )
+    cheques = EcheancierChequeLigneSerializer(many=True, allow_empty=False)
+
+
+class DecaissementChequeSerializer(serializers.Serializer):
+    """Chèque revenu impayé : motif et date du décaissement."""
+
+    motif = serializers.CharField(max_length=255)
+    date_decaissement = serializers.DateField(
+        required=False, input_formats=["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]
+    )
 
 
 """

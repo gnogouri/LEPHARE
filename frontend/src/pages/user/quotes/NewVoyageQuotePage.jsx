@@ -1,1052 +1,828 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { dataStore } from '../../../api/dataStore';
-import { customerApi, settingsApi, contractApi, voyageApi } from '../../../api/endpoints';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { settingsApi, contractApi, quoteApi, voyageApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import { ViewQuoteModal } from './ViewQuoteModal';
 import { QuickAddClientModal } from '../clients/QuickAddClientModal';
 import { TermeContratSelect } from '../../../components/common/TermeContratSelect';
 import { ID_TERME_PAR_DEFAUT, idTermeValide } from '../../../utils/termesContrat';
-import { sortUniqueBy, trierParLibelle } from '../../../utils/sortUtils';
+import { trierParLibelle } from '../../../utils/sortUtils';
+import { Champ, RechercheClient, FichePersonne, personneDepuisClient } from '../../../components/common/RechercheClient';
 import {
-  Plane,
-  Shield,
-  ShieldCheck,
-  Globe,
-  Plus,
-  FileCheck,
-  CheckCircle2,
-  Banknote,
-  Search,
-  ChevronRight,
-  ChevronLeft,
-  Users
+  Plane, Globe, Users, ShieldCheck, FileCheck, CheckCircle2, ChevronLeft, ChevronRight,
+  AlertTriangle, Loader2, CalendarDays, MapPin,
 } from 'lucide-react';
 
-const OREOLE_PAYS_FALLBACK = [
-  { id_pays: 1, libelle_pays: "Côte d'Ivoire", nationalite: "IVOIRIENNE", id_zone: 1 },
-  { id_pays: 2, libelle_pays: "France (Espace Schengen)", nationalite: "FRANÇAISE", id_zone: 2 },
-  { id_pays: 8, libelle_pays: "Allemagne (Espace Schengen)", nationalite: "ALLEMANDE", id_zone: 2 },
-  { id_pays: 22, libelle_pays: "Belgique (Espace Schengen)", nationalite: "BELGE", id_zone: 2 },
-  { id_pays: 39, libelle_pays: "Canada", nationalite: "CANADIENNE", id_zone: 3 },
-  { id_pays: 42, libelle_pays: "Chine", nationalite: "CHINOISE", id_zone: 3 },
-  { id_pays: 60, libelle_pays: "Émirats Arabes Unis", nationalite: "EMIRIENNE", id_zone: 3 },
-  { id_pays: 70, libelle_pays: "États-Unis d'Amérique", nationalite: "AMÉRICAINE", id_zone: 3 },
-  { id_pays: 10, libelle_pays: "Angleterre / Royaume-Uni", nationalite: "BRITANNIQUE", id_zone: 3 },
-  { id_pays: 191, libelle_pays: "Sénégal", nationalite: "SÉNÉGALAISE", id_zone: 1 },
-  { id_pays: 137, libelle_pays: "Maroc", nationalite: "MAROCAINE", id_zone: 1 },
-  { id_pays: 222, libelle_pays: "Turquie", nationalite: "TURQUE", id_zone: 3 },
+// Parcours de production Voyage d'URANUS (Contrat, Offre, Souscripteur/Assuré), réorganisé en étapes.
+// Listes, offres, garanties et primes viennent de la base : tarifvoyage, payszone, offrevoyage,
+// offregarantievoyage (grille zone x durée x âge) ; enregistrement par sp_creation_devis_voyage
+// (POST /api/devisvoyage/enregistrement/). Un devis Voyage couvre un seul voyageur.
+const ID_PRODUIT_VOYAGE = 3;
+const ID_COMPAGNIE_PAR_DEFAUT = 21; // AMSA ASSURANCES, compagnie proposée par URANUS
+const REDUCTION_MAX = 35;
+
+const ETAPES = [
+  { num: 1, libelle: 'Souscripteur & assuré', icone: Users },
+  { num: 2, libelle: 'Voyage', icone: Globe },
+  { num: 3, libelle: 'Offre & prime', icone: ShieldCheck },
+  { num: 4, libelle: 'Récapitulatif', icone: FileCheck },
 ];
 
-const OREOLE_OFFRES_DEFAULT = [
-  {
-    IdOffre: 1,
-    LibelleOffre: "Voyage Schengen Standard (Conforme Visa)",
-    garanties: [
-      { id: 23, LibelleSousGarantie: "Frais Médicaux & Hospitalisation d'urgence", Capital: 19679000, Franchise: "0 FCFA", PrimeAnnuelle: 35000, PrimeNette: 28000 },
-      { id: 28, LibelleSousGarantie: "Rapatriement sanitaire corps & blessé", Capital: 50000000, Franchise: "Sans", PrimeAnnuelle: 12000, PrimeNette: 9500 },
-      { id: 29, LibelleSousGarantie: "Assistance Juridique à l'étranger", Capital: 3000000, Franchise: "32 800 FCFA", PrimeAnnuelle: 8000, PrimeNette: 6500 },
-      { id: 30, LibelleSousGarantie: "Perte ou vol de bagages enregistrés", Capital: 1000000, Franchise: "25 000 FCFA", PrimeAnnuelle: 5000, PrimeNette: 4000 },
-      { id: 31, LibelleSousGarantie: "Responsabilité Civile Vie Privée à l'Étranger", Capital: 10000000, Franchise: "50 000 FCFA", PrimeAnnuelle: 7000, PrimeNette: 5500 },
-    ]
-  },
-  {
-    IdOffre: 2,
-    LibelleOffre: "Voyage Schengen Confort & Famille",
-    garanties: [
-      { id: 23, LibelleSousGarantie: "Frais Médicaux d'urgence plafonné à 50 000 €", Capital: 32798000, Franchise: "0 FCFA", PrimeAnnuelle: 48000, PrimeNette: 39000 },
-      { id: 28, LibelleSousGarantie: "Rapatriement médicalisé et retour des accompagnants", Capital: 100000000, Franchise: "Sans", PrimeAnnuelle: 18000, PrimeNette: 14500 },
-      { id: 29, LibelleSousGarantie: "Assistance Juridique et Caution Pénale", Capital: 6000000, Franchise: "32 800 FCFA", PrimeAnnuelle: 10000, PrimeNette: 8000 },
-      { id: 30, LibelleSousGarantie: "Bagages, retards de vol et correspondances manquées", Capital: 2000000, Franchise: "Sans", PrimeAnnuelle: 9000, PrimeNette: 7500 },
-      { id: 31, LibelleSousGarantie: "Frais d'hébergement d'un proche accompagnant", Capital: 1500000, Franchise: "Sans", PrimeAnnuelle: 6000, PrimeNette: 5000 },
-    ]
-  },
-  {
-    IdOffre: 3,
-    LibelleOffre: "Voyage Monde Entier & Business Premium",
-    garanties: [
-      { id: 23, LibelleSousGarantie: "Frais Médicaux Monde Illimités / 100 000 USD", Capital: 65000000, Franchise: "0 FCFA", PrimeAnnuelle: 75000, PrimeNette: 62000 },
-      { id: 28, LibelleSousGarantie: "Évacuation sanitaire d'extrême urgence", Capital: 150000000, Franchise: "Sans", PrimeAnnuelle: 25000, PrimeNette: 20000 },
-      { id: 29, LibelleSousGarantie: "Assistance Rapatriement, Annulation ou Interruption", Capital: 15000000, Franchise: "Sans", PrimeAnnuelle: 15000, PrimeNette: 12000 },
-      { id: 30, LibelleSousGarantie: "Perte matériel professionnel / Ordinateur", Capital: 3000000, Franchise: "30 000 FCFA", PrimeAnnuelle: 12000, PrimeNette: 10000 },
-    ]
-  }
-];
+const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
+const aujourdhui = () => new Date().toISOString().split('T')[0];
+const jour = (v) => (v ? String(v).slice(0, 10) : '');
+const dateFr = (iso) => (iso ? iso.split('-').reverse().join('/') : '—');
+const versDmy = (iso) => (iso ? iso.split('-').reverse().join('-') : '');
+// Durée tarifée : date d'expiration - date d'effet, en jours (comme la base)
+const ecartJours = (debut, fin) => {
+  if (!debut || !fin) return null;
+  return Math.round((Date.UTC(...fin.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0)))
+    - Date.UTC(...debut.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0)))) / 86400000);
+};
+// Âge retenu par la base : années révolues à la date du jour
+const ageAuJour = (naissance) => {
+  if (!naissance) return null;
+  const n = new Date(naissance);
+  const t = new Date();
+  let a = t.getFullYear() - n.getFullYear();
+  if (t.getMonth() < n.getMonth() || (t.getMonth() === n.getMonth() && t.getDate() < n.getDate())) a -= 1;
+  return a;
+};
+
+const messageErreurApi = (err) => {
+  const data = err?.response?.data;
+  if (!data) return err?.message || 'serveur injoignable';
+  if (Array.isArray(data)) return data[0]?.OutputMessage || JSON.stringify(data[0]);
+  if (typeof data === 'string') return data.slice(0, 200);
+  const direct = data.error || data.erreur || data.message || data.detail || data.OutputMessage;
+  if (direct) return typeof direct === 'string' ? direct : JSON.stringify(direct);
+  return Object.entries(data).map(([champ, v]) => `${champ} : ${Array.isArray(v) ? v.join(' ') : v}`).join(' ; ');
+};
+
+
+const styles = {
+  carte: { padding: '1.5rem', borderRadius: '14px' },
+  titreCarte: { display: 'flex', alignItems: 'center', gap: '0.55rem', margin: '0 0 1.25rem', fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' },
+  grille: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: '1rem 1.25rem', alignItems: 'start' },
+  sousTitre: { fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-muted)', margin: '1.5rem 0 0.75rem' },
+  aide: { fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' },
+  alerte: (couleur) => ({
+    display: 'flex', gap: '0.6rem', alignItems: 'flex-start', padding: '0.8rem 1rem', borderRadius: '10px',
+    border: `1px solid ${couleur}`, background: 'var(--bg-surface-elevated)', fontSize: '0.85rem', color: 'var(--text-primary)',
+  }),
+  pastille: { display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.2rem 0.6rem', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 700, background: 'var(--primary-glow)', color: 'var(--primary-500)' },
+  ligneRecap: { display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.4rem 0', borderBottom: '1px dashed var(--border-subtle)', fontSize: '0.84rem' },
+};
+
 
 export const NewVoyageQuotePage = () => {
   const navigate = useNavigate();
   const { success, error: toastError } = useToast();
 
+  // « Modifier » depuis le registre des devis : ?edit=<iddevis>
+  const [searchParams] = useSearchParams();
+  const editParam = searchParams.get('edit');
+  const [chargementEdition, setChargementEdition] = useState(Boolean(editParam));
+  const [idDevisEdite, setIdDevisEdite] = useState(0);
+  const [numeroDevisEdite, setNumeroDevisEdite] = useState('');
+  const [avertissementReprise, setAvertissementReprise] = useState('');
+
   const [step, setStep] = useState(1);
-  const [createdQuote, setCreatedQuote] = useState(null);
-  const [isQuickAddClientOpen, setIsQuickAddClientOpen] = useState(false);
+  const [tentative, setTentative] = useState({});
+  const [enregistrement, setEnregistrement] = useState(false);
+  const [devisEnregistre, setDevisEnregistre] = useState(null);
+  const [nouveauClientPour, setNouveauClientPour] = useState(null);
 
-  // References
-  const [clients, setClients] = useState([]);
-  const [companies, setCompanies] = useState(() => dataStore.getActiveCompanies('Voyage'));
-  const [paysList, setPaysList] = useState(OREOLE_PAYS_FALLBACK);
-  const [tarifsVoyage, setTarifsVoyage] = useState([]);
+  // Référentiels
+  const [compagnies, setCompagnies] = useState([]);
+  const [tarifs, setTarifs] = useState([]);
+  const [paysZone, setPaysZone] = useState([]);
+  const [zones, setZones] = useState([]);
+  const [nationalites, setNationalites] = useState([]);
+  const [offres, setOffres] = useState([]);
+  const [chargementListes, setChargementListes] = useState(false);
 
-  // Step 1: Contrat parameters
-  const [numeroPoliceCompagnie, setNumeroPoliceCompagnie] = useState('POL-VOY-2026-001');
-  const [compagnieId, setCompagnieId] = useState(21);
-  const [compagnieNom, setCompagnieNom] = useState('AMSA ASSURANCES CI');
-  const [categorieTarif, setCategorieTarif] = useState(108);
-  const [nationaliteId, setNationaliteId] = useState(1);
-  const [paysDestinationId, setPaysDestinationId] = useState(2);
-  const [reduction, setReduction] = useState(0);
-  const [referenceContrat, setReferenceContrat] = useState('REF-VOY-CI-998');
-  const [numeroAttestation, setNumeroAttestation] = useState('ATT-SCH-2026-CI');
-  const [dateNaissance, setDateNaissance] = useState('1990-05-15');
-  const [isSchengen, setIsSchengen] = useState(true);
-  const [dateEmission, setDateEmission] = useState(() => new Date().toISOString().split('T')[0]);
+  // Souscripteur / assuré
+  const [souscripteur, setSouscripteur] = useState(null);
+  const [assureDifferent, setAssureDifferent] = useState(false);
+  const [assureChoisi, setAssureChoisi] = useState(null);
+  const assure = assureDifferent ? assureChoisi : souscripteur;
 
-  const todayPlus7 = new Date();
-  todayPlus7.setDate(todayPlus7.getDate() + 7);
-  const [dateEffet, setDateEffet] = useState(() => todayPlus7.toISOString().split('T')[0]);
-
-  const todayPlus37 = new Date();
-  todayPlus37.setDate(todayPlus37.getDate() + 37);
-  const [dateExpiration, setDateExpiration] = useState(() => todayPlus37.toISOString().split('T')[0]);
-
-  const [numeroPassport, setNumeroPassport] = useState('24CI88992');
-  const [dureeJours, setDureeJours] = useState(30);
+  // Contrat & voyage (noms des champs URANUS)
+  const [compagnie, setCompagnie] = useState(ID_COMPAGNIE_PAR_DEFAUT);
+  const [categorie, setCategorie] = useState(0); // formule = IdTarif
+  const [numeroPoliceCompagnie, setNumeroPoliceCompagnie] = useState('');
+  const [nationalite, setNationalite] = useState(0);
+  const [paysDestination, setPaysDestination] = useState(0);
+  const [referenceContrat, setReferenceContrat] = useState('');
+  const [numeroAttestation, setNumeroAttestation] = useState('');
+  const [numeroPassport, setNumeroPassport] = useState('');
+  const [schengen, setSchengen] = useState(false);
+  const [dateNaissance, setDateNaissance] = useState('');
+  const [dateEffet, setDateEffet] = useState(aujourdhui());
+  const [dateExpiration, setDateExpiration] = useState('');
   const [termeId, setTermeId] = useState(ID_TERME_PAR_DEFAUT);
+  const [idAvenant, setIdAvenant] = useState(1);
+  const dateEmission = aujourdhui();
 
-  // Step 2: Offres & Garanties
-  // Catalogue d'offres et garanties réellement paramétré en base (StdOffre / StdOffreGarantie / StdSousGarantie),
-  // interrogé via fn_liste_offre_voyage et fn_garantie_offre_voyage. OREOLE_OFFRES_DEFAULT ne sert plus que de
-  // secours hors-ligne si l'API est indisponible.
-  const [selectedOffreId, setSelectedOffreId] = useState(1);
-  const [offresList, setOffresList] = useState(OREOLE_OFFRES_DEFAULT);
-  const [usingCatalogueReel, setUsingCatalogueReel] = useState(false);
-  const currentOffre = useMemo(() => {
-    return offresList.find(o => o.IdOffre === parseInt(selectedOffreId)) || offresList[0];
-  }, [offresList, selectedOffreId]);
+  // Offre & prime
+  const [offre, setOffre] = useState(0);
+  const [reduction, setReduction] = useState(0);
+  const [calcul, setCalcul] = useState(null); // { lignes, cumul } ou { erreur }
+  const [calculEnCours, setCalculEnCours] = useState(false);
 
-  const [offreGaranties, setOffreGaranties] = useState(OREOLE_OFFRES_DEFAULT[0].garanties);
-  const [checkedGaranties, setCheckedGaranties] = useState(() => {
-    const init = {};
-    OREOLE_OFFRES_DEFAULT[0].garanties.forEach(g => { init[g.id] = true; });
-    return init;
-  });
-
-  // Step 3: Souscripteur & Assuré
-  const [clientId, setClientId] = useState(1);
-  const [clientSearchTerm, setClientSearchTerm] = useState('');
-  const [filteredClients, setFilteredClients] = useState([]);
-  const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
-
-  const [assureNom, setAssureNom] = useState('KOUAME Jean-Yves');
-  const [telephoneAssure, setTelephoneAssure] = useState('0708091011');
-  const [adresseAssure, setAdresseAssure] = useState('Abidjan Cocody Angré 8ème Tranche');
-  const [adresseGeo, setAdresseGeo] = useState('Immeuble Les Oliviers, 3ème étage');
-
-  // Load real backend references
+  // ---------------------------------------------------------------- référentiels
   useEffect(() => {
-    let isMounted = true;
-    const loadRealRefs = async () => {
+    let actif = true;
+    Promise.all([
+      settingsApi.getCompanies().catch(() => []),
+      voyageApi.getNationalites().catch(() => []),
+      voyageApi.getZones().catch(() => []),
+    ]).then(([cies, nats, zns]) => {
+      if (!actif) return;
+      setCompagnies((cies || []).map((c) => ({ id: Number(c.IdCompagnie ?? c.id), nom: c.RaisonSociale || c.nom || `Compagnie ${c.IdCompagnie ?? c.id}` })));
+      setNationalites(Array.isArray(nats) ? nats : []);
+      setZones(Array.isArray(zns) ? zns : []);
+      if (!editParam && Array.isArray(nats)) {
+        const ivoirien = nats.find((p) => String(p.nationalite || '').toLowerCase() === 'ivoirienne');
+        if (ivoirien) setNationalite((n) => n || ivoirien.id_pays);
+      }
+    });
+    return () => { actif = false; };
+  }, [editParam]);
+
+  // Formules et pays de destination de la compagnie (fn_liste_tarif_voyage, fn_liste_pays_voyage)
+  useEffect(() => {
+    if (!compagnie) return undefined;
+    let actif = true;
+    setChargementListes(true);
+    Promise.all([
+      voyageApi.getTarifsVoyage(compagnie),
+      voyageApi.getPaysZone(compagnie),
+    ]).then(([trfs, pays]) => {
+      if (!actif) return;
+      const listeTarifs = Array.isArray(trfs) ? trfs : [];
+      const listePays = Array.isArray(pays) ? pays : [];
+      setTarifs(listeTarifs);
+      setPaysZone(listePays);
+      setCategorie((c) => (listeTarifs.some((t) => Number(t.IdTarif) === Number(c)) ? c : Number(listeTarifs[0]?.IdTarif) || 0));
+      setPaysDestination((p) => (listePays.some((x) => Number(x.id_pays) === Number(p)) ? p : 0));
+    }).finally(() => { if (actif) setChargementListes(false); });
+    return () => { actif = false; };
+  }, [compagnie]);
+
+  const destination = useMemo(
+    () => paysZone.find((p) => Number(p.id_pays) === Number(paysDestination)) || null,
+    [paysZone, paysDestination],
+  );
+  const idZone = destination ? Number(destination.id_zone) : 0;
+  const libelleZone = zones.find((z) => Number(z.id_zone) === idZone)?.libelle_zone || (idZone ? `Zone ${idZone}` : '');
+
+  // Offres de la formule et de la zone (fn_liste_offre_voyage)
+  useEffect(() => {
+    if (!compagnie || !categorie || !idZone) { setOffres([]); return undefined; }
+    let actif = true;
+    voyageApi.getOffresVoyage(compagnie, categorie, idZone).then((res) => {
+      if (!actif) return;
+      const liste = (Array.isArray(res) ? res : []).map((o) => ({ IdOffre: Number(o.IdOffre), LibelleOffre: o.LibelleOffre }));
+      setOffres(liste);
+      setOffre((o) => (liste.some((x) => x.IdOffre === Number(o)) ? o : liste[0]?.IdOffre || 0));
+    });
+    return () => { actif = false; };
+  }, [compagnie, categorie, idZone]);
+
+  const duree = ecartJours(dateEffet, dateExpiration);
+  const age = ageAuJour(dateNaissance);
+
+  // Prime de la grille (offregarantievoyage), recalculée à chaque changement
+  useEffect(() => {
+    if (!offre || !idZone || !dateNaissance || !dateEffet || !dateExpiration || duree === null || duree < 1) {
+      setCalcul(null);
+      return undefined;
+    }
+    let actif = true;
+    const minuterie = setTimeout(async () => {
+      setCalculEnCours(true);
       try {
-        const [cls, cies, paysRes, tarifsRes] = await Promise.all([
-          customerApi.getClients().catch(() => []),
-          settingsApi.getCompanies().catch(() => []),
-          voyageApi.getPaysZone(21).catch(() => []),
-          voyageApi.getTarifsVoyage(21).catch(() => []),
-        ]);
-        if (isMounted) {
-          if (cls && cls.length > 0) {
-            setClients(cls);
-            setClientId(cls[0].id || cls[0].IdClient || 1);
-            setClientSearchTerm(cls[0].nomcomplet || cls[0].Nom || '');
-            setAssureNom(cls[0].nomcomplet || cls[0].Nom || 'KOUAME Jean-Yves');
-            if (cls[0].telephone) setTelephoneAssure(cls[0].telephone);
-            if (cls[0].adresse) setAdresseAssure(cls[0].adresse);
-          }
-          if (cies && cies.length > 0) {
-            const mappedCies = cies.map((c) => ({
-              id: c.id || c.IdCompagnie,
-              nom: c.RaisonSociale || c.nom
-            }));
-            setCompanies(mappedCies);
-            const foundAmsa = mappedCies.find(c => c.id === 21) || mappedCies[0];
-            setCompagnieNom(foundAmsa.nom);
-            setCompagnieId(foundAmsa.id);
-          }
-          if (paysRes && paysRes.length > 0) {
-            setPaysList(paysRes);
-            const defPays = paysRes.find(p => p.id_pays === 2) || paysRes[0];
-            setPaysDestinationId(defPays.id_pays);
-          }
-          if (tarifsRes && tarifsRes.length > 0) {
-            setTarifsVoyage(tarifsRes);
-            if (tarifsRes[0]?.IdTarif) setCategorieTarif(tarifsRes[0].IdTarif);
-          }
-        }
+        const lignes = await voyageApi.calculerPrime({
+          IdOffre: Number(offre),
+          IdCompagnie: Number(compagnie),
+          IdTarif: Number(categorie),
+          IdZoneVoyage: idZone,
+          TauxReduction: Number(reduction) || 0,
+          DateEffet: versDmy(dateEffet),
+          DateExpiration: versDmy(dateExpiration),
+          DateNaissance: versDmy(dateNaissance),
+        });
+        if (!actif) return;
+        const liste = Array.isArray(lignes) ? lignes : [];
+        setCalcul({
+          lignes: liste.filter((l) => Number(l.IdGarantie) !== 0 && Number(l.IdSousGarantie) !== 0),
+          cumul: liste.find((l) => Number(l.IdGarantie) === 0) || null,
+        });
       } catch (err) {
-        console.warn('Utilisation données locales Voyage:', err);
+        if (actif) setCalcul({ erreur: messageErreurApi(err) });
+      } finally {
+        if (actif) setCalculEnCours(false);
       }
-    };
-    loadRealRefs();
-    return () => { isMounted = false; };
-  }, []);
+    }, 300);
+    return () => { actif = false; clearTimeout(minuterie); };
+  }, [offre, compagnie, categorie, idZone, reduction, dateEffet, dateExpiration, dateNaissance, duree]);
 
-  const toDmy = (isoDate) => {
-    if (!isoDate) return '01-01-2026';
-    const parts = isoDate.split('-');
-    return parts.length === 3 ? `${parts[2]}-${parts[1]}-${parts[0]}` : isoDate;
-  };
+  const montants = useMemo(() => {
+    const c = calcul?.cumul;
+    if (!c) return null;
+    const primeAnnuelle = Number(c.PrimeAnnuelle) || 0;
+    const primeNette = Number(c.PrimeNette) || 0;
+    const accessoire = Number(c.MontantAccessoire) || 0;
+    const taxe = Number(c.Taxe) || 0;
+    // Prime TTC arrondie comme sp_creation_devis_voyage : ROUND(prime nette + accessoire + taxe)
+    return { primeAnnuelle, primeNette, accessoire, taxe, reduction: primeAnnuelle - primeNette, primeTtc: Math.round(primeNette + accessoire + taxe) };
+  }, [calcul]);
 
-  // Offres réellement paramétrées pour cette compagnie / ce tarif / cette zone de destination
-  // (fn_liste_offre_voyage). Remplace le catalogue par défaut dès que l'API répond.
+  // ---------------------------------------------------------------- Modifier (?edit=)
   useEffect(() => {
-    if (!compagnieId || !categorieTarif) return;
-    let isMounted = true;
-    const destObj = paysList.find(p => p.id_pays === parseInt(paysDestinationId));
-    const idZone = destObj?.id_zone || 1;
-    voyageApi.getOffresVoyage(compagnieId, categorieTarif, idZone).then((res) => {
-      if (!isMounted || !Array.isArray(res) || res.length === 0) return;
-      const mapped = res.map((o) => ({
-        IdOffre: Number(o.IdOffre ?? o.id_offre),
-        LibelleOffre: o.LibelleOffre ?? o.libelle_offre ?? 'Offre Voyage',
-      }));
-      setOffresList(mapped);
-      setUsingCatalogueReel(true);
-      setSelectedOffreId(mapped[0].IdOffre);
-    }).catch(() => {});
-    return () => { isMounted = false; };
-  }, [compagnieId, categorieTarif, paysDestinationId, paysList]);
-
-  // Garanties réellement rattachées à l'offre sélectionnée, avec capitaux et primes calculés par le
-  // moteur de tarification (fn_garantie_offre_voyage), selon la zone, la réduction et les dates saisies.
-  useEffect(() => {
-    if (!currentOffre) return;
-    if (!usingCatalogueReel) {
-      // Catalogue de secours (hors-ligne) : garanties déjà embarquées dans l'offre.
-      setOffreGaranties(currentOffre.garanties || []);
-      const init = {};
-      (currentOffre.garanties || []).forEach((g) => { init[g.id] = true; });
-      setCheckedGaranties(init);
-      return;
-    }
-    let isMounted = true;
-    const destObj = paysList.find(p => p.id_pays === parseInt(paysDestinationId));
-    const idZone = destObj?.id_zone || 1;
-    voyageApi.getGarantiesVoyage({
-      IdCompagnie: compagnieId,
-      IdTarif: categorieTarif,
-      IdOffre: currentOffre.IdOffre,
-      IdZoneVoyage: idZone,
-      TauxReduction: Number(reduction) || 0,
-      DateEffet: toDmy(dateEffet),
-      DateExpiration: toDmy(dateExpiration),
-      DateNaissance: toDmy(dateNaissance),
-    }).then((res) => {
-      if (!isMounted || !Array.isArray(res)) return;
-      const mapped = res.map((r) => ({
-        id: r.IdSousGarantie,
-        LibelleSousGarantie: r.LibelleSousGarantie,
-        Capital: Number(r.Capital || 0),
-        Franchise: r.MontantAccessoire ? `${Number(r.MontantAccessoire).toLocaleString('fr-FR')} FCFA` : 'Selon Conditions Générales',
-        PrimeAnnuelle: Number(r.PrimeAnnuelle || 0),
-        PrimeNette: Number(r.PrimeNette || 0),
-        acquiseParDefaut: !!r.Acquise,
-      }));
-      setOffreGaranties(mapped);
-      const init = {};
-      mapped.forEach((g) => { init[g.id] = g.acquiseParDefaut; });
-      setCheckedGaranties(init);
-    }).catch(() => {});
-    return () => { isMounted = false; };
-  }, [currentOffre, usingCatalogueReel, compagnieId, categorieTarif, paysDestinationId, paysList, reduction, dateEffet, dateExpiration, dateNaissance]);
-
-  // Update duration
-  useEffect(() => {
-    if (dateEffet && dateExpiration) {
-      const d1 = new Date(dateEffet);
-      const d2 = new Date(dateExpiration);
-      const diffTime = d2.getTime() - d1.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      setDureeJours(diffDays > 0 ? diffDays : 1);
-    }
-  }, [dateEffet, dateExpiration]);
-
-  // Financial calculations conforming to OREOLE
-  const financialTotals = useMemo(() => {
-    if (!offreGaranties || offreGaranties.length === 0) {
-      return { totalPAnnuelle: 0, totalPNette: 0, primeTtc: 0, accessoires: 2500, taxe: 0 };
-    }
-
-    let sumPAnnuelle = 0;
-    let sumPNette = 0;
-
-    offreGaranties.forEach(g => {
-      if (checkedGaranties[g.id]) {
-        sumPAnnuelle += Number(g.PrimeAnnuelle || 0);
-        sumPNette += Number(g.PrimeNette || 0);
+    if (!editParam) return undefined;
+    let actif = true;
+    (async () => {
+      setChargementEdition(true);
+      try {
+        const d = await voyageApi.lireDevis(editParam);
+        if (!actif) return;
+        if (d.Confirme) {
+          toastError('Ce devis est confirmé (déjà en contrat) : il ne peut plus être modifié.');
+          navigate('/user/quotes');
+          return;
+        }
+        if (!d.Detail) {
+          toastError('Ce devis repris d\'URANUS n\'a pas de ligne de détail en base : il ne peut pas être modifié.');
+          navigate('/user/quotes');
+          return;
+        }
+        setIdDevisEdite(Number(d.IdDevis));
+        setNumeroDevisEdite(d.NumeroDevis || '');
+        setIdAvenant(Number(d.IdAvenant) || 1);
+        setCompagnie(Number(d.IdCompagnie) || ID_COMPAGNIE_PAR_DEFAUT);
+        setCategorie(Number(d.Detail.IdTarif) || 0);
+        setOffre(Number(d.Detail.IdOffre) || 0);
+        setReduction(Number(d.Detail.TauxReduction) || 0);
+        setDateNaissance(jour(d.Detail.DateNaissance));
+        setDateEffet(jour(d.DateEffet));
+        setDateExpiration(jour(d.DateExpiration));
+        setTermeId(idTermeValide(d.IdTerme));
+        setNumeroPoliceCompagnie(d.NumeroPoliceCompagnie || '');
+        const client = personneDepuisClient(d.Client);
+        const assureLu = personneDepuisClient(d.Assure);
+        setSouscripteur(client);
+        if (assureLu && client && assureLu.IdClient !== client.IdClient) {
+          setAssureDifferent(true);
+          setAssureChoisi(assureLu);
+        }
+        if (d.Complement) {
+          setPaysDestination(Number(d.Complement.IdPaysDestination) || 0);
+          setNationalite(Number(d.Complement.IdPaysVoyageur) || 0);
+          setReferenceContrat(d.Complement.ReferenceContrat || '');
+          setNumeroAttestation(d.Complement.NumeroAttestation || '');
+          setNumeroPassport(d.Complement.NumeroPasseport || '');
+          setSchengen(Boolean(d.Complement.Schengen));
+        }
+        const manques = [];
+        if (!d.Complement) manques.push('destination, nationalité, passeport, attestation et référence');
+        if (!Number(d.Detail.IdOffre)) manques.push('offre');
+        setAvertissementReprise(manques.length
+          ? `Devis repris d'URANUS : ${manques.join(' et ')} non enregistrés en base. Complétez-les ; la prime sera recalculée à l'enregistrement.`
+          : '');
+      } catch (err) {
+        if (actif) {
+          toastError(`Impossible de charger le devis à modifier : ${messageErreurApi(err)}`);
+          navigate('/user/quotes');
+        }
+      } finally {
+        if (actif) setChargementEdition(false);
       }
-    });
+    })();
+    return () => { actif = false; };
+  }, [editParam]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const factorDuree = Math.min(Math.max(dureeJours / 365, 0.15), 1.0);
-    let primeNetteAjustee = Math.round(sumPNette * factorDuree);
-
-    if (reduction > 0) {
-      const discount = (primeNetteAjustee * reduction) / 100;
-      primeNetteAjustee = Math.max(Math.round(primeNetteAjustee - discount), 15000);
+  // ---------------------------------------------------------------- contrôles
+  const erreursEtape = (n) => {
+    const e = {};
+    if (n === 1) {
+      if (!souscripteur?.IdClient) e.souscripteur = 'Choisissez le souscripteur dans la liste.';
+      if (assureDifferent && !assureChoisi?.IdClient) e.assure = 'Choisissez l\'assuré dans la liste.';
     }
-
-    const accessoires = 2500;
-    const taxe = Math.round(primeNetteAjustee * 0.145);
-    const primeTtc = primeNetteAjustee + accessoires + taxe;
-
-    return {
-      totalPAnnuelle: Math.round(sumPAnnuelle * factorDuree),
-      totalPNette: primeNetteAjustee,
-      accessoires,
-      taxe,
-      primeTtc
-    };
-  }, [offreGaranties, checkedGaranties, dureeJours, reduction]);
-
-  // Search client handler
-  const handleClientSearch = (val) => {
-    setClientSearchTerm(val);
-    if (!val || val.trim().length === 0) {
-      setFilteredClients([]);
-      setIsClientDropdownOpen(false);
-      return;
+    if (n === 2) {
+      if (!compagnie) e.compagnie = 'Choisissez la compagnie.';
+      if (!categorie) e.categorie = 'Aucune formule Voyage pour cette compagnie.';
+      if (!paysDestination) e.paysDestination = paysZone.length ? 'Choisissez le pays de destination.' : 'Aucun pays de destination paramétré pour cette compagnie.';
+      if (!nationalite) e.nationalite = 'Choisissez la nationalité.';
+      if (!dateNaissance) e.dateNaissance = 'Saisissez la date de naissance du voyageur.';
+      else if (dateNaissance > aujourdhui()) e.dateNaissance = 'La date de naissance ne peut pas être dans le futur.';
+      if (!dateEffet) e.dateEffet = 'Saisissez la date d\'effet.';
+      if (!dateExpiration) e.dateExpiration = 'Saisissez la date d\'expiration.';
+      else if (duree !== null && duree < 1) e.dateExpiration = 'La date d\'expiration doit suivre la date d\'effet d\'au moins un jour.';
     }
-    const filtered = clients.filter(c => {
-      const n = (c.nomcomplet || c.Nom || '').toLowerCase();
-      return n.includes(val.toLowerCase());
-    });
-    setFilteredClients(filtered);
-    setIsClientDropdownOpen(filtered.length > 0);
+    if (n === 3) {
+      if (!offre) e.offre = 'Aucune offre pour cette formule et cette destination.';
+      if (Number(reduction) < 0 || Number(reduction) > REDUCTION_MAX) e.reduction = `Réduction comprise entre 0 et ${REDUCTION_MAX} %.`;
+      if (calculEnCours) e.prime = 'Calcul de la prime en cours…';
+      else if (calcul?.erreur) e.prime = `Prime non calculée : ${calcul.erreur}`;
+      else if (!montants || montants.primeNette <= 0) e.prime = 'Aucune prime dans la grille pour ces paramètres (âge, durée ou zone hors tarif).';
+    }
+    return e;
   };
+  const erreurs = useMemo(() => ({
+    ...(tentative[1] ? erreursEtape(1) : {}),
+    ...(tentative[2] ? erreursEtape(2) : {}),
+    ...(tentative[3] ? erreursEtape(3) : {}),
+  }), [tentative, souscripteur, assureDifferent, assureChoisi, compagnie, categorie, paysDestination, paysZone, nationalite, dateNaissance, dateEffet, dateExpiration, duree, offre, reduction, calcul, calculEnCours, montants]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSelectClient = (c) => {
-    setClientId(c.id || c.IdClient);
-    setClientSearchTerm(c.nomcomplet || c.Nom || '');
-    if (c.telephone) setTelephoneAssure(c.telephone);
-    if (c.adresse) setAdresseAssure(c.adresse);
-    setIsClientDropdownOpen(false);
-  };
-
-  // Step 1 -> Step 2 validation
-  const handleNextToStep2 = () => {
-    if (!dateEffet || !dateExpiration) {
-      toastError("Veuillez renseigner les dates d'effet et d'expiration.");
-      return;
-    }
-    if (new Date(dateExpiration) <= new Date(dateEffet)) {
-      toastError("La date d'expiration doit être postérieure à la date d'effet.");
-      return;
-    }
-    if (!numeroPassport) {
-      toastError("Le numéro de passeport est requis.");
-      return;
-    }
-    setStep(2);
-  };
-
-  // Step 2 -> Step 3 validation
-  const handleNextToStep3 = () => {
-    const hasAnyChecked = Object.values(checkedGaranties).some(v => v === true);
-    if (!hasAnyChecked) {
-      toastError("Veuillez sélectionner au moins une garantie acquise.");
-      return;
-    }
-    setStep(3);
-  };
-
-  // Final Quote Submission
-  const handleSaveDevisVoyage = async () => {
-    if (!clientSearchTerm) {
-      toastError("Veuillez renseigner le nom du souscripteur.");
-      return;
-    }
-
-    const destObj = paysList.find(p => p.id_pays === parseInt(paysDestinationId)) || OREOLE_PAYS_FALLBACK[1];
-    const natObj = paysList.find(p => p.id_pays === parseInt(nationaliteId)) || OREOLE_PAYS_FALLBACK[0];
-
-    const formatDateOREOLE = (d) => {
-      if (!d) return '01-01-2026';
-      const parts = d.split('-');
-      if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
-      return d;
-    };
-
-    const newQuoteData = {
-      client_nom: clientSearchTerm,
-      client_id: clientId,
-      produit: `Assurance Voyage - ${currentOffre.LibelleOffre}`,
-      branche: 'Voyage',
-      compagnie: compagnieNom,
-      prime_nette: financialTotals.totalPNette,
-      accessoires: financialTotals.accessoires,
-      taxes: financialTotals.taxe,
-      prime_totale: financialTotals.primeTtc,
-      date_emission: dateEmission,
-      statut: 'En attente',
-      statut_badge: 'amber',
-      details: {
-        policeCompagnie: numeroPoliceCompagnie,
-        referenceContrat,
-        numeroAttestation,
-        numeroPassport,
-        isSchengen,
-        paysDestination: destObj.libelle_pays,
-        nationalite: natObj.nationalite,
-        dateNaissance,
-        dateEffet,
-        dateExpiration,
-        dureeJours,
-        offre: currentOffre.LibelleOffre,
-        reduction: `${reduction}%`,
-        assure: {
-          nom: assureNom,
-          telephone: telephoneAssure,
-          adresse: adresseAssure,
-          adresseGeo
-        },
-        garantiesAcquises: offreGaranties.filter(g => checkedGaranties[g.id])
+  const allerA = (cible) => {
+    if (cible <= step) { setStep(cible); return; }
+    for (let n = step; n < cible; n += 1) {
+      const e = erreursEtape(n);
+      if (Object.keys(e).length) {
+        setTentative((t) => ({ ...t, [n]: true }));
+        setStep(n);
+        toastError(Object.values(e)[0]);
+        return;
       }
-    };
+    }
+    setStep(cible);
+  };
 
-    const saved = dataStore.saveQuote(newQuoteData);
+  // Date de naissance proposée depuis la fiche de l'assuré (modifiable)
+  const choisirAssure = (personne, estSouscripteur) => {
+    if (estSouscripteur) setSouscripteur(personne); else setAssureChoisi(personne);
+    const concerneAssure = estSouscripteur ? !assureDifferent : true;
+    if (personne?.DateNaissance && concerneAssure) setDateNaissance(personne.DateNaissance);
+  };
 
+  // ---------------------------------------------------------------- enregistrement
+  const enregistrer = async () => {
+    for (const n of [1, 2, 3]) {
+      const e = erreursEtape(n);
+      if (Object.keys(e).length) {
+        setTentative((t) => ({ ...t, [n]: true }));
+        setStep(n);
+        toastError(Object.values(e)[0]);
+        return;
+      }
+    }
+    setEnregistrement(true);
     try {
-      const backendPayload = {
+      const res = await voyageApi.enregistrer({
         IdIntermediaire: 1,
-        IdCompagnie: Number(compagnieId) || 21,
-        IdProduit: 3,
-        IdOffre: Number(selectedOffreId) || 1,
-        IdAvenant: 1,
-        IdClient: Number(clientId) || 1,
-        IdAssure: Number(clientId) || 1,
+        IdCompagnie: Number(compagnie),
+        NumeroPoliceCompagnie: numeroPoliceCompagnie.trim(),
+        IdProduit: ID_PRODUIT_VOYAGE,
+        IdOffre: Number(offre),
+        IdAvenant: idAvenant,
+        IdClient: Number(souscripteur.IdClient),
+        IdAssure: Number(assure.IdClient),
         Flotte: false,
         Coassurance: false,
-        DateEffet: formatDateOREOLE(dateEffet),
-        DateExpiration: formatDateOREOLE(dateExpiration),
-        DateEmission: formatDateOREOLE(dateEmission),
-        IdTarif: Number(categorieTarif) || 1,
+        DateEffet: dateEffet,
+        DateExpiration: dateExpiration,
+        DateEmission: dateEmission,
+        IdTarif: Number(categorie),
+        IdZoneVoyage: idZone,
         TauxReduction: Number(reduction) || 0,
-        DateNaissance: formatDateOREOLE(dateNaissance),
-        IdPaysDestination: Number(paysDestinationId) || 2,
-        IdPaysVoyageur: Number(nationaliteId) || 1,
-        ReferenceContrat: referenceContrat || 'REF-VOY-2026',
-        NumeroAttestation: numeroAttestation || 'ATT-VOY-2026',
-        Schengen: Boolean(isSchengen),
-        NumeroPasseport: numeroPassport || 'CI123456',
-        NumeroPoliceCompagnie: numeroPoliceCompagnie || 'RAS',
-        IdDevis: 0,
-        IdDuree: Number(dureeJours) || 30,
+        DateNaissance: dateNaissance,
+        IdPaysDestination: Number(paysDestination),
+        IdPaysVoyageur: Number(nationalite),
+        ReferenceContrat: referenceContrat.trim(),
+        NumeroAttestation: numeroAttestation.trim(),
+        Schengen: schengen,
+        NumeroPasseport: numeroPassport.trim(),
+        IdDevis: idDevisEdite || 0,
         IdTerme: idTermeValide(termeId),
-      };
-      const apiRes = await voyageApi.enregistrerDevisVoyage(backendPayload);
-      if (apiRes?.data?.[0]?.ObjectId) {
-        saved.numerodevis = `DEV-VOY-2026-${String(apiRes.data[0].ObjectId).padStart(4, '0')}`;
+      });
+      const id = Number(res?.ObjectId) || 0;
+      if (!id) {
+        toastError(`Devis Voyage non enregistré : ${res?.OutputMessage || 'réponse du serveur sans numéro de devis.'}`);
+        return;
       }
-    } catch (e) {
-      console.warn('Enregistrement Voyage fallback local dataStore:', e);
+      success(idDevisEdite
+        ? `Devis Voyage N° ${res.NumeroDevis || id} modifié.`
+        : `Devis Voyage N° ${res.NumeroDevis || id} enregistré.`);
+      setIdDevisEdite(id);
+      setNumeroDevisEdite(res.NumeroDevis || '');
+      let devis = null;
+      try {
+        devis = await quoteApi.getQuote(id);
+      } catch {
+        // l'aperçu se contente des montants renvoyés par l'enregistrement
+      }
+      setDevisEnregistre(devis || {
+        id, iddevis: id, numerodevis: res.NumeroDevis, branche: 'Voyage', produit: 'ASSURANCE VOYAGE',
+        client_nom: souscripteur.Nom, nomassure: assure.Nom, compagnie: compagnies.find((c) => c.id === Number(compagnie))?.nom || '',
+        prime_nette: res.PrimeNette, accessoires: res.Accessoire, taxes: res.Taxe, prime_totale: res.PrimeTtc,
+        date_emission: dateEmission, date_effet: dateEffet, date_expiration: dateExpiration, raw: {},
+      });
+    } catch (err) {
+      toastError(`Devis Voyage non enregistré : ${messageErreurApi(err)}`);
+    } finally {
+      setEnregistrement(false);
     }
-
-    success(`Devis Voyage ${saved.numerodevis} généré et synchronisé avec succès !`);
-    setCreatedQuote(saved);
   };
 
-  const handleConvertToContract = async (quoteToConvert) => {
+  const confirmerEnContrat = async (devis) => {
     try {
-      await contractApi.createContractFromQuote(quoteToConvert.id);
-    } catch (e) {
-      console.warn('Fallback contract creation');
+      await contractApi.createContractFromQuote(devis.iddevis || devis.id);
+      success(`Devis ${devis.numerodevis} confirmé : le contrat a été créé.`);
+      setDevisEnregistre(null);
+      navigate('/user/contracts');
+    } catch (err) {
+      toastError(`Le devis n'a pas pu être confirmé : ${messageErreurApi(err)}`);
     }
-    const newContract = dataStore.convertQuoteToContract(quoteToConvert);
-    success(`Devis ${quoteToConvert.numerodevis} transformé en contrat d'assurance !`);
-    setCreatedQuote(null);
-    navigate(`/user/contracts/${newContract.id || newContract.numeropolice}`);
   };
+
+  // ---------------------------------------------------------------- affichage
+  const nomCompagnie = compagnies.find((c) => c.id === Number(compagnie))?.nom || '';
+  const libelleFormule = tarifs.find((t) => Number(t.IdTarif) === Number(categorie))?.LibelleTarif || '';
+  const libelleOffre = offres.find((o) => o.IdOffre === Number(offre))?.LibelleOffre || '';
+  const libelleNationalite = (p) => p.nationalite && /[a-zà-ÿ]/i.test(p.nationalite) ? p.nationalite : `— (${p.libelle_pays})`;
+  const nationalitesTriees = useMemo(() => {
+    const comptes = {};
+    nationalites.forEach((p) => { comptes[p.nationalite] = (comptes[p.nationalite] || 0) + 1; });
+    return trierParLibelle(
+      nationalites.map((p) => ({ ...p, libelle: comptes[p.nationalite] > 1 && /[a-zà-ÿ]/i.test(p.nationalite || '') ? `${p.nationalite} (${p.libelle_pays})` : libelleNationalite(p) })),
+      (p) => p.libelle,
+    );
+  }, [nationalites]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (chargementEdition) {
+    return (
+      <div className="glass-panel" style={{ ...styles.carte, maxWidth: 640, margin: '3rem auto', textAlign: 'center' }}>
+        <Loader2 size={28} className="spin" style={{ color: 'var(--primary-500)' }} />
+        <p style={{ marginTop: '0.75rem', color: 'var(--text-secondary)' }}>Chargement du devis Voyage…</p>
+      </div>
+    );
+  }
+
+  const ligneRecap = (libelle, valeur, fort) => (
+    <div style={styles.ligneRecap}>
+      <span style={{ color: 'var(--text-muted)' }}>{libelle}</span>
+      <span style={{ textAlign: 'right', fontWeight: fort ? 800 : 600, color: 'var(--text-primary)' }}>{valeur || '—'}</span>
+    </div>
+  );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '1240px', margin: '0 auto', paddingBottom: '3rem' }}>
-      {/* HEADER & BOUTON RETOUR */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxWidth: '1280px', margin: '0 auto', paddingBottom: '3rem' }}>
+      {/* EN-TÊTE */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <button
-            type="button"
-            className="btn btn-link"
-            onClick={() => navigate('/user/quotes')}
-            style={{ color: '#ef4444', fontWeight: 600, padding: 0, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-          >
-            ← Annuler
+          <button type="button" className="btn btn-link" onClick={() => navigate('/user/quotes')} style={{ padding: 0, marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+            <ChevronLeft size={16} /> Registre des devis
           </button>
-          <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            <Plane size={28} color="#3b82f6" />
-            Production de Contrat Assurance Voyage & Schengen
+          <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: 0 }}>
+            <Plane size={26} style={{ color: 'var(--primary-500)' }} />
+            {idDevisEdite ? 'Modification du devis Voyage' : 'Nouveau devis Assurance Voyage'}
           </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-            Architecture fidèle à OREOLE Production : saisie paramétrique, garanties d'assistance internationale et tarification certifiée.
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', margin: '0.3rem 0 0' }}>
+            {idDevisEdite
+              ? <>Devis <strong>N° {numeroDevisEdite}</strong> — les primes sont recalculées selon la grille à l'enregistrement.</>
+              : 'Un voyageur par devis. La prime est lue dans la grille de la compagnie selon la zone de destination, la durée et l\'âge.'}
           </p>
-        </div>
-
-        {/* STEPPER OREOLE 3 ONGLETS EXACTS */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {[
-            { stepNum: 1, label: '1. CONTRAT & DATES' },
-            { stepNum: 2, label: '2. OFFRES & DÉCOMPTE' },
-            { stepNum: 3, label: '3. SOUSCRIPTEUR & ASSURÉ' },
-          ].map((item) => (
-            <button
-              key={item.stepNum}
-              type="button"
-              onClick={() => setStep(item.stepNum)}
-              style={{
-                padding: '0.5rem 0.95rem',
-                borderRadius: '6px',
-                fontSize: '0.8rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                border: step === item.stepNum ? '2px solid #2563eb' : '1px solid var(--border-subtle)',
-                background: step === item.stepNum ? 'rgba(37, 99, 235, 0.2)' : 'rgba(255, 255, 255, 0.03)',
-                color: step === item.stepNum ? '#60a5fa' : 'var(--text-muted)',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
         </div>
       </div>
 
-      {/* =========================================================================
-          ÉTAPE 1 : CONTRAT & DATES (K$ OREOLE)
-          ========================================================================= */}
-      {step === 1 && (
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '12px' }}>
-          <h3 style={{ color: '#3b82f6', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1.5rem', fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Globe size={18} /> Informations Générales du Contrat & Dates
-          </h3>
+      {/* ÉTAPES */}
+      <nav aria-label="Étapes du devis" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))', gap: '0.5rem' }}>
+        {ETAPES.map(({ num, libelle, icone: Icone }) => {
+          const actif = step === num;
+          const fait = step > num;
+          return (
+            <button
+              key={num}
+              type="button"
+              onClick={() => allerA(num)}
+              aria-current={actif ? 'step' : undefined}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.7rem 0.9rem', borderRadius: '12px', cursor: 'pointer', textAlign: 'left',
+                border: `1px solid ${actif ? 'var(--primary-500)' : 'var(--border-subtle)'}`,
+                background: actif ? 'var(--primary-glow)' : 'var(--bg-surface)',
+                color: actif ? 'var(--primary-500)' : 'var(--text-secondary)',
+              }}
+            >
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                background: fait ? 'var(--accent-emerald)' : actif ? 'var(--primary-500)' : 'var(--bg-surface-elevated)',
+                color: fait || actif ? '#fff' : 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 800,
+              }}>
+                {fait ? <CheckCircle2 size={16} /> : num}
+              </span>
+              <span style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Étape {num}</span>
+                <span style={{ fontSize: '0.86rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.3rem' }}><Icone size={14} /> {libelle}</span>
+              </span>
+            </button>
+          );
+        })}
+      </nav>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
-            {/* Numéro Police Compagnie */}
-            <div className="form-group">
-              <label className="form-label">Numéro de Police Compagnie</label>
-              <input
-                type="text"
-                className="form-control"
-                value={numeroPoliceCompagnie}
-                onChange={(e) => setNumeroPoliceCompagnie(e.target.value)}
-                placeholder="Ex: POL-VOY-2026-001"
-              />
-            </div>
+      {avertissementReprise && (
+        <div style={styles.alerte('var(--accent-amber)')}>
+          <AlertTriangle size={18} style={{ color: 'var(--accent-amber)', flexShrink: 0 }} />
+          <span>{avertissementReprise}</span>
+        </div>
+      )}
 
-            {/* Compagnie d'assurance */}
-            <div className="form-group">
-              <label className="form-label">Compagnie d'Assurance (* requis)</label>
-              <select
-                className="form-control"
-                value={compagnieId}
-                onChange={(e) => {
-                  const selId = parseInt(e.target.value);
-                  setCompagnieId(selId);
-                  const found = companies.find(c => c.id === selId);
-                  if (found) setCompagnieNom(found.nom);
-                }}
-              >
-                {sortUniqueBy(companies, (c) => c.nom).map((c) => (
-                  <option key={c.id} value={c.id}>{c.nom}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Formule / Catégorie */}
-            <div className="form-group">
-              <label className="form-label">Formule / Catégorie Tarifaire</label>
-              <select
-                className="form-control"
-                value={categorieTarif}
-                onChange={(e) => setCategorieTarif(parseInt(e.target.value))}
-              >
-                {tarifsVoyage && tarifsVoyage.length > 0 ? (
-                  trierParLibelle(tarifsVoyage, (t) => t.LibelleTarif || t.libelle).map((t) => (
-                    <option key={t.IdTarif} value={t.IdTarif}>{t.LibelleTarif || t.libelle}</option>
-                  ))
-                ) : (
-                  <>
-                    <option value={108}>Voyage Tourisme & Loisirs Standard</option>
-                    <option value={109}>Voyage Affaires & Missions Internationales</option>
-                    <option value={110}>Voyage Études & Long Séjour</option>
-                  </>
-                )}
-              </select>
-            </div>
-
-            {/* Nationalité */}
-            <div className="form-group">
-              <label className="form-label">Nationalité de l'Assuré</label>
-              <select
-                className="form-control"
-                value={nationaliteId}
-                onChange={(e) => setNationaliteId(parseInt(e.target.value))}
-              >
-                {sortUniqueBy(paysList, (p) => p.nationalite || p.libelle_pays).map((p) => (
-                  <option key={p.id_pays} value={p.id_pays}>{p.nationalite || p.libelle_pays}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Pays de Destination */}
-            <div className="form-group">
-              <label className="form-label">Pays de Destination (* requis)</label>
-              <select
-                className="form-control"
-                value={paysDestinationId}
-                onChange={(e) => {
-                  const pid = parseInt(e.target.value);
-                  setPaysDestinationId(pid);
-                  const selP = paysList.find(p => p.id_pays === pid);
-                  if (selP && (selP.id_zone === 2 || (selP.libelle_pays && selP.libelle_pays.toLowerCase().includes('schengen')))) {
-                    setIsSchengen(true);
-                  }
-                }}
-              >
-                {sortUniqueBy(paysList, (p) => p.libelle_pays).map((p) => (
-                  <option key={p.id_pays} value={p.id_pays}>{p.libelle_pays}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Taux de Réduction */}
-            <div className="form-group">
-              <label className="form-label">Taux de Réduction (%)</label>
-              <input
-                type="number"
-                min="0"
-                max="35"
-                className="form-control"
-                value={reduction}
-                onChange={(e) => setReduction(Math.max(0, Math.min(35, Number(e.target.value))))}
-              />
-            </div>
-
-            {/* Référence Contrat */}
-            <div className="form-group">
-              <label className="form-label">Référence Contrat</label>
-              <input
-                type="text"
-                className="form-control"
-                value={referenceContrat}
-                onChange={(e) => setReferenceContrat(e.target.value)}
-              />
-            </div>
-
-            {/* Numéro Attestation */}
-            <div className="form-group">
-              <label className="form-label">Numéro d'Attestation</label>
-              <input
-                type="text"
-                className="form-control"
-                value={numeroAttestation}
-                onChange={(e) => setNumeroAttestation(e.target.value)}
-              />
-            </div>
-
-            {/* Date de Naissance */}
-            <div className="form-group">
-              <label className="form-label">Date de Naissance de l'Assuré</label>
-              <input
-                type="date"
-                className="form-control"
-                value={dateNaissance}
-                onChange={(e) => setDateNaissance(e.target.value)}
-              />
-            </div>
-
-            {/* Option Visa Schengen */}
-            <div className="form-group" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-              <label className="form-label">Option Visa Schengen</label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', cursor: 'pointer', marginTop: '0.25rem' }}>
-                <input
-                  type="checkbox"
-                  checked={isSchengen}
-                  onChange={(e) => setIsSchengen(e.target.checked)}
-                  style={{ width: '18px', height: '18px', accentColor: '#2563eb' }}
+      <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        {/* CONTENU DE L'ÉTAPE */}
+        <div className="glass-panel" style={{ ...styles.carte, flex: '1 1 620px', minWidth: 0 }}>
+          {step === 1 && (
+            <>
+              <h2 style={styles.titreCarte}><Users size={18} style={{ color: 'var(--primary-500)' }} /> Souscripteur & assuré</h2>
+              <div style={styles.grille}>
+                <RechercheClient
+                  label="Souscripteur (client)"
+                  personne={souscripteur}
+                  onChoisir={(p) => choisirAssure(p, true)}
+                  onNouveau={() => setNouveauClientPour('souscripteur')}
+                  erreur={erreurs.souscripteur}
                 />
-                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: isSchengen ? '#60a5fa' : 'var(--text-secondary)' }}>
-                  {isSchengen ? 'Attestation Schengen Conforme (30k €)' : 'Non Schengen'}
-                </span>
+              </div>
+              {souscripteur && <div style={{ marginTop: '0.75rem' }}><FichePersonne personne={souscripteur} /></div>}
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '1.25rem', cursor: 'pointer', fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                <input type="checkbox" checked={assureDifferent} onChange={(e) => setAssureDifferent(e.target.checked)} style={{ width: 17, height: 17, accentColor: 'var(--primary-500)' }} />
+                L'assuré (voyageur) est une autre personne que le souscripteur
               </label>
-            </div>
 
-            {/* Date d'Émission */}
-            <div className="form-group">
-              <label className="form-label">Date d'Émission</label>
-              <input
-                type="date"
-                className="form-control"
-                value={dateEmission}
-                onChange={(e) => setDateEmission(e.target.value)}
-              />
-            </div>
+              {assureDifferent && (
+                <>
+                  <div style={{ ...styles.grille, marginTop: '1rem' }}>
+                    <RechercheClient
+                      label="Assuré (voyageur)"
+                      personne={assureChoisi}
+                      onChoisir={(p) => choisirAssure(p, false)}
+                      onNouveau={() => setNouveauClientPour('assure')}
+                      erreur={erreurs.assure}
+                    />
+                  </div>
+                  {assureChoisi && <div style={{ marginTop: '0.75rem' }}><FichePersonne personne={assureChoisi} /></div>}
+                </>
+              )}
+              <p style={styles.aide}>Téléphone et adresses sont ceux de la fiche client (modifiables depuis la Clientèle).</p>
+            </>
+          )}
 
-            {/* Date d'Effet */}
-            <div className="form-group">
-              <label className="form-label">Date d'Effet (* requis)</label>
-              <input
-                type="date"
-                className="form-control"
-                value={dateEffet}
-                onChange={(e) => setDateEffet(e.target.value)}
-              />
-            </div>
-
-            {/* Date d'Expiration */}
-            <div className="form-group">
-              <label className="form-label">Date d'Expiration (* requis)</label>
-              <input
-                type="date"
-                className="form-control"
-                value={dateExpiration}
-                onChange={(e) => setDateExpiration(e.target.value)}
-              />
-            </div>
-
-            {/* Terme du contrat */}
-            <div className="form-group">
-              <label className="form-label">Terme du contrat</label>
-              <TermeContratSelect value={termeId} onChange={setTermeId} />
-            </div>
-
-            {/* Numéro Passeport */}
-            <div className="form-group">
-              <label className="form-label">Numéro de Passeport (* requis)</label>
-              <input
-                type="text"
-                className="form-control"
-                value={numeroPassport}
-                onChange={(e) => setNumeroPassport(e.target.value.toUpperCase())}
-                placeholder="Ex: 24CI99881"
-              />
-            </div>
-
-            {/* Durée Calculée */}
-            <div className="form-group" style={{ background: 'rgba(37, 99, 235, 0.08)', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid rgba(37, 99, 235, 0.25)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#60a5fa', fontWeight: 700 }}>Durée du Séjour</span>
-                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>{dureeJours} Jours</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Zone Tarifaire</span>
-                <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#38bdf8' }}>Zone {isSchengen ? '2 (Schengen)' : '3 (Monde)'}</div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleNextToStep2}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.65rem 1.25rem' }}
-            >
-              <span>Passer aux Offres & Garanties</span>
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================
-          ÉTAPE 2 : OFFRES & DÉCOMPTE (Z$ OREOLE)
-          ========================================================================= */}
-      {step === 2 && (
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '12px' }}>
-          <h3 style={{ color: '#3b82f6', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1.5rem', fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <ShieldCheck size={18} /> Sélection de l'Offre & Tableau des Garanties Acquises
-          </h3>
-
-          {/* Formule selector */}
-          <div style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', padding: '1.25rem', borderRadius: '10px', display: 'flex', gap: '1.5rem', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-            <div style={{ minWidth: '320px', flex: 1 }}>
-              <label className="form-label" style={{ fontWeight: 700, color: '#60a5fa' }}>Offre Voyage Disponible</label>
-              <select
-                className="form-control"
-                value={selectedOffreId}
-                onChange={(e) => setSelectedOffreId(parseInt(e.target.value))}
-                style={{ fontWeight: 700 }}
-              >
-                {sortUniqueBy(offresList, (o) => o.LibelleOffre).map((o) => (
-                  <option key={o.IdOffre} value={o.IdOffre}>{o.LibelleOffre}</option>
-                ))}
-              </select>
-            </div>
-            <div style={{ flex: 2, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              <strong style={{ color: 'var(--text-primary)' }}>{currentOffre.LibelleOffre}</strong>
-              <p style={{ margin: '0.25rem 0 0 0' }}>Couvre l'intégralité des exigences consulaires pour visas (Frais médicaux, rapatriement d'urgence, assistance juridique).</p>
-            </div>
-          </div>
-
-          {/* Warranties Table */}
-          <div className="table-container" style={{ maxHeight: '420px', overflowY: 'auto', marginBottom: '1.5rem' }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ textAlign: 'left' }}>Garantie</th>
-                  <th style={{ textAlign: 'center' }}>Acquise</th>
-                  <th style={{ textAlign: 'right' }}>Capital Garanti</th>
-                  <th style={{ textAlign: 'center' }}>Franchise</th>
-                  <th style={{ textAlign: 'right' }}>Prime Annuelle</th>
-                  <th style={{ textAlign: 'right' }}>Prime Nette</th>
-                </tr>
-              </thead>
-              <tbody>
-                {offreGaranties.map((g) => {
-                  const isAcquise = !!checkedGaranties[g.id];
-                  return (
-                    <tr key={g.id} style={{ opacity: isAcquise ? 1 : 0.5 }}>
-                      <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{g.LibelleSousGarantie}</td>
-                      <td style={{ textAlign: 'center' }}>
-                        <input
-                          type="checkbox"
-                          checked={isAcquise}
-                          onChange={(e) => {
-                            setCheckedGaranties(prev => ({
-                              ...prev,
-                              [g.id]: e.target.checked
-                            }));
-                          }}
-                          style={{ width: '16px', height: '16px', accentColor: '#2563eb', cursor: 'pointer' }}
-                        />
-                      </td>
-                      <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{Number(g.Capital).toLocaleString('fr-FR')} FCFA</td>
-                      <td style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>{g.Franchise}</td>
-                      <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{Number(g.PrimeAnnuelle).toLocaleString('fr-FR')} FCFA</td>
-                      <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: '#38bdf8' }}>{Number(g.PrimeNette).toLocaleString('fr-FR')} FCFA</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Financial Summary Tile Bar */}
-          <div style={{ background: 'rgba(15, 23, 42, 0.9)', border: '1px solid var(--border-medium)', padding: '1.25rem 1.5rem', borderRadius: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <div style={{ padding: '0.5rem', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' }}>
-                <Banknote size={22} />
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 600 }}>Décompte de la Cotisation</span>
-                <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                  Durée de séjour : {dureeJours} jours {reduction > 0 && `(Réduction : -${reduction}%)`}
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: '1.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block' }}>Prime Nette</span>
-                <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{financialTotals.totalPNette.toLocaleString('fr-FR')} FCFA</strong>
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block' }}>Accessoires</span>
-                <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{financialTotals.accessoires.toLocaleString('fr-FR')} FCFA</strong>
-              </div>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block' }}>Taxes CIMA</span>
-                <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{financialTotals.taxe.toLocaleString('fr-FR')} FCFA</strong>
-              </div>
-              <div style={{ paddingLeft: '1.25rem', borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                <span style={{ fontSize: '0.75rem', color: '#60a5fa', fontWeight: 700, textTransform: 'uppercase', display: 'block' }}>Prime Totale TTC</span>
-                <strong style={{ fontSize: '1.35rem', color: '#38bdf8' }}>{financialTotals.primeTtc.toLocaleString('fr-FR')} FCFA</strong>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1.5rem' }}>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setStep(1)}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-            >
-              <ChevronLeft size={16} />
-              <span>Précédent</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleNextToStep3}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.65rem 1.25rem' }}
-            >
-              <span>Passer au Souscripteur & Assuré</span>
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================
-          ÉTAPE 3 : SOUSCRIPTEUR & ASSURÉ (J$ OREOLE)
-          ========================================================================= */}
-      {step === 3 && (
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '12px' }}>
-          <h3 style={{ color: '#3b82f6', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1.5rem', fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Users size={18} /> Identification du Souscripteur & de l'Assuré Voyageur
-          </h3>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
-            {/* Nom Souscripteur with Search Dropdown */}
-            <div className="form-group" style={{ position: 'relative' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                <label className="form-label" style={{ margin: 0 }}>Nom du Souscripteur (* requis)</label>
-                <button
-                  type="button"
-                  onClick={() => setIsQuickAddClientOpen(true)}
-                  style={{ background: 'none', border: 'none', color: '#60a5fa', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
-                >
-                  <Plus size={12} /> Nouveau Client
-                </button>
-              </div>
-              <div style={{ position: 'relative' }}>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={clientSearchTerm}
-                  onChange={(e) => handleClientSearch(e.target.value)}
-                  placeholder="Rechercher ou saisir un souscripteur..."
-                />
-                <Search size={16} style={{ position: 'absolute', right: '12px', top: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          {step === 2 && (
+            <>
+              <h2 style={styles.titreCarte}><Globe size={18} style={{ color: 'var(--primary-500)' }} /> Contrat & voyage</h2>
+              <div style={styles.grille}>
+                <Champ label="Compagnie d'assurance" requis erreur={erreurs.compagnie}>
+                  <select className="form-control" value={compagnie} onChange={(e) => setCompagnie(Number(e.target.value))}>
+                    {!compagnies.some((c) => c.id === Number(compagnie)) && <option value={compagnie}>Compagnie n° {compagnie}</option>}
+                    {trierParLibelle(compagnies, (c) => c.nom).map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+                  </select>
+                </Champ>
+                <Champ label="Formule" requis erreur={erreurs.categorie}>
+                  <select className="form-control" value={categorie} onChange={(e) => setCategorie(Number(e.target.value))} disabled={!tarifs.length}>
+                    {!tarifs.length && <option value={0}>{chargementListes ? 'Chargement…' : 'Aucune formule'}</option>}
+                    {tarifs.map((t) => <option key={t.IdTarif} value={t.IdTarif}>{t.LibelleTarif}</option>)}
+                  </select>
+                </Champ>
+                <Champ label="Numéro de police compagnie" aide="Facultatif">
+                  <input type="text" className="form-control" value={numeroPoliceCompagnie} maxLength={60} onChange={(e) => setNumeroPoliceCompagnie(e.target.value)} />
+                </Champ>
               </div>
 
-              {isClientDropdownOpen && (
-                <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', zIndex: 50, marginTop: '4px', background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-medium)', borderRadius: '8px', boxShadow: 'var(--shadow-lg)', maxHeight: '180px', overflowY: 'auto' }}>
-                  {filteredClients.map((c) => (
-                    <div
-                      key={c.id}
-                      onClick={() => handleSelectClient(c)}
-                      style={{ padding: '0.5rem 0.85rem', fontSize: '0.8rem', cursor: 'pointer', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between' }}
-                    >
-                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{c.nomcomplet || c.Nom}</span>
-                      <span style={{ color: 'var(--text-muted)' }}>{c.telephone}</span>
+              <div style={styles.sousTitre}>Destination & voyageur</div>
+              <div style={styles.grille}>
+                <Champ label="Pays de destination" requis erreur={erreurs.paysDestination} aide={libelleZone ? undefined : 'La zone tarifaire dépend du pays choisi'}>
+                  <select className="form-control" value={paysDestination} onChange={(e) => setPaysDestination(Number(e.target.value))} disabled={!paysZone.length}>
+                    <option value={0}>{paysZone.length ? '— Choisir —' : (chargementListes ? 'Chargement…' : 'Aucun pays paramétré')}</option>
+                    {paysZone.map((p) => <option key={p.id_pays} value={p.id_pays}>{p.libelle_pays}</option>)}
+                  </select>
+                  {libelleZone && <div style={{ marginTop: '0.4rem' }}><span style={styles.pastille}><MapPin size={12} /> {libelleZone}</span></div>}
+                </Champ>
+                <Champ label="Nationalité" requis erreur={erreurs.nationalite}>
+                  <select className="form-control" value={nationalite} onChange={(e) => setNationalite(Number(e.target.value))}>
+                    <option value={0}>— Choisir —</option>
+                    {nationalitesTriees.map((p) => <option key={p.id_pays} value={p.id_pays}>{p.libelle}</option>)}
+                  </select>
+                </Champ>
+                <Champ label="Date de naissance du voyageur" requis erreur={erreurs.dateNaissance}
+                  aide={age !== null ? `${age} ans à ce jour (âge retenu par le tarif)` : 'Reprise de la fiche de l\'assuré si elle est renseignée'}>
+                  <input type="date" className="form-control" max={aujourdhui()} value={dateNaissance} onChange={(e) => setDateNaissance(e.target.value)} />
+                  {assure?.DateNaissance && dateNaissance && assure.DateNaissance !== dateNaissance && (
+                    <div style={{ ...styles.aide, color: 'var(--accent-amber)', display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
+                      <AlertTriangle size={13} /> Fiche de l'assuré : {dateFr(assure.DateNaissance)}
+                      <button type="button" className="btn btn-link" style={{ padding: 0, fontSize: '0.75rem', fontWeight: 700 }} onClick={() => setDateNaissance(assure.DateNaissance)}>
+                        Reprendre cette date
+                      </button>
+                    </div>
+                  )}
+                </Champ>
+                <Champ label="Numéro de passeport">
+                  <input type="text" className="form-control" maxLength={30} value={numeroPassport} onChange={(e) => setNumeroPassport(e.target.value.toUpperCase())} />
+                </Champ>
+                <Champ label="Schengen">
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', minHeight: '2.4rem' }}>
+                    <input type="checkbox" checked={schengen} onChange={(e) => setSchengen(e.target.checked)} style={{ width: 18, height: 18, accentColor: 'var(--primary-500)' }} />
+                    <span style={{ fontSize: '0.88rem', fontWeight: 600, color: schengen ? 'var(--primary-500)' : 'var(--text-secondary)' }}>{schengen ? 'Oui' : 'Non'}</span>
+                  </label>
+                </Champ>
+              </div>
+
+              <div style={styles.sousTitre}>Période du voyage</div>
+              <div style={styles.grille}>
+                <Champ label="Date d'émission" aide="Date du jour">
+                  <input type="date" className="form-control" value={dateEmission} readOnly disabled />
+                </Champ>
+                <Champ label="Date d'effet" requis erreur={erreurs.dateEffet}>
+                  <input type="date" className="form-control" value={dateEffet} onChange={(e) => setDateEffet(e.target.value)} />
+                </Champ>
+                <Champ label="Date d'expiration" requis erreur={erreurs.dateExpiration}>
+                  <input type="date" className="form-control" min={dateEffet || undefined} value={dateExpiration} onChange={(e) => setDateExpiration(e.target.value)} />
+                </Champ>
+                <Champ label="Durée">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minHeight: '2.4rem', fontWeight: 800, fontSize: '1.05rem', color: duree !== null && duree < 1 ? 'var(--accent-rose)' : 'var(--text-primary)' }}>
+                    <CalendarDays size={18} style={{ color: 'var(--primary-500)' }} />
+                    {duree === null ? '—' : `${duree} jour${Math.abs(duree) > 1 ? 's' : ''}`}
+                  </div>
+                </Champ>
+                <Champ label="Terme du contrat">
+                  <TermeContratSelect value={termeId} onChange={setTermeId} />
+                </Champ>
+              </div>
+
+              <div style={styles.sousTitre}>Références</div>
+              <div style={styles.grille}>
+                <Champ label="Référence contrat">
+                  <input type="text" className="form-control" maxLength={50} value={referenceContrat} onChange={(e) => setReferenceContrat(e.target.value)} />
+                </Champ>
+                <Champ label="Numéro attestation">
+                  <input type="text" className="form-control" maxLength={30} value={numeroAttestation} onChange={(e) => setNumeroAttestation(e.target.value)} />
+                </Champ>
+              </div>
+            </>
+          )}
+
+          {step === 3 && (
+            <>
+              <h2 style={styles.titreCarte}><ShieldCheck size={18} style={{ color: 'var(--primary-500)' }} /> Offre, garanties & prime</h2>
+              <div style={styles.grille}>
+                <Champ label="Offre" requis erreur={erreurs.offre}>
+                  <select className="form-control" value={offre} onChange={(e) => setOffre(Number(e.target.value))} disabled={!offres.length} style={{ fontWeight: 700 }}>
+                    {!offres.length && <option value={0}>Aucune offre</option>}
+                    {offres.map((o) => <option key={o.IdOffre} value={o.IdOffre}>{o.LibelleOffre}</option>)}
+                  </select>
+                </Champ>
+                <Champ label="Réduction (%)" requis erreur={erreurs.reduction} aide={`De 0 à ${REDUCTION_MAX} %`}>
+                  <input type="number" className="form-control" min={0} max={REDUCTION_MAX} step="0.01" value={reduction}
+                    onChange={(e) => setReduction(Math.max(0, Math.min(REDUCTION_MAX, Number(e.target.value) || 0)))} />
+                </Champ>
+              </div>
+
+              <div style={styles.sousTitre}>Garanties de l'offre</div>
+              {!calcul && !calculEnCours && (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Renseignez la destination, la date de naissance et les dates du voyage pour afficher les garanties.</p>
+              )}
+              {calculEnCours && !calcul?.lignes && (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', gap: '0.4rem', alignItems: 'center' }}><Loader2 size={15} className="spin" /> Calcul de la prime…</p>
+              )}
+              {calcul?.lignes && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: '0.5rem' }}>
+                  {calcul.lignes.map((g) => (
+                    <div key={g.IdSousGarantie} style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.6rem 0.8rem', borderRadius: '10px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)', fontSize: '0.83rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      <CheckCircle2 size={16} style={{ color: g.Acquise ? 'var(--accent-emerald)' : 'var(--text-muted)', flexShrink: 0 }} />
+                      <span>{g.LibelleSousGarantie}</span>
                     </div>
                   ))}
                 </div>
               )}
-            </div>
+              {calcul?.lignes && (
+                <p style={styles.aide}>Garanties acquises d'office. La prime est un forfait de la grille ; capitaux et franchises sont posés à l'enregistrement.</p>
+              )}
 
-            {/* Nom de l'Assuré */}
-            <div className="form-group">
-              <label className="form-label">Nom de l'Assuré (Titulaire du Passeport)</label>
-              <input
-                type="text"
-                className="form-control"
-                value={assureNom}
-                onChange={(e) => setAssureNom(e.target.value)}
-                placeholder="Nom & Prénoms figurant sur le passeport"
-              />
-            </div>
-
-            {/* Téléphone Assuré */}
-            <div className="form-group">
-              <label className="form-label">Numéro de Téléphone Assuré</label>
-              <div style={{ display: 'flex' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', padding: '0 0.75rem', background: 'var(--bg-surface-hover)', border: '1px solid var(--border-medium)', borderRight: 'none', borderRadius: '8px 0 0 8px', fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-                  +225
-                </span>
-                <input
-                  type="tel"
-                  className="form-control"
-                  style={{ borderRadius: '0 8px 8px 0' }}
-                  value={telephoneAssure}
-                  onChange={(e) => setTelephoneAssure(e.target.value)}
-                  placeholder="0700000000"
-                />
+              <div style={styles.sousTitre}>Décompte de la prime</div>
+              {erreurs.prime && <div style={{ ...styles.alerte('var(--accent-rose)'), marginBottom: '0.75rem' }}><AlertTriangle size={18} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} /><span>{erreurs.prime}</span></div>}
+              {!erreurs.prime && calcul?.erreur && <div style={{ ...styles.alerte('var(--accent-rose)'), marginBottom: '0.75rem' }}><AlertTriangle size={18} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} /><span>Prime non calculée : {calcul.erreur}</span></div>}
+              {!erreurs.prime && montants && montants.primeNette <= 0 && (
+                <div style={{ ...styles.alerte('var(--accent-amber)'), marginBottom: '0.75rem' }}>
+                  <AlertTriangle size={18} style={{ color: 'var(--accent-amber)', flexShrink: 0 }} />
+                  <span>Aucune prime dans la grille pour ces paramètres (âge {age ?? '—'} ans, {duree ?? '—'} jours, {libelleZone || 'zone inconnue'}) : le devis ne pourra pas être enregistré.</span>
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))', gap: '0.6rem' }}>
+                {[
+                  ['Prime annuelle', montants?.primeAnnuelle],
+                  ...(montants?.reduction > 0 ? [[`Réduction ${reduction} %`, -montants.reduction]] : []),
+                  ['Prime nette', montants?.primeNette],
+                  ['Accessoire', montants?.accessoire],
+                  ['Taxe', montants?.taxe],
+                ].map(([libelle, valeur]) => (
+                  <div key={libelle} style={{ padding: '0.75rem 0.9rem', borderRadius: '10px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)' }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>{libelle}</div>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(valeur)} F` : '—'}</div>
+                  </div>
+                ))}
+                <div style={{ padding: '0.75rem 0.9rem', borderRadius: '10px', border: '1px solid var(--primary-500)', background: 'var(--primary-glow)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--primary-500)', textTransform: 'uppercase', fontWeight: 800 }}>Prime TTC</div>
+                  <div style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(montants.primeTtc)} F` : '—'}</div>
+                </div>
               </div>
-            </div>
+            </>
+          )}
 
-            {/* Adresse Assuré */}
-            <div className="form-group">
-              <label className="form-label">Adresse Postale Assuré</label>
-              <input
-                type="text"
-                className="form-control"
-                value={adresseAssure}
-                onChange={(e) => setAdresseAssure(e.target.value)}
-                placeholder="Ex: BP 123 Abidjan"
-              />
-            </div>
-
-            {/* Adresse Géographique */}
-            <div className="form-group" style={{ gridColumn: 'span 2' }}>
-              <label className="form-label">Adresse Géographique de Résidence</label>
-              <input
-                type="text"
-                className="form-control"
-                value={adresseGeo}
-                onChange={(e) => setAdresseGeo(e.target.value)}
-                placeholder="Ex: Abidjan Cocody, Résidence les Palmiers"
-              />
-            </div>
-          </div>
-
-          {/* Recap Tile */}
-          <div style={{ background: 'rgba(37, 99, 235, 0.08)', border: '1px solid rgba(37, 99, 235, 0.2)', padding: '1rem 1.25rem', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <div style={{ padding: '0.5rem', borderRadius: '8px', background: 'rgba(37, 99, 235, 0.2)', color: '#60a5fa' }}>
-                <FileCheck size={20} />
+          {step === 4 && (
+            <>
+              <h2 style={styles.titreCarte}><FileCheck size={18} style={{ color: 'var(--primary-500)' }} /> Récapitulatif avant enregistrement</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem 2rem' }}>
+                <div>
+                  <div style={styles.sousTitre}>Souscripteur & assuré</div>
+                  {ligneRecap('Souscripteur', souscripteur?.Nom)}
+                  {ligneRecap('Assuré', assure?.Nom)}
+                  {ligneRecap('Né(e) le', dateNaissance ? `${dateFr(dateNaissance)} (${age} ans)` : '')}
+                  {ligneRecap('Nationalité', nationalites.find((p) => Number(p.id_pays) === Number(nationalite))?.nationalite)}
+                  {ligneRecap('Passeport', numeroPassport)}
+                  <div style={styles.sousTitre}>Contrat</div>
+                  {ligneRecap('Compagnie', nomCompagnie)}
+                  {ligneRecap('Formule', libelleFormule)}
+                  {ligneRecap('N° police compagnie', numeroPoliceCompagnie)}
+                  {ligneRecap('Référence contrat', referenceContrat)}
+                  {ligneRecap('N° attestation', numeroAttestation)}
+                </div>
+                <div>
+                  <div style={styles.sousTitre}>Voyage</div>
+                  {ligneRecap('Destination', destination?.libelle_pays)}
+                  {ligneRecap('Zone', libelleZone)}
+                  {ligneRecap('Schengen', schengen ? 'Oui' : 'Non')}
+                  {ligneRecap('Période', dateExpiration ? `du ${dateFr(dateEffet)} au ${dateFr(dateExpiration)}` : '')}
+                  {ligneRecap('Durée', duree !== null ? `${duree} jours` : '')}
+                  <div style={styles.sousTitre}>Prime</div>
+                  {ligneRecap('Offre', libelleOffre)}
+                  {ligneRecap('Prime nette', montants ? `${fcfa(montants.primeNette)} F` : '')}
+                  {ligneRecap('Accessoire', montants ? `${fcfa(montants.accessoire)} F` : '')}
+                  {ligneRecap('Taxe', montants ? `${fcfa(montants.taxe)} F` : '')}
+                  {ligneRecap('Prime TTC', montants ? `${fcfa(montants.primeTtc)} F` : '', true)}
+                </div>
               </div>
-              <div style={{ fontSize: '0.85rem' }}>
-                <strong style={{ color: 'var(--text-primary)' }}>{currentOffre.LibelleOffre}</strong>
-                <p style={{ margin: '0.2rem 0 0 0', color: 'var(--text-secondary)' }}>
-                  Passeport : <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: '#38bdf8' }}>{numeroPassport}</span> | Durée : {dureeJours} jours
-                </p>
-              </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Montant TTC à Régler</span>
-              <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#38bdf8' }}>{financialTotals.primeTtc.toLocaleString('fr-FR')} FCFA</div>
-            </div>
-          </div>
+            </>
+          )}
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1.5rem' }}>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setStep(2)}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-            >
-              <ChevronLeft size={16} />
-              <span>Précédent</span>
+          {/* NAVIGATION */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginTop: '1.75rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-secondary" onClick={() => (step > 1 ? setStep(step - 1) : navigate('/user/quotes'))} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <ChevronLeft size={16} /> {step > 1 ? 'Précédent' : 'Annuler'}
             </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSaveDevisVoyage}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.65rem 1.5rem', fontWeight: 800 }}
-            >
-              <CheckCircle2 size={16} />
-              <span>Enregistrer le Devis Voyage</span>
-            </button>
+            {step < 4 ? (
+              <button type="button" className="btn btn-primary" onClick={() => allerA(step + 1)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                Suivant <ChevronRight size={16} />
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" onClick={enregistrer} disabled={enregistrement} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontWeight: 800 }}>
+                {enregistrement ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+                {idDevisEdite ? 'Enregistrer les modifications' : 'Enregistrer le devis'}
+              </button>
+            )}
           </div>
         </div>
-      )}
 
-      {/* Modals */}
+        {/* RÉSUMÉ PERMANENT */}
+        <aside className="glass-panel" style={{ ...styles.carte, flex: '1 1 280px', maxWidth: '100%', position: 'sticky', top: '1rem' }}>
+          <h2 style={{ ...styles.titreCarte, marginBottom: '0.75rem', fontSize: '0.9rem' }}><Plane size={16} style={{ color: 'var(--primary-500)' }} /> Votre devis</h2>
+          {ligneRecap('Assuré', assure?.Nom)}
+          {ligneRecap('Compagnie', nomCompagnie)}
+          {ligneRecap('Destination', destination ? `${destination.libelle_pays}` : '')}
+          {ligneRecap('Zone', libelleZone)}
+          {ligneRecap('Durée', duree !== null && duree > 0 ? `${duree} jours` : '')}
+          {ligneRecap('Âge', age !== null ? `${age} ans` : '')}
+          {ligneRecap('Offre', libelleOffre)}
+          <div style={{ marginTop: '1rem', padding: '0.9rem', borderRadius: '12px', background: 'var(--primary-glow)', border: '1px solid var(--primary-500)' }}>
+            <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--primary-500)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              Prime TTC {calculEnCours && <Loader2 size={12} className="spin" />}
+            </div>
+            <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--text-primary)' }}>{montants && montants.primeNette > 0 ? `${fcfa(montants.primeTtc)} F` : '—'}</div>
+            {montants && montants.primeNette > 0 && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                dont prime nette {fcfa(montants.primeNette)} F
+              </div>
+            )}
+          </div>
+        </aside>
+      </div>
+
       <QuickAddClientModal
-        isOpen={isQuickAddClientOpen}
-        onClose={() => setIsQuickAddClientOpen(false)}
-        onClientCreated={(newClient) => {
-          setClients(prev => [newClient, ...prev]);
-          handleSelectClient(newClient);
+        isOpen={Boolean(nouveauClientPour)}
+        onClose={() => setNouveauClientPour(null)}
+        onClientCreated={(client) => {
+          const personne = personneDepuisClient(client);
+          if (personne?.IdClient) choisirAssure(personne, nouveauClientPour === 'souscripteur');
+          setNouveauClientPour(null);
         }}
       />
 
-      {createdQuote && (
+      {devisEnregistre && (
         <ViewQuoteModal
-          quote={createdQuote}
-          isOpen={!!createdQuote}
-          onClose={() => setCreatedQuote(null)}
-          onConvertToContract={handleConvertToContract}
+          quote={devisEnregistre}
+          isOpen={Boolean(devisEnregistre)}
+          onClose={() => setDevisEnregistre(null)}
+          onConvertToContract={confirmerEnContrat}
         />
       )}
     </div>

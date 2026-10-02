@@ -51,7 +51,7 @@ export const RolesPermissionsPage = () => {
           <thead>
             <tr>
               <th>Module Métier</th>
-              <th>Opération / Action Sécurisée</th>
+              <th>Action Sécurisée</th>
               <th style={{ textAlign: 'center' }}>Direction (Admin)</th>
               <th style={{ textAlign: 'center' }}>Superviseur (Manager)</th>
               <th style={{ textAlign: 'center' }}>Opérateur (Souscription)</th>

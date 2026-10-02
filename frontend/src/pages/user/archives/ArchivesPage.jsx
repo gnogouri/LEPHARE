@@ -214,7 +214,7 @@ export const ArchivesPage = () => {
         'Total archivé': filteredRows.length,
         'Période': dateFrom || dateTo ? `${dateFrom || '…'} → ${dateTo || '…'}` : 'Toutes dates',
       },
-      headers: ['Type', 'Référence', 'Nom / Client', 'Détail', "Date d'archivage", 'Motif'],
+      headers: ['Type', 'Référence', 'Client', 'Détail', "Date d'archivage", 'Motif'],
       rows: filteredRows.map((r) => [
         TYPE_META[r.type].label,
         r.reference,
@@ -247,7 +247,7 @@ export const ArchivesPage = () => {
       render: (row) => <strong style={{ color: '#60a5fa', fontFamily: 'var(--font-mono)' }}>{row.reference}</strong>,
     },
     {
-      header: 'Nom / Client',
+      header: 'Client',
       accessor: 'nom',
       render: (row) => <span style={{ color: '#fff', fontWeight: 600 }}>{row.nom}</span>,
     },

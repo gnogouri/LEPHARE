@@ -206,10 +206,10 @@ export const SubscriptionIssuanceModal = ({
                 value={duree}
                 onChange={(e) => setDuree(e.target.value)}
               >
-                <option value="1_an">1 An ferme (365 jours)</option>
-                <option value="6_mois">Semestrielle (6 mois)</option>
-                <option value="1_mois">Temporaire (30 jours)</option>
-                <option value="3_mois">Trimestrielle (3 mois)</option>
+                <option value="1_an">Annuelle</option>
+                <option value="6_mois">Semestrielle</option>
+                <option value="1_mois">Mensuelle</option>
+                <option value="3_mois">Trimestrielle</option>
               </select>
             </div>
 
@@ -290,7 +290,7 @@ export const SubscriptionIssuanceModal = ({
                 />
                 <UserCheck size={16} color={checks.kyc_valide ? '#10b981' : '#94a3b8'} />
                 <span>
-                  <strong>Validation KYC & Identité :</strong> Pièce d'identité / RCCM vérifié et conforme aux exigences LBC-FT.
+                  <strong>Vérification d'Identité (KYC) :</strong> Pièce d'identité / RCCM vérifié et conforme aux exigences LBC-FT.
                 </span>
               </label>
 

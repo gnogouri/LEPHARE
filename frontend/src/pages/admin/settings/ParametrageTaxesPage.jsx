@@ -63,7 +63,7 @@ export const ParametrageTaxesPage = () => {
 
   const columns = [
     {
-      header: 'Taxe / Prélèvement',
+      header: 'Taxe',
       render: (r) => (
         <div>
           <strong style={{ color: 'var(--text-primary)', display: 'block' }}>{r.Libelle}</strong>

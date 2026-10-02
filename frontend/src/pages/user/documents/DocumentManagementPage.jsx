@@ -25,7 +25,7 @@ import {
 const normalizeDoc = (d) => ({
   id: d.reference || d.id,
   nom: d.titre || d.nom || 'Document sans titre',
-  categorie: d.categorie || 'Contrats & Polices',
+  categorie: d.categorie || 'Contrats',
   entite_rattachee: d.entite_rattachee || d.entite_id || d.reference || d.client || 'Dossier lié',
   taille: d.taille || '1.5 Mo',
   type: d.type || d.type_fichier || (d.type_mime ? d.type_mime.split('/').pop().toUpperCase() : 'PDF'),
@@ -78,7 +78,7 @@ export const DocumentManagementPage = () => {
 
   const [newDoc, setNewDoc] = useState({
     nom: '',
-    categorie: 'Contrats & Polices',
+    categorie: 'Contrats',
     entite_rattachee: '',
     taille: '',
     type: 'PDF',
@@ -92,7 +92,7 @@ export const DocumentManagementPage = () => {
     }
     setNewDoc({
       nom: '',
-      categorie: 'Contrats & Polices',
+      categorie: 'Contrats',
       entite_rattachee: '',
       taille: '',
       type: 'PDF',
@@ -266,7 +266,7 @@ export const DocumentManagementPage = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-            <span className="badge badge-info">Module J – GED & Documents</span>
+            <span className="badge badge-info">Module J – GED</span>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Conservation Probante CIMA</span>
           </div>
           <h1 className="title-xl">Documents (GED)</h1>
@@ -338,7 +338,7 @@ export const DocumentManagementPage = () => {
             >
               <option value="ALL">Toutes catégories</option>
               <option value="Conformité CIMA">Conformité CIMA</option>
-              <option value="Contrats & Polices">Contrats & Polices</option>
+              <option value="Contrats">Contrats</option>
               <option value="Conventions Assureurs">Conventions Assureurs</option>
               <option value="Encaissements & Quittances">Encaissements & Quittances</option>
               <option value="Sinistres & Expertises">Sinistres & Expertises</option>
@@ -356,7 +356,7 @@ export const DocumentManagementPage = () => {
                 <th>Réf GED</th>
                 <th>Intitulé du Document</th>
                 <th>Catégorie</th>
-                <th>Entité / Dossier Lié</th>
+                <th>Dossier Lié</th>
                 <th>Format & Poids</th>
                 <th>Date d'Archivage</th>
                 <th>Certification</th>
@@ -477,7 +477,7 @@ export const DocumentManagementPage = () => {
       >
         <form onSubmit={handleUploadDoc} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div className="form-group">
-            <label className="form-label">Titre / Intitulé du Document *</label>
+            <label className="form-label">Titre du Document *</label>
             <input
               type="text"
               className="form-control"
@@ -495,7 +495,7 @@ export const DocumentManagementPage = () => {
               onChange={(e) => setNewDoc({ ...newDoc, categorie: e.target.value })}
             >
               <option value="Conformité CIMA">Conformité CIMA</option>
-              <option value="Contrats & Polices">Contrats & Polices</option>
+              <option value="Contrats">Contrats</option>
               <option value="Conventions Assureurs">Conventions Assureurs</option>
               <option value="Encaissements & Quittances">Encaissements & Quittances</option>
               <option value="Sinistres & Expertises">Sinistres & Expertises</option>

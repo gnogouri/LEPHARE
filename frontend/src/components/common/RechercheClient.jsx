@@ -3,10 +3,10 @@ import { Search, Plus, Loader2 } from 'lucide-react';
 import { customerApi } from '../../api/endpoints';
 
 // Champ de formulaire, recherche de client côté serveur (clientrecherche, comme URANUS : sans charger
-// toute la clientèle) et fiche du client choisi. Utilisés par les devis Voyage et MRH.
+// toute la clientèle) et fiche du client choisi. Utilisés par les devis Voyage, MRH, RC, MRP, Dommages et Transport.
 
 const jour = (v) => (v ? String(v).slice(0, 10) : '');
-const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '—');
+const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '-');
 
 const stylesChamp = {
   listeDeroulante: {
@@ -34,17 +34,20 @@ export const personneDepuisClient = (c) => {
 
 export const Champ = ({ label, requis, aide, erreur, children, large }) => (
   <div className={`form-group${erreur ? ' champ-en-erreur' : ''}`} style={{ margin: 0, ...(large ? { gridColumn: '1 / -1' } : {}) }}>
-    <label className="form-label">
-      {label}
-      {requis && <span style={{ color: 'var(--accent-rose)' }} aria-hidden="true"> *</span>}
-      {requis && <span className="visuellement-cache"> (obligatoire)</span>}
-    </label>
+    {label && (
+      <label className="form-label">
+        {label}
+        {requis && <span style={{ color: 'var(--accent-rose)' }} aria-hidden="true"> *</span>}
+        {requis && <span className="visuellement-cache"> (obligatoire)</span>}
+      </label>
+    )}
     {children}
     {erreur ? <div className="champ-message erreur" role="alert">{erreur}</div> : aide ? <div className="champ-message aide">{aide}</div> : null}
   </div>
 );
 
-export const RechercheClient = ({ label, personne, onChoisir, onNouveau, erreur }) => {
+// demande : { texte, n } pour lancer une recherche depuis l'écran (bandeau du questionnaire prospect) ; n la relance
+export const RechercheClient = ({ label, personne, onChoisir, onNouveau, erreur, demande }) => {
   const [terme, setTerme] = useState(personne?.Nom || '');
   const [resultats, setResultats] = useState([]);
   const [ouvert, setOuvert] = useState(false);
@@ -52,6 +55,7 @@ export const RechercheClient = ({ label, personne, onChoisir, onNouveau, erreur 
   const zone = useRef(null);
 
   useEffect(() => { setTerme(personne?.Nom || ''); }, [personne?.IdClient, personne?.Nom]);
+  useEffect(() => { if (demande?.texte) setTerme(demande.texte); }, [demande?.n]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const t = terme.trim();
@@ -121,9 +125,9 @@ export const RechercheClient = ({ label, personne, onChoisir, onNouveau, erreur 
 
 export const FichePersonne = ({ personne }) => (
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.5rem 1rem', padding: '0.85rem 1rem', borderRadius: '10px', background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-subtle)', fontSize: '0.82rem' }}>
-    <div><span style={{ color: 'var(--text-muted)' }}>Téléphone</span><div style={{ fontWeight: 600 }}>{personne.Telephone ? `+225 ${personne.Telephone}` : '—'}</div></div>
-    <div><span style={{ color: 'var(--text-muted)' }}>Adresse</span><div style={{ fontWeight: 600 }}>{personne.Adresse || '—'}</div></div>
-    <div><span style={{ color: 'var(--text-muted)' }}>Adresse géographique</span><div style={{ fontWeight: 600 }}>{personne.AdresseGeographique || '—'}</div></div>
+    <div><span style={{ color: 'var(--text-muted)' }}>Téléphone</span><div style={{ fontWeight: 600 }}>{personne.Telephone ? `+225 ${personne.Telephone}` : '-'}</div></div>
+    <div><span style={{ color: 'var(--text-muted)' }}>Adresse</span><div style={{ fontWeight: 600 }}>{personne.Adresse || '-'}</div></div>
+    <div><span style={{ color: 'var(--text-muted)' }}>Adresse géographique</span><div style={{ fontWeight: 600 }}>{personne.AdresseGeographique || '-'}</div></div>
     <div><span style={{ color: 'var(--text-muted)' }}>Date de naissance</span><div style={{ fontWeight: 600 }}>{dateFr(personne.DateNaissance)}</div></div>
   </div>
 );

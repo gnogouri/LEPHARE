@@ -1,26 +1,33 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { quoteApi, mrhApi, customerApi, settingsApi, contractApi } from '../../../api/endpoints';
+import { useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
+import { quoteApi, mrhApi, customerApi, settingsApi, contractApi, piecesJointesApi, valeursUsuellesApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import {
   Home, ChevronLeft, ChevronRight, Plus, Trash2, Edit3, CheckCircle2, AlertTriangle, Loader2,
-  FileText, Users, ShieldCheck, Calculator, FileCheck, Building, Eye, ChevronDown, Info, Scale, X,
+  FileText, Users, ShieldCheck, Calculator, FileCheck, Building, Eye, ChevronDown, Info, Scale, X, Download, FileSpreadsheet,
 } from 'lucide-react';
 import { ViewQuoteModal } from './ViewQuoteModal';
+import { BoutonPieceJointe, PieceJointe } from '../../../components/common/PieceJointe';
 import { QuickAddClientModal } from '../clients/QuickAddClientModal';
 import { TermeContratSelect } from '../../../components/common/TermeContratSelect';
 import { DureeContratSelect } from '../../../components/common/DureeContratSelect';
 import { Champ, RechercheClient, FichePersonne, personneDepuisClient } from '../../../components/common/RechercheClient';
+import { EtapesDevis, ResumeDevis } from '../../../components/common/ParcoursDevis';
+import { ChampPropose, propositionMontant, propositionsUsuelles } from '../../../components/common/ListePropositions';
 import { ID_TERME_PAR_DEFAUT, dureeSelonTerme, termeEtDureeEnregistres } from '../../../utils/termesContrat';
 import { trierParLibelle } from '../../../utils/sortUtils';
+import { confirmer } from '../../../utils/dialogue';
 import { arrondirMontant, compagnieParDefaut } from '../../../utils/parametrage';
 
 // Production Multirisques Habitation d'URANUS (Contrat, Maisons, Offre/récapitulatif, Souscripteur) :
 // un devis porte une ou plusieurs maisons ; chaque maison a un usage (statut d'occupation) qui fixe
-// les capitaux à saisir, la formule de calcul, les garanties obligatoires, les garanties facultatives
-// et les options. Les primes viennent du moteur MRH du serveur (POST /api/mrh/calcul/maison/), le
-// devis est enregistré d'un bloc (POST/PUT /api/mrh/devis/), puis la répartition de la prime de
-// chaque maison par garantie peut être ajustée comme dans URANUS (repartir-garanties).
+// les capitaux à saisir, les garanties obligatoires, les garanties facultatives et les options.
+// Pas de barème MRH (décision du 2026-10-28) : la prime nette de chaque maison, la taxe et l'accessoire
+// sont saisis à la main et envoyés en prime imposée ; le moteur MRH du serveur (POST /api/mrh/calcul/maison/)
+// ne sert plus qu'à contrôler la maison et lister ses garanties. Le devis est enregistré d'un bloc
+// (POST/PUT /api/mrh/devis/), puis la répartition de la prime de chaque maison par garantie peut être
+// ajustée comme dans URANUS (repartir-garanties).
 
 const ID_PRODUIT_MRH = 4;
 const ID_TARIF_MRH = 81;
@@ -33,11 +40,12 @@ const ETAPES = [
   { num: 5, libelle: 'Récapitulatif', icone: FileCheck },
 ];
 
-const fcfa = (val) => Math.round(Number(String(val ?? 0).replace(/\s/g, '')) || 0).toLocaleString('fr-FR');
+// Espace insécable ordinaire : l'espace fine du français n'est pas dessinée par toutes les polices (montants en gras)
+const fcfa = (val) => Math.round(Number(String(val ?? 0).replace(/\s/g, '')) || 0).toLocaleString('fr-FR').replace(/ /g, ' ');
 const cleanNum = (str) => (typeof str === 'number' ? str : parseFloat(String(str || '0').replace(/\s/g, '')) || 0);
 const chiffres = (v) => String(v || '').replace(/[^0-9]/g, '');
 const jour = (v) => (v ? String(v).slice(0, 10) : '');
-const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '—');
+const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '-');
 
 const messageErreurApi = (err) => {
   const data = err?.response?.data;
@@ -51,10 +59,10 @@ const messageErreurApi = (err) => {
 };
 
 // Formule de calcul stockée en base avec des accents mal encodés (UTF-8 relu en Windows-1252,
-// ex. « Ã— » pour « × ») : remise en UTF-8 pour l'affichage
+// ex. « Ã- » pour « × ») : remise en UTF-8 pour l'affichage
 const CP1252 = {
   '€': 0x80, '‚': 0x82, 'ƒ': 0x83, '„': 0x84, '…': 0x85, '†': 0x86, '‡': 0x87, 'ˆ': 0x88, '‰': 0x89, 'Š': 0x8a, '‹': 0x8b,
-  'Œ': 0x8c, 'Ž': 0x8e, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '•': 0x95, '–': 0x96, '—': 0x97, '˜': 0x98, '™': 0x99,
+  'Œ': 0x8c, 'Ž': 0x8e, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '•': 0x95, '–': 0x96, '-': 0x97, '˜': 0x98, '™': 0x99,
   'š': 0x9a, '›': 0x9b, 'œ': 0x9c, 'ž': 0x9e, 'Ÿ': 0x9f,
 };
 const reparerTexte = (texte) => {
@@ -134,32 +142,14 @@ const ChampMontant = ({ valeur, onChange, placeholder }) => (
   </div>
 );
 
-// Détail des garanties d'une maison (calcul du moteur ou garanties enregistrées)
-const TableauGaranties = ({ garanties }) => (
-  <div style={{ overflowX: 'auto' }}>
-    <table style={styles.tableau}>
-      <thead>
-        <tr>
-          <th style={styles.th}>Garantie</th>
-          <th style={{ ...styles.th, textAlign: 'right' }}>Prime nette</th>
-          <th style={{ ...styles.th, textAlign: 'right' }}>Taxe</th>
-          <th style={{ ...styles.th, textAlign: 'right' }}>Prime TTC</th>
-        </tr>
-      </thead>
-      <tbody>
-        {garanties.map((g) => (
-          <tr key={g.code}>
-            <td style={styles.td}>
-              {g.libelle}{' '}
-              {g.optionnelle && <span style={styles.pastille('var(--accent-purple)')}>facultative</span>}
-            </td>
-            <td style={{ ...styles.td, ...styles.num }}>{fcfa(g.prime_nette)}</td>
-            <td style={{ ...styles.td, ...styles.num }}>{fcfa(g.taxe)}{g.taux_taxe != null && <span style={{ color: 'var(--text-muted)' }}> ({g.taux_taxe} %)</span>}</td>
-            <td style={{ ...styles.td, ...styles.num, fontWeight: 700 }}>{fcfa(g.prime_ttc)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+// Garanties d'une maison (liste du moteur ou garanties enregistrées), sans les primes du moteur : pas de barème MRH
+const ListeGaranties = ({ garanties }) => (
+  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+    {garanties.map((g) => (
+      <span key={g.code} style={{ ...styles.pastille(g.optionnelle ? 'var(--accent-purple)' : 'var(--accent-emerald)'), padding: '0.3rem 0.65rem' }}>
+        <ShieldCheck size={12} /> {g.libelle}{g.optionnelle ? ' (facultative)' : ''}
+      </span>
+    ))}
   </div>
 );
 
@@ -170,10 +160,16 @@ export const NewMrhQuotePage = () => {
   // « Modifier » depuis le registre des devis : /user/quotes/mrh?edit=<iddevis>
   const [searchParams] = useSearchParams();
   const editIddevisParam = searchParams.get('edit');
+  // Incorporation d'une maison dans un contrat en cours (page Incorporation, ou devis INC rouvert du registre) : date
+  // d'incorporation au choix dans la période du contrat ; échéance, compagnie, souscripteur et assuré de la police
+  const [incorporation, setIncorporation] = useState(null);
   const [isLoadingEdit, setIsLoadingEdit] = useState(Boolean(editIddevisParam));
   const [numeroDevisEdite, setNumeroDevisEdite] = useState('');
   const [avertissementReprise, setAvertissementReprise] = useState('');
   const [idDevisActuel, setIdDevisActuel] = useState(null);
+  // Pièce jointe du devis (URANUS « Upload de fichier ») : envoyée après l'enregistrement, consultable ensuite
+  const [fichier, setFichier] = useState(null);
+  const [versionPiece, setVersionPiece] = useState(0);
 
   const [step, setStep] = useState(1);
   const [tentative, setTentative] = useState({});
@@ -196,6 +192,7 @@ export const NewMrhQuotePage = () => {
   const [dateEffet, setDateEffet] = useState(todayStr);
   const [customExpiration, setCustomExpiration] = useState('');
   const calculatedDateExpiration = useMemo(() => {
+    if (incorporation?.DateExpiration) return incorporation.DateExpiration;
     if (!dateEffet) return '';
     if (Number(dureeId) === 5) return customExpiration || '';
     const mois = { 1: 1, 2: 3, 3: 6, 4: 12 }[Number(dureeId)] || 12;
@@ -203,12 +200,14 @@ export const NewMrhQuotePage = () => {
     d.setMonth(d.getMonth() + mois);
     d.setDate(d.getDate() - 1);
     return d.toISOString().split('T')[0];
-  }, [dateEffet, dureeId, customExpiration]);
+  }, [dateEffet, dureeId, customExpiration, incorporation]);
 
   // Étape 2 : maisons
   const [maisons, setMaisons] = useState([]);
   const [maisonOuverte, setMaisonOuverte] = useState(null);
   const [editingMaisonId, setEditingMaisonId] = useState(null);
+  // Formulaire d'ajout replié quand le devis a déjà des maisons (ouvert à la demande ou pour modifier une maison)
+  const [formulaireMaison, setFormulaireMaison] = useState(false);
   const [currentUsageCode, setCurrentUsageCode] = useState('');
   const [currentAdresse, setCurrentAdresse] = useState('');
   const [capitaux, setCapitaux] = useState(MAISON_VIDE);
@@ -220,12 +219,10 @@ export const NewMrhQuotePage = () => {
   const [calculMaisonEnCours, setCalculMaisonEnCours] = useState(false);
   const currentUsage = useMemo(() => usages.find((u) => u.code === currentUsageCode) || null, [usages, currentUsageCode]);
 
-  // Étape 3 : imposition
-  const [isImpositionActive, setIsImpositionActive] = useState(false);
-  const [imposedPrimesParMaison, setImposedPrimesParMaison] = useState({});
-  const [imposedTaxe, setImposedTaxe] = useState('0');
-  const [imposedAccessoire, setImposedAccessoire] = useState(''); // vide = accessoire du barème
-  const [impositionMotif, setImpositionMotif] = useState('');
+  // Étape 3 : primes saisies à la main (pas de barème MRH) : prime nette de chaque maison, taxe et accessoire du devis
+  const [primesParMaison, setPrimesParMaison] = useState({});
+  const [taxeSaisie, setTaxeSaisie] = useState('');
+  const [accessoireSaisi, setAccessoireSaisi] = useState('');
 
   // Étape 4 : souscripteur / assuré
   const [souscripteur, setSouscripteur] = useState(null);
@@ -288,45 +285,33 @@ export const NewMrhQuotePage = () => {
     return () => { actif = false; };
   }, [currentUsageCode]);
 
-  // ------------------------------------------------------------------ totaux (règles du serveur)
-  const primeNetteMaison = (m) => (
-    isImpositionActive && imposedPrimesParMaison[m.id] !== undefined ? cleanNum(imposedPrimesParMaison[m.id]) : Number(m.prime_nette) || 0
-  );
-  const primeNetteMaisons = maisons.reduce((s, m) => s + primeNetteMaison(m), 0);
-  // Prime imposée : même rapport taxe / prime que la prime calculée (imposer_prime_devis)
-  const taxeMaison = (m) => {
-    const pnCalculee = Number(m.prime_nette) || 0;
-    const taxeCalculee = Number(m.taxe) || 0;
-    const pn = primeNetteMaison(m);
-    return pn !== pnCalculee && pnCalculee ? Math.round((taxeCalculee * pn) / pnCalculee) : taxeCalculee;
-  };
+  // ------------------------------------------------------------------ totaux (montants saisis)
+  const primeNetteMaison = (m) => cleanNum(primesParMaison[m.id]);
+  const totalsFinanciers = useMemo(() => {
+    const primeNette = maisons.reduce((s, m) => s + primeNetteMaison(m), 0);
+    const taxes = cleanNum(taxeSaisie);
+    const accessoires = cleanNum(accessoireSaisi);
+    return { primeNette, taxes, accessoires, primeTtc: arrondirMontant(primeNette + taxes + accessoires, 4) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maisons, primesParMaison, taxeSaisie, accessoireSaisi]);
 
-  const [accessoireBareme, setAccessoireBareme] = useState({ accessoire: 0, taxe: 0 });
+  // Listes déroulantes de la taxe et de l'accessoire (rien n'est rempli d'office) : accessoires habituels des devis
+  // MRH enregistrés ; taxe = prime saisie de chaque maison aux taux de taxe de ses garanties (rapport taxe / prime
+  // de la maison), plus 14,5 % de l'accessoire
+  const [accessoiresUsuels, setAccessoiresUsuels] = useState([]);
   useEffect(() => {
     let actif = true;
-    if (!primeNetteMaisons) { setAccessoireBareme({ accessoire: 0, taxe: 0 }); return undefined; }
-    mrhApi.getAccessoire({ idcompagnie: Number(compagnieId), prime_nette: primeNetteMaisons })
-      .then((r) => { if (actif) setAccessoireBareme({ accessoire: Number(r?.accessoire) || 0, taxe: Number(r?.taxe_accessoire) || 0 }); })
-      .catch(() => { if (actif) setAccessoireBareme({ accessoire: 0, taxe: 0 }); });
+    valeursUsuellesApi.get(ID_PRODUIT_MRH).then((d) => { if (actif) setAccessoiresUsuels(propositionsUsuelles(d.Accessoire)); }).catch(() => {});
     return () => { actif = false; };
-  }, [primeNetteMaisons, compagnieId]);
-
-  const totalsFinanciers = useMemo(() => {
-    let primeNette = 0;
-    let taxesGaranties = 0;
-    maisons.forEach((m) => { primeNette += primeNetteMaison(m); taxesGaranties += taxeMaison(m); });
-    let accessoires = accessoireBareme.accessoire;
-    let taxeAccessoire = accessoireBareme.taxe;
-    if (isImpositionActive && imposedAccessoire !== '') {
-      accessoires = cleanNum(imposedAccessoire);
-      taxeAccessoire = Math.round(accessoires * 0.145);
-    }
-    let taxes = taxesGaranties + taxeAccessoire;
-    const taxeImposee = isImpositionActive && cleanNum(imposedTaxe) > 0;
-    if (taxeImposee) taxes = cleanNum(imposedTaxe);
-    return { primeNette, taxesGaranties, taxeAccessoire, taxeImposee, taxes, accessoires, primeTtc: arrondirMontant(primeNette + taxes + accessoires, 4) };
+  }, []);
+  const taxesProposees = useMemo(() => {
+    if (!maisons.length || maisons.some((m) => primeNetteMaison(m) <= 0 || !(Number(m.prime_nette) > 0))) return [];
+    const garanties = maisons.reduce((s, m) => s + Math.round((primeNetteMaison(m) * Number(m.taxe)) / Number(m.prime_nette)), 0);
+    const taux = String(Math.round((garanties * 1000) / totalsFinanciers.primeNette) / 10).replace('.', ',');
+    return [propositionMontant(garanties + Math.round(cleanNum(accessoireSaisi) * 0.145),
+      `taux des garanties (${taux} % de la prime nette)${cleanNum(accessoireSaisi) ? ' + 14,5 % de l\'accessoire' : ''}`)];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [maisons, isImpositionActive, imposedPrimesParMaison, imposedTaxe, imposedAccessoire, accessoireBareme]);
+  }, [maisons, primesParMaison, accessoireSaisi, totalsFinanciers.primeNette]);
 
   // ------------------------------------------------------------------ maisons
   const viderFormulaireMaison = () => {
@@ -352,7 +337,8 @@ export const NewMrhQuotePage = () => {
     setCalculMaisonEnCours(true);
     let calcRes;
     try {
-      // Prime calculée par le moteur MRH du serveur, celui-là même qui enregistre le devis
+      // Moteur MRH du serveur, celui-là même qui enregistre le devis : contrôle de la maison et liste de ses
+      // garanties (ses primes ne sont pas reprises : la prime de la maison est saisie à l'étape Tarification)
       calcRes = await mrhApi.calculerPrimeMaison({
         code_usage: currentUsageCode,
         id_tarif: Number(categorieId),
@@ -362,7 +348,7 @@ export const NewMrhQuotePage = () => {
         sous_garanties_optionnelles: selectedGaranties.map((g) => ({ code_sous_garantie: g })),
       });
     } catch (err) {
-      toastError(`Calcul de la prime impossible : ${messageErreurApi(err)}`);
+      toastError(`Maison non ${editingMaisonId ? 'modifiée' : 'ajoutée'} : ${messageErreurApi(err)}`);
       return;
     } finally {
       setCalculMaisonEnCours(false);
@@ -392,10 +378,86 @@ export const NewMrhQuotePage = () => {
       success('Maison ajoutée au devis.');
     }
     viderFormulaireMaison();
+    setFormulaireMaison(false);
+  };
+
+  // Import Excel des maisons (devis neuf, « Modifier » ou incorporation, demande du 2026-11-10) : fichier lu et contrôlé par le
+  // moteur MRH du serveur, rien n'est enregistré avant « Enregistrer » ; une seule ligne en erreur et aucune maison n'est ajoutée
+  const [fichierMaisons, setFichierMaisons] = useState(null);
+  const [cleFichierMaisons, setCleFichierMaisons] = useState(0);
+  const [importMaisons, setImportMaisons] = useState({ enCours: false, erreurs: [], resume: '' });
+  const telechargerModeleMaisons = async () => {
+    try {
+      const blob = await mrhApi.modeleImport();
+      const url = URL.createObjectURL(blob);
+      const lien = document.createElement('a');
+      lien.href = url;
+      lien.download = 'modele_maisons_mrh.xlsx';
+      document.body.appendChild(lien);
+      lien.click();
+      lien.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toastError(`Modèle non téléchargé : ${messageErreurApi(err)}`);
+    }
+  };
+  const importerMaisons = async () => {
+    if (!fichierMaisons) { toastError('Choisissez le fichier Excel des maisons.'); return; }
+    setImportMaisons({ enCours: true, erreurs: [], resume: '' });
+    try {
+      const res = await mrhApi.analyserImport(fichierMaisons);
+      if (res.Erreurs?.length) {
+        setImportMaisons({ enCours: false, erreurs: res.Erreurs, resume: '' });
+        toastError(`Aucune maison importée : ${res.Erreurs.length} ligne${res.Erreurs.length > 1 ? 's' : ''} à corriger dans le fichier.`);
+        return;
+      }
+      const base = Date.now();
+      const nouvelles = (res.Maisons || []).map((m, i) => {
+        const primeNetteCalc = Math.round(Number(m.calcul?.prime_nette_totale) || 0);
+        const taxeCalc = Math.round(Number(m.calcul?.taxe_totale) || 0);
+        return {
+          id: base + i,
+          code_usage: m.code_usage,
+          usage_libelle: m.usage_libelle || m.code_usage,
+          adresse: m.adresse || '',
+          ...Object.fromEntries(CAPITAUX.map((c) => [c.cle, Number(m[c.cle]) || 0])),
+          options: m.options || [],
+          sous_garanties_optionnelles: m.sous_garanties_optionnelles || [],
+          prime_nette: primeNetteCalc,
+          taxe: taxeCalc,
+          prime_ttc: primeNetteCalc + taxeCalc,
+          garanties: garantiesDepuisCalcul(m.calcul?.sous_garanties),
+          options_appliquees: m.calcul?.options_appliquees || [],
+          prime_saisie: m.prime_nette_saisie,
+        };
+      });
+      setMaisons((prev) => [...prev, ...nouvelles]);
+      setPrimesParMaison((prev) => ({
+        ...prev,
+        ...Object.fromEntries(nouvelles.map((n) => [n.id, n.prime_saisie ? String(Math.round(n.prime_saisie)) : ''])),
+      }));
+      const t = res.Totaux || {};
+      // Taxe du fichier, quand chaque ligne la donne : ajoutée à la taxe du devis (somme des maisons)
+      if (t.Taxe !== null && t.Taxe !== undefined) setTaxeSaisie((v) => String(cleanNum(v) + Math.round(Number(t.Taxe) || 0)));
+      const resume = `${nouvelles.length} maison${nouvelles.length > 1 ? 's' : ''} importée${nouvelles.length > 1 ? 's' : ''} de la feuille « ${res.Feuille} »`
+        + ` : prime nette ${fcfa(t.PrimeNette)} F`
+        + (t.PrimesManquantes ? `, ${t.PrimesManquantes} prime${t.PrimesManquantes > 1 ? 's' : ''} à saisir à l'étape Tarification` : '')
+        + (t.Taxe !== null && t.Taxe !== undefined ? `, taxe ${fcfa(t.Taxe)} F ajoutée à celle du devis` : ', taxe à saisir à l\'étape Tarification')
+        + '. Vérifiez la liste puis enregistrez le devis.';
+      setImportMaisons({ enCours: false, erreurs: [], resume });
+      setFichierMaisons(null);
+      setCleFichierMaisons((k) => k + 1);
+      setFormulaireMaison(false);
+      success(resume);
+    } catch (err) {
+      setImportMaisons({ enCours: false, erreurs: [], resume: '' });
+      toastError(`Import impossible : ${messageErreurApi(err)}`);
+    }
   };
 
   const handleEditMaison = (m) => {
     setEditingMaisonId(m.id);
+    setFormulaireMaison(true);
     setCurrentUsageCode(m.code_usage || currentUsageCode);
     setCurrentAdresse(m.adresse || '');
     setCapitaux(Object.fromEntries(CAPITAUX.map((c) => [c.cle, m[c.cle] ? String(m[c.cle]) : ''])));
@@ -404,8 +466,13 @@ export const NewMrhQuotePage = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleRemoveMaison = (id) => {
-    setMaisons((prev) => prev.filter((m) => m.id !== id));
+  const handleRemoveMaison = async (m, idx) => {
+    if (!(await confirmer({
+      ton: 'danger', titre: `Retirer la maison ${idx + 1} ?`, confirmer: 'Retirer',
+      message: `${m.usage_libelle || 'Maison'}${m.adresse ? `, ${m.adresse}` : ''}${primeNetteMaison(m) ? ` : prime nette ${fcfa(primeNetteMaison(m))} F` : ''}. La maison et ses garanties sont retirées du devis.`,
+    }))) return;
+    const id = m.id;
+    setMaisons((prev) => prev.filter((x) => x.id !== id));
     if (editingMaisonId === id) viderFormulaireMaison();
   };
 
@@ -416,7 +483,11 @@ export const NewMrhQuotePage = () => {
     (async () => {
       setIsLoadingEdit(true);
       try {
-        const [devis, detail] = await Promise.all([quoteApi.getQuote(editIddevisParam), mrhApi.getMaisons(editIddevisParam)]);
+        const [devis, detail, lectureIncorporation] = await Promise.all([
+          quoteApi.getQuote(editIddevisParam),
+          mrhApi.getMaisons(editIddevisParam),
+          contractApi.lireDevisIncorporation(editIddevisParam).catch(() => null),
+        ]);
         if (!actif) return;
         const raw = devis?.raw || {};
         if (raw.confirme) {
@@ -424,6 +495,7 @@ export const NewMrhQuotePage = () => {
           navigate('/user/quotes');
           return;
         }
+        setIncorporation(lectureIncorporation?.Incorporation ? lectureIncorporation : null);
         setIdDevisActuel(Number(editIddevisParam));
         setNumeroDevisEdite(raw.numerodevis || '');
         setNumeroPoliceCompagnie(raw.numero_police_compagnie || '');
@@ -447,12 +519,11 @@ export const NewMrhQuotePage = () => {
         if (assureLu) { setAssureDifferent(true); setAssureChoisi(personneDepuisClient(assureLu)); }
         setTelephoneAssure((personneDepuisClient(assureLu || clientLu) || {}).Telephone || '');
 
-        // Maisons : valeurs enregistrées ; prime « calculée » recalculée par le moteur quand la prime
-        // du devis avait été imposée
+        // Maisons : valeurs enregistrées
         const maisonsDevis = detail?.maisons || [];
-        const maisonsChargees = await Promise.all(maisonsDevis.map(async (m) => {
+        const maisonsChargees = maisonsDevis.map((m) => {
           const p = m.parametres || {};
-          const maison = {
+          return {
             id: m.maison_id,
             maison_id: m.maison_id,
             code_usage: m.code_usage,
@@ -469,57 +540,36 @@ export const NewMrhQuotePage = () => {
             prime_ttc: Number(m.prime_ttc) || 0,
             garanties: garantiesDepuisCalcul(m.garanties),
           };
-          if (!raw.prime_imposee) return maison;
-          try {
-            const calc = await mrhApi.calculerPrimeMaison({
-              code_usage: maison.code_usage, id_tarif: ID_TARIF_MRH, id_offre: 0,
-              valeur_batiment: maison.valeur_batiment, valeur_contenu: maison.valeur_contenu,
-              loyer_mensuel: maison.loyer_mensuel, capital_rvt: maison.capital_rvt,
-              options: maison.options.map((o) => ({ code_option: o })),
-              sous_garanties_optionnelles: maison.sous_garanties_optionnelles.map((g) => ({ code_sous_garantie: g })),
-            });
-            const pn = Math.round(Number(calc?.prime_nette_totale) || 0);
-            const tx = Math.round(Number(calc?.taxe_totale) || 0);
-            return { ...maison, prime_nette: pn, taxe: tx, prime_ttc: pn + tx, garanties: garantiesDepuisCalcul(calc?.sous_garanties) };
-          } catch {
-            return maison;
-          }
-        }));
-        if (!actif) return;
+        });
         setMaisons(maisonsChargees);
 
-        if (raw.prime_imposee) {
-          setIsImpositionActive(true);
-          setImposedPrimesParMaison(Object.fromEntries(maisonsDevis.map((m) => [m.maison_id, String(Math.round(Number(m.prime_nette) || 0))])));
-          setImposedTaxe(String(Math.round(Number(raw.taxe) || 0)));
-          setImposedAccessoire(String(Math.round(Number(raw.accessoire) || 0)));
-        }
-        // Devis repris d'URANUS : maisons souvent sans usage ni prime, seul l'en-tête porte les montants.
-        // Ils sont repris en prime imposée, répartis au prorata des capitaux.
+        // Montants enregistrés repris dans les champs de saisie (vides s'ils sont nuls)
+        const saisi = (v) => (Math.round(Number(v) || 0) ? String(Math.round(Number(v))) : '');
+        let primes = maisonsChargees.map((m) => Math.round(m.prime_nette));
+        // Devis repris d'URANUS : maisons souvent sans usage ni prime, seul l'en-tête porte les montants ;
+        // la prime nette est répartie au prorata des capitaux.
         const pnEnTete = Math.round(Number(raw.primenette) || 0);
-        const pnMaisons = maisonsChargees.reduce((s, m) => s + m.prime_nette, 0);
-        if (!raw.prime_imposee && pnEnTete > 0 && pnMaisons === 0 && maisonsChargees.length > 0) {
+        if (pnEnTete > 0 && primes.every((p) => !p) && maisonsChargees.length > 0) {
           const poids = maisonsChargees.map((m) => m.valeur_batiment + m.valeur_contenu);
           const totalPoids = poids.reduce((a, b) => a + b, 0);
           let reste = pnEnTete;
-          const parts = maisonsChargees.map((m, i) => {
+          primes = maisonsChargees.map((m, i) => {
             if (i === maisonsChargees.length - 1) return reste;
             const part = Math.round(totalPoids > 0 ? (pnEnTete * poids[i]) / totalPoids : pnEnTete / maisonsChargees.length);
             reste -= part;
             return part;
           });
-          setIsImpositionActive(true);
-          setImposedPrimesParMaison(Object.fromEntries(maisonsChargees.map((m, i) => [m.id, String(parts[i])])));
-          setImposedTaxe(String(Math.round(Number(raw.taxe) || 0)));
-          setImposedAccessoire(String(Math.round(Number(raw.accessoire) || 0)));
         }
+        setPrimesParMaison(Object.fromEntries(maisonsChargees.map((m, i) => [m.id, saisi(primes[i])])));
+        setTaxeSaisie(saisi(raw.taxe));
+        setAccessoireSaisi(saisi(raw.accessoire));
         const alertes = [];
         if (maisonsDevis.length === 0 && Number(raw.primettc) > 0) {
-          alertes.push(`Aucune maison n'est enregistrée pour ce devis (repris d'URANUS). Montants enregistrés : prime nette ${fcfa(raw.primenette)} F, `
+          alertes.push(`Aucune maison n'est enregistrée pour ce devis. Montants enregistrés : prime nette ${fcfa(raw.primenette)} F, `
             + `taxes ${fcfa(raw.taxe)} F, accessoires ${fcfa(raw.accessoire)} F, TTC ${fcfa(raw.primettc)} F. Saisissez les maisons pour pouvoir l'enregistrer à nouveau.`);
         }
         if (maisonsDevis.some((m) => !m.code_usage)) {
-          alertes.push('Usage d\'occupation non renseigné en base pour une ou plusieurs maisons (devis repris d\'URANUS) : à choisir avant d\'enregistrer.');
+          alertes.push('Usage d\'occupation non renseigné en base pour une ou plusieurs maisons : à choisir avant d\'enregistrer.');
         }
         setAvertissementReprise(alertes.join(' '));
       } catch (err) {
@@ -537,7 +587,10 @@ export const NewMrhQuotePage = () => {
     const e = {};
     if (n === 1) {
       if (!compagnieId) e.compagnie = 'Choisissez la compagnie.';
-      if (!dateEffet) e.dateEffet = 'Saisissez la date d\'effet.';
+      if (!dateEffet) e.dateEffet = incorporation ? 'Saisissez la date d\'incorporation.' : 'Saisissez la date d\'effet.';
+      else if (incorporation && (dateEffet < incorporation.DateEffetContrat || dateEffet > incorporation.DateExpiration)) {
+        e.dateEffet = `La date d'incorporation doit être comprise entre le ${dateFr(incorporation.DateEffetContrat)} et le ${dateFr(incorporation.DateExpiration)}.`;
+      }
       if (!calculatedDateExpiration) e.dateExpiration = 'Saisissez la date d\'expiration.';
       else if (calculatedDateExpiration <= dateEffet) e.dateExpiration = 'La date d\'expiration doit suivre la date d\'effet.';
     }
@@ -545,8 +598,9 @@ export const NewMrhQuotePage = () => {
       if (!maisons.length) e.maisons = 'Ajoutez au moins une maison au devis.';
       else if (maisons.some((m) => !m.code_usage)) e.maisons = 'Une maison n\'a pas d\'usage d\'occupation : modifiez-la.';
     }
-    if (n === 3 && isImpositionActive && maisons.some((m) => primeNetteMaison(m) <= 0)) {
-      e.imposition = 'Prime imposée : chaque maison doit avoir une prime nette supérieure à 0.';
+    if (n === 3) {
+      if (maisons.some((m) => primeNetteMaison(m) <= 0)) e.primes = 'Saisissez la prime nette de chaque maison.';
+      if (!(cleanNum(taxeSaisie) > 0)) e.taxe = 'Saisissez la taxe.';
     }
     if (n === 4) {
       if (!souscripteur?.IdClient) e.souscripteur = 'Choisissez le souscripteur dans la liste.';
@@ -559,7 +613,7 @@ export const NewMrhQuotePage = () => {
     ...(tentative[2] ? erreursEtape(2) : {}),
     ...(tentative[3] ? erreursEtape(3) : {}),
     ...(tentative[4] ? erreursEtape(4) : {}),
-  }), [tentative, compagnieId, dateEffet, calculatedDateExpiration, maisons, isImpositionActive, imposedPrimesParMaison, souscripteur, assureDifferent, assureChoisi]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [tentative, compagnieId, dateEffet, calculatedDateExpiration, maisons, primesParMaison, taxeSaisie, souscripteur, assureDifferent, assureChoisi]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allerA = (cible) => {
     if (cible <= step) { setStep(cible); return; }
@@ -634,14 +688,13 @@ export const NewMrhQuotePage = () => {
         options: m.options || [],
         sous_garanties_optionnelles: m.sous_garanties_optionnelles || [],
       })),
-      imposition: isImpositionActive
-        ? {
-          montants_maisons: maisons.map((m) => primeNetteMaison(m)),
-          montant_taxe: cleanNum(imposedTaxe) > 0 ? cleanNum(imposedTaxe) : null,
-          montant_accessoire: imposedAccessoire === '' ? null : cleanNum(imposedAccessoire),
-          motif: impositionMotif,
-        }
-        : null,
+      // Montants saisis à la main, enregistrés en prime imposée
+      imposition: {
+        montants_maisons: maisons.map((m) => primeNetteMaison(m)),
+        montant_taxe: cleanNum(taxeSaisie),
+        montant_accessoire: cleanNum(accessoireSaisi),
+        motif: 'Primes saisies à la main (pas de barème MRH)',
+      },
     };
     setIsSubmitting(true);
     try {
@@ -649,6 +702,15 @@ export const NewMrhQuotePage = () => {
       const devisId = Number(res?.devis_id) || 0;
       if (!devisId) { toastError('Devis MRH non enregistré : le serveur n\'a pas renvoyé de numéro de devis.'); return; }
       success(idDevisActuel ? `Devis MRH N° ${res.numero_devis} modifié.` : `Devis MRH N° ${res.numero_devis} enregistré.`);
+      if (fichier) {
+        try {
+          await piecesJointesApi.attacher('devis', devisId, fichier);
+          setFichier(null);
+          setVersionPiece((v) => v + 1);
+        } catch (errFichier) {
+          toastError(`Devis enregistré, mais le fichier n'a pas été joint : ${messageErreurApi(errFichier)}`);
+        }
+      }
       setIdDevisActuel(devisId);
       setNumeroDevisEdite(res.numero_devis || '');
       setDevisEnregistre({ id: devisId, numero: res.numero_devis, totaux: res.totaux || {} });
@@ -718,13 +780,22 @@ export const NewMrhQuotePage = () => {
   // ------------------------------------------------------------------ affichage
   const nomCompagnie = companies.find((c) => c.id === Number(compagnieId))?.nom || '';
   const libelleTarif = (tarifs.find((t) => Number(t.IdTarif) === Number(categorieId))?.LibelleTarif) || (Number(categorieId) === ID_TARIF_MRH ? 'MULTIRISQUE HABITATION' : `Tarif n° ${categorieId}`);
+  // Rubrique du récapitulatif, avec retour à l'étape où elle se modifie
+  const titreRecap = (libelle, etape) => (
+    <div style={{ ...styles.sousTitre, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+      <span>{libelle}</span>
+      <button type="button" onClick={() => setStep(etape)}
+        style={{ background: 'transparent', border: 'none', color: 'var(--primary-500)', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 700, textTransform: 'none', letterSpacing: 0, display: 'inline-flex', alignItems: 'center', gap: '0.2rem', padding: 0 }}>
+        <Edit3 size={12} /> Modifier
+      </button>
+    </div>
+  );
   const ligneRecap = (libelle, valeur, fort) => (
     <div style={styles.ligneRecap}>
       <span style={{ color: 'var(--text-muted)' }}>{libelle}</span>
-      <span style={{ textAlign: 'right', fontWeight: fort ? 800 : 600, color: 'var(--text-primary)' }}>{valeur || '—'}</span>
+      <span style={{ textAlign: 'right', fontWeight: fort ? 800 : 600, color: 'var(--text-primary)' }}>{valeur || '-'}</span>
     </div>
   );
-  const formule = reparerTexte(parametresUsage?.formule_texte);
 
   if (isLoadingEdit) {
     return (
@@ -744,42 +815,26 @@ export const NewMrhQuotePage = () => {
         </button>
         <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: 0 }}>
           <Home size={26} style={{ color: 'var(--primary-500)' }} />
-          {step === 6 ? 'Devis Multirisques Habitation enregistré' : idDevisActuel ? 'Modification du devis Multirisques Habitation' : 'Nouveau devis Multirisques Habitation'}
+          {incorporation ? `Incorporation de maisons dans la police ${incorporation.NumeroPolice}`
+            : step === 6 ? 'Devis Multirisques Habitation enregistré' : idDevisActuel ? 'Modification du devis Multirisques Habitation' : 'Nouveau devis Multirisques Habitation'}
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', margin: '0.3rem 0 0' }}>
           {numeroDevisEdite
-            ? <>Devis <strong>N° {numeroDevisEdite}</strong>. Les primes sont recalculées par le moteur MRH à l'enregistrement.</>
-            : 'Une ou plusieurs maisons par devis. L\'usage de chaque maison fixe les capitaux à saisir, les garanties et la formule de calcul.'}
+            ? <>Devis <strong>N° {numeroDevisEdite}</strong>. Les primes, la taxe et l'accessoire sont saisis à la main.</>
+            : 'Une ou plusieurs maisons par devis. L\'usage de chaque maison fixe les capitaux à saisir et les garanties ; les primes, la taxe et l\'accessoire sont saisis à la main.'}
         </p>
       </div>
 
       {/* ÉTAPES */}
-      {step <= 5 && (
-        <nav aria-label="Étapes du devis" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))', gap: '0.5rem' }}>
-          {ETAPES.map(({ num, libelle, icone: Icone }) => {
-            const actif = step === num;
-            const fait = step > num;
-            return (
-              <button key={num} type="button" onClick={() => allerA(num)} aria-current={actif ? 'step' : undefined}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.7rem 0.9rem', borderRadius: '12px', cursor: 'pointer', textAlign: 'left',
-                  border: `1px solid ${actif ? 'var(--primary-500)' : 'var(--border-subtle)'}`, background: actif ? 'var(--primary-glow)' : 'var(--bg-surface)',
-                  color: actif ? 'var(--primary-500)' : 'var(--text-secondary)',
-                }}>
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                  background: fait ? 'var(--accent-emerald)' : actif ? 'var(--primary-500)' : 'var(--bg-surface-elevated)', color: fait || actif ? '#fff' : 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 800,
-                }}>{fait ? <CheckCircle2 size={16} /> : num}</span>
-                <span style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Étape {num}</span>
-                  <span style={{ fontSize: '0.86rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.3rem' }}><Icone size={14} /> {libelle}</span>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-      )}
+      {step <= 5 && <EtapesDevis etapes={ETAPES} etape={step} onAller={allerA} />}
 
+      {incorporation && (
+        <Alerte couleur="var(--primary-500)">
+          {`Avenant d'incorporation : la police compte aujourd'hui ${incorporation.Personnes} maison${incorporation.Personnes > 1 ? 's' : ''}. `
+            + `Les maisons de ce devis s'y ajoutent du ${dateFr(dateEffet)} à l'échéance inchangée du ${dateFr(incorporation.DateExpiration)}. `
+            + 'Saisissez les primes dues pour cette période.'}
+        </Alerte>
+      )}
       {avertissementReprise && step <= 5 && <Alerte couleur="var(--accent-amber)">{avertissementReprise}</Alerte>}
 
       <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -789,8 +844,8 @@ export const NewMrhQuotePage = () => {
             <>
               <h2 style={styles.titreCarte}><FileText size={18} style={{ color: 'var(--primary-500)' }} /> Informations générales du contrat</h2>
               <div style={styles.grille}>
-                <Champ label="Compagnie d'assurance" requis erreur={erreurs.compagnie}>
-                  <select className="form-control" value={compagnieId} onChange={(e) => setCompagnieId(Number(e.target.value))}>
+                <Champ label="Compagnie d'assurance" requis erreur={erreurs.compagnie} aide={incorporation ? 'Celle de la police' : undefined}>
+                  <select className="form-control" value={compagnieId} disabled={Boolean(incorporation)} onChange={(e) => setCompagnieId(Number(e.target.value))}>
                     {!companies.some((c) => c.id === Number(compagnieId)) && <option value={compagnieId}>Compagnie n° {compagnieId}</option>}
                     {trierParLibelle(companies, (c) => c.nom).map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
                   </select>
@@ -806,15 +861,23 @@ export const NewMrhQuotePage = () => {
                 </Champ>
               </div>
               <div style={styles.sousTitre}>Période</div>
+              {incorporation ? (
+                <div style={styles.grille}>
+                  <Champ label="Date d'incorporation" requis erreur={erreurs.dateEffet} aide={`Au choix dans la période du contrat, du ${dateFr(incorporation.DateEffetContrat)} au ${dateFr(incorporation.DateExpiration)}`}>
+                    <input type="date" className="form-control" value={dateEffet} min={incorporation.DateEffetContrat} max={incorporation.DateExpiration}
+                      onChange={(e) => setDateEffet(e.target.value)} />
+                  </Champ>
+                  <Champ label="Date d'échéance" aide="Celle du contrat, non modifiable">
+                    <input type="date" className="form-control" value={incorporation.DateExpiration} readOnly disabled />
+                  </Champ>
+                </div>
+              ) : (
               <div style={styles.grille}>
                 <Champ label="Terme du contrat">
                   <TermeContratSelect value={termeId} onChange={(t) => { setTermeId(t); setDureeId((d) => dureeSelonTerme(t, d)); }} />
                 </Champ>
                 <Champ label="Durée du contrat">
                   <DureeContratSelect value={dureeId} onChange={setDureeId} terme={termeId} />
-                </Champ>
-                <Champ label="Date d'émission" aide="Date du jour">
-                  <input type="date" className="form-control" value={dateEmission} readOnly disabled />
                 </Champ>
                 <Champ label="Date d'effet" requis erreur={erreurs.dateEffet}>
                   <input type="date" className="form-control" value={dateEffet} onChange={(e) => setDateEffet(e.target.value)} />
@@ -825,226 +888,252 @@ export const NewMrhQuotePage = () => {
                     : <input type="date" className="form-control" value={calculatedDateExpiration} readOnly disabled />}
                 </Champ>
               </div>
+              )}
             </>
           )}
 
           {/* ---------------------------------------------------------- ÉTAPE 2 : HABITATIONS */}
           {step === 2 && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                <h2 style={{ ...styles.titreCarte, margin: 0 }}><Building size={18} style={{ color: 'var(--primary-500)' }} /> {editingMaisonId ? 'Modifier la maison' : 'Ajouter une maison'}</h2>
-                {editingMaisonId && <button type="button" className="btn btn-secondary" onClick={viderFormulaireMaison} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}><X size={14} /> Annuler la modification</button>}
-              </div>
-
-              <div style={{ ...styles.grille, marginTop: '1.1rem' }}>
-                <Champ label="Usage de l'habitation" requis aide={currentUsage?.description}>
-                  <select className="form-control" value={currentUsageCode} onChange={(e) => setCurrentUsageCode(e.target.value)} disabled={!usages.length}>
-                    {!usages.length && <option value="">Chargement…</option>}
-                    {trierParLibelle(usages, (u) => u.libelle).map((u) => <option key={u.code} value={u.code}>{u.libelle}</option>)}
-                  </select>
-                </Champ>
-                <Champ label="Adresse de la maison" aide="Facultative">
-                  <input type="text" className="form-control" value={currentAdresse} onChange={(e) => setCurrentAdresse(e.target.value)} />
-                </Champ>
-              </div>
-
-              <div style={styles.sousTitre}>Valeurs assurées</div>
-              <div style={styles.grille}>
-                {capitauxAffiches.map((c) => (
-                  <Champ key={c.cle} label={c.libelle} requis={Boolean(parametresUsage?.[c.parametre])}>
-                    <ChampMontant valeur={capitaux[c.cle]} onChange={(v) => setCapitaux((prev) => ({ ...prev, [c.cle]: v }))} />
-                  </Champ>
-                ))}
-              </div>
-              {formule && (
-                <div style={{ ...styles.aide, display: 'flex', gap: '0.4rem', alignItems: 'flex-start', marginTop: '0.75rem' }}>
-                  <Info size={14} style={{ flexShrink: 0, marginTop: 1 }} /> Formule de l'usage : {formule}
-                </div>
-              )}
-
-              {garantiesUsage.obligatoires.length > 0 && (
-                <>
-                  <div style={styles.sousTitre}>Garanties incluses ({garantiesUsage.obligatoires.length})</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                    {garantiesUsage.obligatoires.map((g) => (
-                      <span key={g.code} style={{ ...styles.pastille('var(--accent-emerald)'), padding: '0.3rem 0.65rem' }}>
-                        <ShieldCheck size={12} /> {g.libelle}{g.taux_repartition != null ? ` · ${g.taux_repartition} %` : ''}
-                      </span>
-                    ))}
-                  </div>
-                  <p style={styles.aide}>Le pourcentage est la part de la prime de base attribuée à la garantie.</p>
-                </>
-              )}
-
-              {garantiesUsage.optionnelles.length > 0 && (
-                <>
-                  <div style={styles.sousTitre}>Garanties facultatives</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 210px), 1fr))', gap: '0.5rem' }}>
-                    {garantiesUsage.optionnelles.map((g) => {
-                      const code = g.code_sous_garantie || g.code;
-                      const actif = selectedGaranties.includes(code);
-                      return (
-                        <label key={code} style={styles.choix(actif)}>
-                          <input type="checkbox" checked={actif} style={{ marginTop: 2, accentColor: 'var(--primary-500)' }}
-                            onChange={() => setSelectedGaranties((prev) => (prev.includes(code) ? prev.filter((x) => x !== code) : [...prev, code]))} />
-                          <span style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--text-primary)' }}>{g.libelle || code}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-
-              {availableOptions.length > 0 && (
-                <>
-                  <div style={styles.sousTitre}>Options</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 240px), 1fr))', gap: '0.5rem' }}>
-                    {availableOptions.map((o) => {
-                      const code = o.code_option || o.code;
-                      const actif = selectedOptions.includes(code);
-                      const effet = o.taux_ajustement != null && o.sous_garantie_cible_libelle
-                        ? `${o.signe_ajustement === '-' ? '−' : '+'}${Number(o.taux_ajustement)} % sur ${o.sous_garantie_cible_libelle}`
-                        : o.montant_forfait != null ? `${o.signe_ajustement === '-' ? '−' : '+'}${fcfa(o.montant_forfait)} F` : '';
-                      return (
-                        <label key={code} style={styles.choix(actif)}>
-                          <input type="checkbox" checked={actif} style={{ marginTop: 2, accentColor: 'var(--primary-500)' }}
-                            onChange={() => setSelectedOptions((prev) => (prev.includes(code) ? prev.filter((x) => x !== code) : [...prev, code]))} />
-                          <span>
-                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>{o.libelle || code}</span>
-                            {effet && <span style={{ fontSize: '0.74rem', color: o.signe_ajustement === '-' ? 'var(--accent-emerald)' : 'var(--accent-amber)' }}>{effet}</span>}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
-                <button type="button" className="btn btn-primary" onClick={handleSaveMaison} disabled={calculMaisonEnCours} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                  {calculMaisonEnCours ? <Loader2 size={16} className="spin" /> : editingMaisonId ? <CheckCircle2 size={16} /> : <Plus size={16} />}
-                  {editingMaisonId ? 'Recalculer et enregistrer la maison' : 'Calculer et ajouter la maison'}
-                </button>
-              </div>
-
-              <div style={{ ...styles.sousTitre, marginTop: '1.75rem' }}>Maisons du devis ({maisons.length})</div>
-              {erreurs.maisons && <div style={{ marginBottom: '0.6rem' }}><Alerte couleur="var(--accent-rose)">{erreurs.maisons}</Alerte></div>}
-              {!maisons.length && <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Aucune maison pour l'instant.</p>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                {maisons.map((m, idx) => {
-                  const ouverte = maisonOuverte === m.id;
-                  return (
-                    <div key={m.id} style={{ ...styles.bloc, borderColor: editingMaisonId === m.id ? 'var(--primary-500)' : 'var(--border-subtle)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Maison {idx + 1} — {m.usage_libelle || <span style={{ color: 'var(--accent-amber)' }}>usage à choisir</span>}</div>
-                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                            {[m.adresse, ...CAPITAUX.filter((c) => Number(m[c.cle]) > 0).map((c) => `${c.libelle.split(' (')[0]} ${fcfa(m[c.cle])} F`)].filter(Boolean).join(' • ')}
-                          </div>
-                          {(m.sous_garanties_optionnelles?.length > 0 || m.options?.length > 0) && (
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
-                              {m.sous_garanties_optionnelles?.length > 0 && `Facultatives : ${m.sous_garanties_optionnelles.length}`}
-                              {m.sous_garanties_optionnelles?.length > 0 && m.options?.length > 0 && ' • '}
-                              {m.options?.length > 0 && `Options : ${m.options.length}`}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Prime nette</div>
-                          <div style={{ fontWeight: 900, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{fcfa(primeNetteMaison(m))} F</div>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>TTC hors accessoire {fcfa(primeNetteMaison(m) + taxeMaison(m))} F</div>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
-                        {m.garanties?.length > 0 && (
-                          <button type="button" className="btn btn-secondary" onClick={() => setMaisonOuverte(ouverte ? null : m.id)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}>
-                            <ChevronDown size={14} style={{ transform: ouverte ? 'rotate(180deg)' : undefined }} /> Garanties ({m.garanties.length})
-                          </button>
-                        )}
-                        <button type="button" className="btn btn-secondary" onClick={() => handleEditMaison(m)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}><Edit3 size={14} /> Modifier</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleRemoveMaison(m.id)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem', color: 'var(--accent-rose)' }}><Trash2 size={14} /> Retirer</button>
-                      </div>
-                      {ouverte && m.garanties?.length > 0 && <div style={{ marginTop: '0.75rem' }}><TableauGaranties garanties={m.garanties} /></div>}
+              {/* Import Excel : plusieurs maisons d'un coup (incorporation ou devis à nombreuses maisons) */}
+              <div style={{ ...styles.bloc, marginBottom: '1.1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <FileSpreadsheet size={16} style={{ color: 'var(--primary-500)' }} /> Importer les maisons d'un fichier Excel
                     </div>
-                  );
-                })}
+                    <div style={styles.aide}>Une ligne par maison : usage, adresse, valeurs assurées, prime nette et taxe si elles sont connues. Les maisons s'ajoutent à la liste.</div>
+                  </div>
+                  <button type="button" className="btn btn-secondary" onClick={telechargerModeleMaisons}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}>
+                    <Download size={14} /> Modèle vierge
+                  </button>
+                </div>
+                <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                  <input key={cleFichierMaisons} type="file" accept=".xlsx,.xlsm" aria-label="Fichier Excel des maisons" className="form-control"
+                    style={{ flex: '1 1 260px', minWidth: 0 }} onChange={(e) => { setFichierMaisons(e.target.files?.[0] || null); setImportMaisons({ enCours: false, erreurs: [], resume: '' }); }} />
+                  <button type="button" className="btn btn-primary" onClick={importerMaisons} disabled={!fichierMaisons || importMaisons.enCours}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    {importMaisons.enCours ? <Loader2 size={15} className="spin" /> : <FileSpreadsheet size={15} />}
+                    {importMaisons.enCours ? 'Lecture du fichier…' : 'Importer les maisons'}
+                  </button>
+                </div>
+                {importMaisons.resume && <div style={{ marginTop: '0.75rem' }}><Alerte couleur="var(--accent-emerald)" icone={CheckCircle2}>{importMaisons.resume}</Alerte></div>}
+                {importMaisons.erreurs.length > 0 && (
+                  <div style={{ marginTop: '0.75rem' }} role="alert">
+                    <Alerte couleur="var(--accent-rose)">
+                      <strong>Aucune maison importée, {importMaisons.erreurs.length} ligne{importMaisons.erreurs.length > 1 ? 's' : ''} à corriger :</strong>
+                      <ul style={{ margin: '0.35rem 0 0', paddingLeft: '1.1rem' }}>
+                        {importMaisons.erreurs.slice(0, 15).map((e) => <li key={e.Ligne}>{`Ligne ${e.Ligne} : ${e.Message}`}</li>)}
+                      </ul>
+                      {importMaisons.erreurs.length > 15 && <div style={{ marginTop: '0.25rem' }}>{`Et ${importMaisons.erreurs.length - 15} autres lignes.`}</div>}
+                    </Alerte>
+                  </div>
+                )}
               </div>
+
+              {/* Maisons déjà ajoutées en premier ; formulaire d'ajout ouvert d'office tant qu'il n'y en a aucune */}
+              {erreurs.maisons && <div style={{ marginBottom: '0.9rem' }}><Alerte couleur="var(--accent-rose)">{erreurs.maisons}</Alerte></div>}
+              {maisons.length > 0 && (
+                <>
+                  <h2 style={styles.titreCarte}><Building size={18} style={{ color: 'var(--primary-500)' }} /> Maisons du devis ({maisons.length})</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  {maisons.map((m, idx) => {
+                    const ouverte = maisonOuverte === m.id;
+                    return (
+                      <div key={m.id} style={{ ...styles.bloc, borderColor: editingMaisonId === m.id ? 'var(--primary-500)' : 'var(--border-subtle)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Maison {idx + 1} - {m.usage_libelle || <span style={{ color: 'var(--accent-amber)' }}>usage à choisir</span>}</div>
+                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              {[m.adresse, ...CAPITAUX.filter((c) => Number(m[c.cle]) > 0).map((c) => `${c.libelle.split(' (')[0]} ${fcfa(m[c.cle])} F`)].filter(Boolean).join(' • ')}
+                            </div>
+                            {(m.sous_garanties_optionnelles?.length > 0 || m.options?.length > 0) && (
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                                {m.sous_garanties_optionnelles?.length > 0 && `Facultatives : ${m.sous_garanties_optionnelles.length}`}
+                                {m.sous_garanties_optionnelles?.length > 0 && m.options?.length > 0 && ' • '}
+                                {m.options?.length > 0 && `Options : ${m.options.length}`}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Prime nette</div>
+                            {primeNetteMaison(m) > 0
+                              ? <div style={{ fontWeight: 900, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{fcfa(primeNetteMaison(m))} F</div>
+                              : <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>À saisir à l'étape Tarification</div>}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+                          {m.garanties?.length > 0 && (
+                            <button type="button" className="btn btn-secondary" onClick={() => setMaisonOuverte(ouverte ? null : m.id)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}>
+                              <ChevronDown size={14} style={{ transform: ouverte ? 'rotate(180deg)' : undefined }} /> Garanties ({m.garanties.length})
+                            </button>
+                          )}
+                          <button type="button" className="btn btn-secondary" onClick={() => handleEditMaison(m)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}><Edit3 size={14} /> Modifier</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleRemoveMaison(m, idx)} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.65rem', fontSize: '0.78rem', color: 'var(--accent-rose)' }}><Trash2 size={14} /> Retirer</button>
+                        </div>
+                        {ouverte && m.garanties?.length > 0 && <div style={{ marginTop: '0.75rem' }}><ListeGaranties garanties={m.garanties} /></div>}
+                      </div>
+                    );
+                  })}
+                </div>
+                </>
+              )}
+              {!maisons.length || formulaireMaison || editingMaisonId ? (
+                <div style={maisons.length ? { marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-subtle)' } : undefined}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <h2 style={{ ...styles.titreCarte, margin: 0 }}><Building size={18} style={{ color: 'var(--primary-500)' }} /> {editingMaisonId ? `Modifier la maison ${maisons.findIndex((x) => x.id === editingMaisonId) + 1}` : maisons.length ? 'Ajouter une autre maison' : 'Ajouter une maison'}</h2>
+                  {(editingMaisonId || maisons.length > 0) && (
+                    <button type="button" className="btn btn-secondary" onClick={() => { viderFormulaireMaison(); setFormulaireMaison(false); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}>
+                      <X size={14} /> {editingMaisonId ? 'Annuler la modification' : 'Fermer'}
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ ...styles.grille, marginTop: '1.1rem' }}>
+                  <Champ label="Usage de l'habitation" requis aide={currentUsage?.description}>
+                    <select className="form-control" value={currentUsageCode} onChange={(e) => setCurrentUsageCode(e.target.value)} disabled={!usages.length}>
+                      {!usages.length && <option value="">Chargement…</option>}
+                      {trierParLibelle(usages, (u) => u.libelle).map((u) => <option key={u.code} value={u.code}>{u.libelle}</option>)}
+                    </select>
+                  </Champ>
+                  <Champ label="Adresse de la maison" aide="Facultative">
+                    <input type="text" className="form-control" maxLength={150} value={currentAdresse} onChange={(e) => setCurrentAdresse(e.target.value)} />
+                  </Champ>
+                </div>
+
+                <div style={styles.sousTitre}>Valeurs assurées</div>
+                <div style={styles.grille}>
+                  {capitauxAffiches.map((c) => (
+                    <Champ key={c.cle} label={c.libelle} requis={Boolean(parametresUsage?.[c.parametre])}>
+                      <ChampMontant valeur={capitaux[c.cle]} onChange={(v) => setCapitaux((prev) => ({ ...prev, [c.cle]: v }))} />
+                    </Champ>
+                  ))}
+                </div>
+
+                {garantiesUsage.obligatoires.length > 0 && (
+                  <>
+                    <div style={styles.sousTitre}>Garanties incluses ({garantiesUsage.obligatoires.length})</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                      {garantiesUsage.obligatoires.map((g) => (
+                        <span key={g.code} style={{ ...styles.pastille('var(--accent-emerald)'), padding: '0.3rem 0.65rem' }}>
+                          <ShieldCheck size={12} /> {g.libelle}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {garantiesUsage.optionnelles.length > 0 && (
+                  <>
+                    <div style={styles.sousTitre}>Garanties facultatives</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 210px), 1fr))', gap: '0.5rem' }}>
+                      {garantiesUsage.optionnelles.map((g) => {
+                        const code = g.code_sous_garantie || g.code;
+                        const actif = selectedGaranties.includes(code);
+                        return (
+                          <label key={code} style={styles.choix(actif)}>
+                            <input type="checkbox" checked={actif} style={{ marginTop: 2, accentColor: 'var(--primary-500)' }}
+                              onChange={() => setSelectedGaranties((prev) => (prev.includes(code) ? prev.filter((x) => x !== code) : [...prev, code]))} />
+                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--text-primary)' }}>{g.libelle || code}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {availableOptions.length > 0 && (
+                  <>
+                    <div style={styles.sousTitre}>Options</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 240px), 1fr))', gap: '0.5rem' }}>
+                      {availableOptions.map((o) => {
+                        const code = o.code_option || o.code;
+                        const actif = selectedOptions.includes(code);
+                        return (
+                          <label key={code} style={styles.choix(actif)}>
+                            <input type="checkbox" checked={actif} style={{ marginTop: 2, accentColor: 'var(--primary-500)' }}
+                              onChange={() => setSelectedOptions((prev) => (prev.includes(code) ? prev.filter((x) => x !== code) : [...prev, code]))} />
+                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--text-primary)' }}>{o.libelle || code}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+                  <button type="button" className="btn btn-primary" onClick={handleSaveMaison} disabled={calculMaisonEnCours} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                    {calculMaisonEnCours ? <Loader2 size={16} className="spin" /> : editingMaisonId ? <CheckCircle2 size={16} /> : <Plus size={16} />}
+                    {editingMaisonId ? 'Enregistrer la maison' : 'Ajouter la maison'}
+                  </button>
+                </div>
+                </div>
+              ) : (
+                <button type="button" className="btn btn-secondary" onClick={() => setFormulaireMaison(true)}
+                  style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Plus size={16} /> Ajouter une autre maison
+                </button>
+              )}
             </>
           )}
 
           {/* ---------------------------------------------------------- ÉTAPE 3 : TARIFICATION */}
           {step === 3 && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                <h2 style={{ ...styles.titreCarte, margin: 0 }}><Calculator size={18} style={{ color: 'var(--primary-500)' }} /> Tarification</h2>
-                {isImpositionActive ? (
-                  <button type="button" className="btn btn-secondary" onClick={() => { setIsImpositionActive(false); setImposedPrimesParMaison({}); setImpositionMotif(''); setImposedAccessoire(''); setImposedTaxe('0'); }}
-                    style={{ color: 'var(--accent-rose)', fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>Revenir aux primes calculées</button>
-                ) : (
-                  <button type="button" className="btn btn-secondary" onClick={() => setIsImpositionActive(true)} style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    <Scale size={14} /> Imposer les primes
-                  </button>
-                )}
-              </div>
+              <h2 style={styles.titreCarte}><Calculator size={18} style={{ color: 'var(--primary-500)' }} /> Tarification</h2>
+              <Alerte couleur="var(--primary-500)" icone={Info}>
+                Pas de barème MRH : saisissez la prime nette de chaque maison, puis la taxe et l'accessoire du devis.
+              </Alerte>
 
-              <div style={styles.sousTitre}>Prime de chaque maison</div>
+              <div style={styles.sousTitre}>Prime nette de chaque maison</div>
               <div style={{ overflowX: 'auto' }}>
                 <table style={styles.tableau}>
                   <thead>
                     <tr>
                       <th style={styles.th}>Maison</th>
-                      <th style={{ ...styles.th, textAlign: 'right' }}>Prime calculée</th>
-                      <th style={{ ...styles.th, textAlign: 'right' }}>{isImpositionActive ? 'Prime nette imposée' : 'Prime nette'}</th>
-                      <th style={{ ...styles.th, textAlign: 'right' }}>Taxe</th>
+                      <th style={{ ...styles.th, textAlign: 'right' }}>Prime nette</th>
                     </tr>
                   </thead>
                   <tbody>
                     {maisons.map((m, idx) => (
                       <tr key={m.id}>
-                        <td style={styles.td}><strong>Maison {idx + 1}</strong> <span style={{ color: 'var(--text-muted)' }}>{m.usage_libelle}</span></td>
-                        <td style={{ ...styles.td, ...styles.num, color: 'var(--text-muted)' }}>{fcfa(m.prime_nette)}</td>
-                        <td style={{ ...styles.td, ...styles.num, width: isImpositionActive ? 200 : undefined }}>
-                          {isImpositionActive ? (
-                            <input type="text" inputMode="numeric" className="form-control" style={{ textAlign: 'right', fontWeight: 700 }}
-                              value={fcfa(imposedPrimesParMaison[m.id] !== undefined ? imposedPrimesParMaison[m.id] : m.prime_nette)}
-                              onChange={(e) => setImposedPrimesParMaison((prev) => ({ ...prev, [m.id]: chiffres(e.target.value) }))} />
-                          ) : <strong>{fcfa(m.prime_nette)}</strong>}
+                        <td style={styles.td}><strong>Maison {idx + 1}</strong> <span style={{ color: 'var(--text-muted)' }}>{m.usage_libelle}{m.adresse ? `, ${m.adresse}` : ''}</span></td>
+                        <td style={{ ...styles.td, width: 240 }}>
+                          <ChampMontant valeur={primesParMaison[m.id] || ''} placeholder="À saisir"
+                            onChange={(v) => setPrimesParMaison((prev) => ({ ...prev, [m.id]: v }))} />
                         </td>
-                        <td style={{ ...styles.td, ...styles.num }}>{fcfa(taxeMaison(m))}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              {erreurs.imposition && <div style={{ marginTop: '0.6rem' }}><Alerte couleur="var(--accent-rose)">{erreurs.imposition}</Alerte></div>}
+              {erreurs.primes && <div style={{ marginTop: '0.6rem' }}><Alerte couleur="var(--accent-rose)">{erreurs.primes}</Alerte></div>}
 
-              {isImpositionActive && (
-                <>
-                  <div style={styles.sousTitre}>Imposition</div>
-                  <div style={styles.grille}>
-                    <Champ label="Taxe imposée" aide="Vide ou 0 : taxe calculée">
-                      <ChampMontant valeur={imposedTaxe === '0' ? '' : imposedTaxe} onChange={(v) => setImposedTaxe(v || '0')} />
-                    </Champ>
-                    <Champ label="Accessoire imposé" aide="Vide : accessoire du barème">
-                      <ChampMontant valeur={imposedAccessoire} onChange={setImposedAccessoire} />
-                    </Champ>
-                    <Champ label="Motif de l'imposition" large>
-                      <input type="text" className="form-control" value={impositionMotif} onChange={(e) => setImpositionMotif(e.target.value)} />
-                    </Champ>
-                  </div>
-                  <p style={styles.aide}>
-                    À l'enregistrement, la prime imposée de chaque maison est répartie sur ses garanties au prorata de leurs primes calculées ;
-                    la répartition reste ajustable ensuite, garantie par garantie.
-                  </p>
-                </>
-              )}
+              <div style={styles.sousTitre}>Taxe et accessoire</div>
+              <div style={styles.grille}>
+                <Champ label="Taxe" requis erreur={erreurs.taxe}>
+                  <ChampPropose onChoisir={(v) => setTaxeSaisie(String(v))} propositions={taxesProposees}>
+                    <ChampMontant valeur={taxeSaisie} onChange={setTaxeSaisie} placeholder="À saisir" />
+                  </ChampPropose>
+                </Champ>
+                <Champ label="Accessoire" aide="Vide : pas d'accessoire">
+                  <ChampPropose onChoisir={(v) => setAccessoireSaisi(String(v))} propositions={accessoiresUsuels}>
+                    <ChampMontant valeur={accessoireSaisi} onChange={setAccessoireSaisi} placeholder="À saisir" />
+                  </ChampPropose>
+                </Champ>
+              </div>
+              <p style={styles.aide}>
+                À l'enregistrement, la prime nette de chaque maison est répartie sur ses garanties ; la répartition reste ajustable ensuite,
+                garantie par garantie.
+              </p>
 
               <div style={styles.sousTitre}>Décompte</div>
               <div style={styles.tuiles}>
                 <Tuile libelle="Prime nette" valeur={`${fcfa(totalsFinanciers.primeNette)} F`} />
-                <Tuile libelle={totalsFinanciers.taxeImposee ? 'Taxes (imposées)' : 'Taxes des garanties'} valeur={`${fcfa(totalsFinanciers.taxeImposee ? totalsFinanciers.taxes : totalsFinanciers.taxesGaranties)} F`} />
+                <Tuile libelle="Taxe" valeur={`${fcfa(totalsFinanciers.taxes)} F`} />
                 <Tuile libelle="Accessoire" valeur={`${fcfa(totalsFinanciers.accessoires)} F`} />
-                {!totalsFinanciers.taxeImposee && <Tuile libelle="Taxe sur accessoire" valeur={`${fcfa(totalsFinanciers.taxeAccessoire)} F`} />}
                 <Tuile libelle="Prime TTC" valeur={`${fcfa(totalsFinanciers.primeTtc)} F`} couleur="var(--primary-500)" fort />
               </div>
             </>
@@ -1054,6 +1143,14 @@ export const NewMrhQuotePage = () => {
           {step === 4 && (
             <>
               <h2 style={styles.titreCarte}><Users size={18} style={{ color: 'var(--primary-500)' }} /> Souscripteur & assuré</h2>
+              {incorporation ? (
+                <>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 0 }}>Souscripteur et assuré de la police {incorporation.NumeroPolice}, non modifiables.</p>
+                  {souscripteur && <FichePersonne personne={souscripteur} />}
+                  {assureDifferent && assureChoisi && <div style={{ marginTop: '0.75rem' }}><FichePersonne personne={assureChoisi} /></div>}
+                </>
+              ) : (
+              <>
               <div style={styles.grille}>
                 <RechercheClient label="Souscripteur (client)" personne={souscripteur} erreur={erreurs.souscripteur}
                   onChoisir={(p) => { setSouscripteur(p); if (!assureDifferent) setTelephoneAssure(p?.Telephone || ''); }}
@@ -1075,6 +1172,8 @@ export const NewMrhQuotePage = () => {
                   {assureChoisi && <div style={{ marginTop: '0.75rem' }}><FichePersonne personne={assureChoisi} /></div>}
                 </>
               )}
+              </>
+              )}
               <div style={{ ...styles.grille, marginTop: '1rem' }}>
                 <Champ label="Téléphone de l'assuré" aide="Enregistré comme mobile de la fiche client de l'assuré (8 chiffres au moins)">
                   <input type="tel" className="form-control" value={telephoneAssure} onChange={(e) => setTelephoneAssure(e.target.value)} />
@@ -1089,35 +1188,47 @@ export const NewMrhQuotePage = () => {
               <h2 style={styles.titreCarte}><FileCheck size={18} style={{ color: 'var(--primary-500)' }} /> Récapitulatif avant enregistrement</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem 2rem' }}>
                 <div>
-                  <div style={styles.sousTitre}>Client</div>
+                  {titreRecap('Client', 4)}
                   {ligneRecap('Souscripteur', souscripteur?.Nom)}
                   {ligneRecap('Assuré', assure?.Nom)}
                   {ligneRecap('Téléphone assuré', telephoneAssure)}
-                  <div style={styles.sousTitre}>Contrat</div>
+                  {titreRecap('Contrat', 1)}
                   {ligneRecap('Compagnie', nomCompagnie)}
                   {ligneRecap('Catégorie', libelleTarif)}
                   {ligneRecap('N° police compagnie', numeroPoliceCompagnie)}
                   {ligneRecap('Période', `du ${dateFr(dateEffet)} au ${dateFr(calculatedDateExpiration)}`)}
                 </div>
                 <div>
-                  <div style={styles.sousTitre}>Prime</div>
+                  {titreRecap('Prime', 3)}
                   {ligneRecap('Maisons', maisons.length)}
                   {ligneRecap('Prime nette', `${fcfa(totalsFinanciers.primeNette)} F`)}
                   {ligneRecap('Taxes', `${fcfa(totalsFinanciers.taxes)} F`)}
                   {ligneRecap('Accessoire', `${fcfa(totalsFinanciers.accessoires)} F`)}
                   {ligneRecap('Prime TTC', `${fcfa(totalsFinanciers.primeTtc)} F`, true)}
-                  {isImpositionActive && ligneRecap('Imposition', impositionMotif || 'sans motif')}
                 </div>
               </div>
-              <div style={styles.sousTitre}>Habitations</div>
+              {titreRecap('Habitations', 2)}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 {maisons.map((m, idx) => (
                   <div key={m.id} style={{ ...styles.bloc, display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.83rem' }}>
-                    <span><strong>Maison {idx + 1}</strong> — {m.usage_libelle}{m.adresse ? ` — ${m.adresse}` : ''}</span>
+                    <span><strong>Maison {idx + 1}</strong> - {m.usage_libelle}{m.adresse ? ` - ${m.adresse}` : ''}</span>
                     <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{fcfa(primeNetteMaison(m))} F</span>
                   </div>
                 ))}
               </div>
+              <div style={{ marginTop: '1.25rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
+                <Champ
+                  label="Pièce jointe"
+                  aide={fichier
+                    ? `Jointe à l'enregistrement : ${fichier.name}${idDevisActuel ? ' (remplace la pièce enregistrée)' : ''}`
+                    : 'Facultatif : PDF ou image, consultable ensuite depuis la fiche du devis et du contrat'}
+                >
+                  <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => setFichier(e.target.files?.[0] || null)} />
+                </Champ>
+              </div>
+              {idDevisActuel && (
+                <PieceJointe type="devis" id={idDevisActuel} version={versionPiece} masquerSiAbsente titre="Pièce jointe enregistrée" className="piece-jointe-saisie" />
+              )}
             </>
           )}
 
@@ -1136,13 +1247,14 @@ export const NewMrhQuotePage = () => {
               )}
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', margin: '1rem 0' }}>
                 <button type="button" className="btn btn-secondary" onClick={ouvrirApercu} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Eye size={15} /> Aperçu et impressions</button>
+                <BoutonPieceJointe type="devis" id={devisEnregistre.id} version={versionPiece} />
                 <button type="button" className="btn btn-secondary" onClick={() => setStep(1)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Edit3 size={15} /> Modifier le devis</button>
                 <button type="button" className="btn btn-primary" onClick={() => confirmerEnContrat(null)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}><CheckCircle2 size={15} /> Confirmer en contrat</button>
               </div>
 
               <div style={styles.sousTitre}>Répartition des garanties par maison</div>
               <p style={{ ...styles.aide, marginTop: 0 }}>
-                Comme dans URANUS, la prime nette de chaque maison peut être répartie autrement entre ses garanties, et leurs capitaux et franchises renseignés.
+                La prime nette de chaque maison peut être répartie entre ses garanties, et leurs capitaux et franchises renseignés.
                 La somme des primes doit être égale à la prime nette de la maison ; la taxe de chaque garantie est recalculée par le serveur.
               </p>
               {!resume && <Alerte couleur="var(--accent-amber)">Résumé financier indisponible pour ce devis.</Alerte>}
@@ -1167,7 +1279,7 @@ export const NewMrhQuotePage = () => {
                 return (
                   <div key={m.maison_id} style={{ ...styles.bloc, marginBottom: '0.75rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '0.6rem' }}>
-                      <strong style={{ color: 'var(--text-primary)' }}>Maison {idx + 1} — {m.usage_libelle}{m.adresse ? ` — ${m.adresse}` : ''}</strong>
+                      <strong style={{ color: 'var(--text-primary)' }}>Maison {idx + 1} - {m.usage_libelle}{m.adresse ? ` - ${m.adresse}` : ''}</strong>
                       <span style={styles.pastille(ecart === 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)')}>
                         {ecart === 0 ? `Répartis ${fcfa(somme)} / ${fcfa(total)} F` : ecart > 0 ? `Reste à répartir ${fcfa(ecart)} F` : `Dépassement de ${fcfa(-ecart)} F`}
                       </span>
@@ -1243,19 +1355,17 @@ export const NewMrhQuotePage = () => {
 
         {/* RÉSUMÉ PERMANENT */}
         {step <= 5 && (
-          <aside className="glass-panel" style={{ ...styles.carte, flex: '1 1 280px', maxWidth: '100%', position: 'sticky', top: '1rem' }}>
-            <h2 style={{ ...styles.titreCarte, marginBottom: '0.75rem', fontSize: '0.9rem' }}><Home size={16} style={{ color: 'var(--primary-500)' }} /> Votre devis</h2>
-            {ligneRecap('Compagnie', nomCompagnie)}
-            {ligneRecap('Période', dateEffet && calculatedDateExpiration ? `${dateFr(dateEffet)} → ${dateFr(calculatedDateExpiration)}` : '')}
-            {ligneRecap('Maisons', maisons.length || '')}
-            {ligneRecap('Souscripteur', souscripteur?.Nom)}
-            {isImpositionActive && ligneRecap('Primes', 'imposées')}
-            <div style={{ marginTop: '1rem', padding: '0.9rem', borderRadius: '12px', background: 'var(--primary-glow)', border: '1px solid var(--primary-500)' }}>
-              <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--primary-500)' }}>Prime TTC</div>
-              <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--text-primary)' }}>{maisons.length ? `${fcfa(totalsFinanciers.primeTtc)} F` : '—'}</div>
-              {maisons.length > 0 && <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>dont prime nette {fcfa(totalsFinanciers.primeNette)} F</div>}
-            </div>
-          </aside>
+          <ResumeDevis
+            icone={Home}
+            lignes={[
+              ['Compagnie', nomCompagnie],
+              ['Période', dateEffet && calculatedDateExpiration ? `${dateFr(dateEffet)} → ${dateFr(calculatedDateExpiration)}` : ''],
+              ['Maisons', maisons.length || ''],
+              ['Souscripteur', souscripteur?.Nom],
+            ]}
+            montant={maisons.length ? `${fcfa(totalsFinanciers.primeTtc)} F` : null}
+            detail={maisons.length > 0 ? `dont prime nette ${fcfa(totalsFinanciers.primeNette)} F` : null}
+          />
         )}
       </div>
 

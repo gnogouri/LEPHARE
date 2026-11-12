@@ -10,10 +10,10 @@ const enNombre = (v) => (chiffres(v) === '' ? NaN : Number(chiffres(v)));
 const avecMilliers = (v) => (chiffres(v) === '' ? '' : Number(chiffres(v)).toLocaleString('fr-FR'));
 const entier = (v) => String(Math.round(Number(v) || 0));
 
-// La prime TTC suit la prime nette, l'accessoire, les taxes et le FGA ; la CEDEAO est déjà
-// comprise dans la prime nette (règle d'URANUS)
+// La prime TTC suit la prime nette, l'accessoire, les taxes et, en Auto, le FGA (la CEDEAO est déjà comprise dans la
+// prime nette, règle d'URANUS) ; les frais de gestion (IA et RC MINENE), que l'imposition ne change pas, s'y ajoutent
 const CHAMPS_DU_TTC = ['prime_nette', 'accessoire', 'taxe', 'fga'];
-const sommeTtc = (v) => CHAMPS_DU_TTC.reduce((total, champ) => total + (enNombre(v[champ]) || 0), 0);
+const sommeTtc = (v, fraisGestion = 0) => CHAMPS_DU_TTC.reduce((total, champ) => total + (enNombre(v[champ]) || 0), fraisGestion);
 
 const Montant = ({ nom, libelle, valeurs, enSaisie, setEnSaisie, onChange, disabled }) => (
   <div className="form-group" style={{ margin: 0 }}>
@@ -49,15 +49,16 @@ const Section = ({ children, colonnes = 2 }) => (
 );
 
 /**
- * « Imposer les primes du récapitulatif de la flotte » (URANUS CorrectionPrimesFlottes) : les
- * montants saisis remplacent le récapitulatif du devis (POST /api/majrecapprimes/ →
- * sp_maj_manuelle_primes, qui marque le devis « prime imposée »). Les primes de chaque véhicule
- * ne changent pas.
+ * « Imposer les primes » d'un devis de toute branche (URANUS CorrectionPrimesFlottes, étendue à toutes les branches
+ * le 2026-10-28) : les montants saisis remplacent ceux du devis (POST /api/majrecapprimes/ → sp_maj_manuelle_primes,
+ * qui marque le devis « prime imposée » et répartit la prime nette sur ses garanties, sp_lephare_ventiler_prime_imposee).
+ * auto : FGA et CEDEAO saisis (mis à 0 par la base pour les autres produits) ; flotte : récapitulatif de la flotte.
  */
-export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
+export const ImpositionPrimes = ({ quote, auto = false, flotte = false, onAnnuler, onEnregistre }) => {
   const { success, error: toastError } = useToast();
   const iddevis = Number(quote?.iddevis || quote?.raw?.iddevis);
   const [valeurs, setValeurs] = useState(null);
+  const [fraisGestion, setFraisGestion] = useState(0);
   const [enSaisie, setEnSaisie] = useState(null);
   const [enregistrement, setEnregistrement] = useState(false);
   const [erreurChargement, setErreurChargement] = useState('');
@@ -69,14 +70,16 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
       .then((devis) => {
         if (!actif) return;
         const r = devis?.raw || {};
+        setFraisGestion(Math.round(Number(r.accessoiregestionnaire) || 0));
         setValeurs({
           prime_annuelle: entier(r.primeannuelle),
-          // Prime nette du devis hors FGA, CEDEAO incluse (stddevis.primenette comprend le FGA)
-          prime_nette: entier(Number(r.primenette || 0) - Number(r.fga || 0)),
+          // Prime nette du devis hors FGA, CEDEAO incluse (stddevis.primenette comprend le FGA) ; FGA et CEDEAO
+          // n'existent qu'en Auto (la base les met à 0 pour les autres produits)
+          prime_nette: entier(Number(r.primenette || 0) - (auto ? Number(r.fga || 0) : 0)),
           accessoire: entier(r.accessoire),
           taxe: entier(r.taxe),
-          fga: entier(r.fga),
-          cedeao: entier(r.cedeao),
+          fga: auto ? entier(r.fga) : '0',
+          cedeao: auto ? entier(r.cedeao) : '0',
           prime_ttc: entier(r.primettc),
         });
       })
@@ -85,12 +88,12 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
         if (actif) setErreurChargement('Impossible de relire les primes du devis. Veuillez réessayer.');
       });
     return () => { actif = false; };
-  }, [iddevis]);
+  }, [iddevis, auto]);
 
   const modifier = (champ, saisie) => {
     setValeurs((prec) => {
       const suivantes = { ...prec, [champ]: chiffres(saisie) };
-      if (CHAMPS_DU_TTC.includes(champ)) suivantes.prime_ttc = String(sommeTtc(suivantes));
+      if (CHAMPS_DU_TTC.includes(champ)) suivantes.prime_ttc = String(sommeTtc(suivantes, fraisGestion));
       return suivantes;
     });
   };
@@ -110,7 +113,7 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
     try {
       await quoteApi.updateQuotePrimes({ numero_devis: quote.numerodevis, ...montants });
       const devisAJour = await quoteApi.getQuote(iddevis);
-      success(`Primes du récapitulatif imposées sur le devis ${quote.numerodevis}.`);
+      success(`${flotte ? 'Primes du récapitulatif imposées' : 'Primes imposées'} sur le devis ${quote.numerodevis}.`);
       onEnregistre(devisAJour);
     } catch (err) {
       const donnees = err?.response?.data || {};
@@ -137,17 +140,18 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
     );
   }
 
-  const ttcCalcule = sommeTtc(valeurs);
+  const ttcCalcule = sommeTtc(valeurs, fraisGestion);
   const ttcSaisi = enNombre(valeurs.prime_ttc);
   const proprietes = { valeurs, enSaisie, setEnSaisie, onChange: modifier, disabled: enregistrement };
+  const composantesTtc = ['prime nette', 'accessoire', 'taxes', auto && 'FGA', fraisGestion > 0 && 'frais de gestion'].filter(Boolean).join(' + ');
 
   return (
     <form onSubmit={enregistrer} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.5rem' }}>
         <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: '640px' }}>
-          Ces montants remplacent le récapitulatif du devis, qui passe en « prime imposée ». Les primes
-          de chaque véhicule ne changent pas ; enregistrer à nouveau la flotte depuis le formulaire
-          recalcule le récapitulatif.
+          {flotte ? 'Ces montants remplacent le récapitulatif du devis' : 'Ces montants remplacent ceux du devis'}, qui passe en
+          « prime imposée ». La prime nette est répartie sur les garanties{flotte ? ' des véhicules' : ''} au prorata de leurs primes ;
+          un nouvel enregistrement depuis le formulaire du devis recalcule les primes.
         </p>
         <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
           Devis : <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{quote.numerodevis}</strong>
@@ -158,7 +162,7 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
         <Montant nom="prime_annuelle" libelle="Prime annuelle" {...proprietes} />
         <Montant
           nom="prime_nette"
-          libelle={<>Prime nette <span style={{ color: '#ef4444', fontWeight: 700, marginLeft: '0.5rem' }}>(CEDEAO incluse)</span></>}
+          libelle={auto ? <>Prime nette <span style={{ color: '#ef4444', fontWeight: 700, marginLeft: '0.5rem' }}>(CEDEAO incluse)</span></> : 'Prime nette'}
           {...proprietes}
         />
       </Section>
@@ -166,15 +170,24 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
       <Section>
         <Montant nom="accessoire" libelle="Accessoire" {...proprietes} />
         <Montant nom="taxe" libelle="Taxes d'enregistrement" {...proprietes} />
-        <Montant nom="fga" libelle="Fonds de Garantie Automobile (FGA)" {...proprietes} />
-        <Montant nom="cedeao" libelle="CEDEAO" {...proprietes} />
+        {auto && <Montant nom="fga" libelle="Fonds de Garantie Automobile (FGA)" {...proprietes} />}
+        {auto && <Montant nom="cedeao" libelle="CEDEAO" {...proprietes} />}
+        {fraisGestion > 0 && (
+          <div className="form-group" style={{ margin: 0 }}>
+            <span className="form-label">Frais de gestion</span>
+            <div style={{ padding: '0.55rem 0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 600, textAlign: 'right', color: 'var(--text-secondary)' }}>
+              {fraisGestion.toLocaleString('fr-FR')} FCFA
+            </div>
+            <div className="champ-message aide">Non modifiés par l'imposition, compris dans la prime TTC</div>
+          </div>
+        )}
       </Section>
 
       <Section colonnes={1}>
         <Montant nom="prime_ttc" libelle="Prime TTC" {...proprietes} />
         {!Number.isNaN(ttcSaisi) && ttcSaisi !== ttcCalcule && (
           <div style={{ fontSize: '0.78rem', color: '#f59e0b' }}>
-            Différente de prime nette + accessoire + taxes + FGA ({ttcCalcule.toLocaleString('fr-FR')} FCFA).
+            Différente de {composantesTtc} ({ttcCalcule.toLocaleString('fr-FR')} FCFA).
           </div>
         )}
       </Section>
@@ -193,4 +206,4 @@ export const ImpositionRecapFlotte = ({ quote, onAnnuler, onEnregistre }) => {
   );
 };
 
-export default ImpositionRecapFlotte;
+export default ImpositionPrimes;

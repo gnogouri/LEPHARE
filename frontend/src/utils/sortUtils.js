@@ -22,7 +22,7 @@ export const sortUniqueBy = (list, getKey) => {
 
 /**
  * Trie une liste de A à Z sur son libellé (locale FR, insensible à la casse/accents, ordre
- * naturel des nombres : « 3 mois » avant « 12 mois ») sans retirer de doublons — deux clients
+ * naturel des nombres : « 3 mois » avant « 12 mois ») sans retirer de doublons - deux clients
  * homonymes restent deux lignes distinctes. Ne mute pas le tableau d'origine.
  */
 export const trierParLibelle = (list, getLabel) => {

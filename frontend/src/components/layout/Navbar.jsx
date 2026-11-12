@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { Shield, LogOut, Compass, Settings, Menu, Sun, Moon, KeyRound } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { cashApi } from '../../api/endpoints';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { cashApi, cockpitApi } from '../../api/endpoints';
 import { ChangementMotDePasse } from '../securite/ChangementMotDePasse';
 import { premierEcranAdmin } from './adminMenu';
 import { ClocheNotifications } from './ClocheNotifications';
@@ -27,6 +27,24 @@ export const Navbar = ({ onToggleMobileSidebar }) => {
     const minuterie = setInterval(charger, 10 * 60 * 1000);
     return () => { actif = false; clearInterval(minuterie); };
   }, [voitCaisse]);
+
+  // Devis arrivant à échéance ou échus récemment (cloche) : relus toutes les 5 minutes, au retour sur l'onglet et
+  // à chaque changement d'écran (un devis confirmé ou modifié sort de la liste)
+  const voitDevis = peut('devis.view');
+  const { pathname } = useLocation();
+  const [alertesDevis, setAlertesDevis] = useState(null);
+  useEffect(() => {
+    if (!voitDevis) { setAlertesDevis(null); return undefined; }
+    let actif = true;
+    const charger = () => cockpitApi.alertes()
+      .then((d) => { if (actif) setAlertesDevis(d?.Devis || null); })
+      .catch(() => {});
+    charger();
+    const minuterie = setInterval(charger, 5 * 60 * 1000);
+    const auRetour = () => { if (document.visibilityState === 'visible') charger(); };
+    document.addEventListener('visibilitychange', auRetour);
+    return () => { actif = false; clearInterval(minuterie); document.removeEventListener('visibilitychange', auRetour); };
+  }, [voitDevis, pathname]);
 
   // Bascule Production / Administration : seulement si au moins un écran d'administration est permis
   const isPrivileged = accesAdministration;
@@ -190,7 +208,7 @@ export const Navbar = ({ onToggleMobileSidebar }) => {
         </button>
 
         {/* Cloche : messages de la session (chaque notification l'incrémente) et chèques à déposer */}
-        <ClocheNotifications alertesCheques={alertesCheques} voitCaisse={voitCaisse} />
+        <ClocheNotifications alertesCheques={alertesCheques} voitCaisse={voitCaisse} alertesDevis={alertesDevis} />
 
         {/* User Card */}
         <div

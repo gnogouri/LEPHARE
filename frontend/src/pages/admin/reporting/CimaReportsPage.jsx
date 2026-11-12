@@ -110,7 +110,9 @@ export const CimaReportsPage = () => {
       exportToPdf({ filename, title, subtitle, metadata, headers, rows, totals });
     }
 
-    success(`États CIMA (${exportConfig.format}) téléchargés avec succès pour l'exercice ${exercice}.`);
+    success(exportConfig.format === 'PDF'
+      ? `Aperçu PDF des états CIMA ouvert pour l'exercice ${exercice}. Utilisez « Imprimer / PDF » pour l'enregistrer.`
+      : `États CIMA (${exportConfig.format}) téléchargés avec succès pour l'exercice ${exercice}.`);
     setIsExportModalOpen(false);
   };
 

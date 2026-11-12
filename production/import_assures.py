@@ -53,9 +53,11 @@ OFFRE_SPECIFIQUE_GROUPE = 174
 OFFRE_STANDARD_PARTICULIER = 6
 OFFRE_STANDARD_GROUPE = 7
 
-# Intitulés possibles de la colonne prime TTC (le modèle 2 d'OREOLE écrit « PRIME TTC ») : sans
+# Intitulés possibles des colonnes de prime (le modèle 2 d'OREOLE écrit « PRIMES HT/TTC ») : sans
 # elle, l'offre CGA (capital + prime) n'était pas reconnue et l'offre de l'écran était appliquée
+ALIAS_PRIME_HT = ["Prime HT", "PRIME HT", "PRIMES HT", "Primes HT"]
 ALIAS_PRIME_TTC = ["Prime TTC", "PRIME TTC", "PRIMES TTC", "Primes TTC"]
+ALIAS_FRAIS_MEDICAUX = ["FRAIS MEDICAUX", "Frais médicaux", "FRAIS MÉDICAUX", "FRAIS DE TRAITEMENT", "Frais de traitement"]
 # Colonnes d'en-tête du contrat (modèle 2), contrôlées contre la saisie de l'écran
 COLONNES_ENTETE_FICHIER = {
     "Acte": "ACTE",
@@ -109,17 +111,30 @@ def valider_monetaire(valeur, champ: str) -> Decimal:
     Raises:
         ValidationError: Si la valeur n'est pas numérique
     """
-    if valeur is None or str(valeur).strip() == "":
+    # Cellule vide du fichier : « nan » (pandas), que Decimal accepterait comme un nombre et qui rendrait le devis invalide
+    if valeur is None or str(valeur).strip().lower() in ("", "nan"):
         return Decimal("0.00")
 
     try:
         # Normalisation: remplacement de la virgule par un point
         valeur_str = str(valeur).replace(",", ".").strip()
-        return Decimal(valeur_str)
+        montant = Decimal(valeur_str)
     except (InvalidOperation, ValueError) as e:
         raise ValidationError(
             f"Valeur non numérique pour {champ}: '{valeur}' - {str(e)}"
         )
+    if not montant.is_finite():
+        raise ValidationError(f"Valeur non numérique pour {champ}: '{valeur}'")
+    return montant
+
+
+def montant_facultatif(row, aliases, champ: str) -> Decimal:
+    """Colonne lue en complément (primes des modèles 1 et 3, frais médicaux) : une cellule non numérique compte pour 0 au lieu de refuser
+    tout l'import, comme avant que ces colonnes soient lues."""
+    try:
+        return valider_monetaire(get_col_value(row, aliases) or 0.0, champ)
+    except ValidationError:
+        return Decimal("0.00")
 
 
 def valider_entier(valeur, champ: str, defaut: int = 0) -> int:
@@ -520,9 +535,10 @@ def extraire_modele_1(df: pd.DataFrame) -> List[Dict]:
                     "Fonction": nettoyer_chaine(
                         get_col_value(row, ["Fonction", "FONCTION", "fonction"]) or ""
                     ),
-                    "PrimeHT": Decimal("0.00"),
+                    # Primes du fichier quand il en porte (gardées puis réappliquées exactement, production/ia_montants_imposes.py)
+                    "PrimeHT": montant_facultatif(row, ALIAS_PRIME_HT, "PRIME HT"),
                     "Accessoire": Decimal("0.00"),
-                    "PrimeTTC": Decimal("0.00"),
+                    "PrimeTTC": montant_facultatif(row, ALIAS_PRIME_TTC, "PRIME TTC"),
                     "Beneficiaires": [],
                 }
 
@@ -628,15 +644,14 @@ def extraire_modele_2(df: pd.DataFrame) -> List[Dict]:
                     row.get("CAPITAL DECES"), "CAPITAL DECES"
                 ),
                 "CapitalInfirmite": valider_monetaire(row.get("IPT"), "IPT"),
-                "CapitalTraitement": Decimal("0.00"),
+                "CapitalTraitement": montant_facultatif(row, ALIAS_FRAIS_MEDICAUX, "FRAIS MEDICAUX"),
                 "PrimeHT": valider_monetaire(
-                    row.get("PRIME HT", 0.0), "PRIME HT"
-                ),  # valider_monetaire(row.get("PRIME HT"), "PRIME HT"),
+                    get_col_value(row, ALIAS_PRIME_HT) or 0.0, "PRIME HT"
+                ),
                 "Accessoire": Decimal("0.00"),
                 "PrimeTTC": valider_monetaire(
-                    row.get("PRIMES TTC", row.get("PRIME TTC", 0.0)),
-                    "PRIMES TTC",
-                ),  # valider_monetaire(row.get("PRIMES TTC"), "PRIMES TTC"),
+                    get_col_value(row, ALIAS_PRIME_TTC) or 0.0, "PRIME TTC"
+                ),
                 "Offre": row.get("Offre", 0),
                 "Beneficiaires": [],
                 # En-tête du contrat porté par le fichier (contrôlé contre l'écran à l'import)
@@ -718,11 +733,10 @@ def extraire_modele_3(df: pd.DataFrame) -> List[Dict]:
                     row.get("Capitaux IPT"), "Capitaux IPT"
                 ),
                 "CapitalTraitement": Decimal("0.00"),
-                "PrimeHT": Decimal(
-                    "0.00"
-                ),  # Pas d'indication de prime dans ce modèle
+                # Primes lues si le fichier en porte (souvent absentes de ce modèle : forfait de la catégorie)
+                "PrimeHT": montant_facultatif(row, ALIAS_PRIME_HT, "PRIME HT"),
                 "Accessoire": Decimal("0.00"),
-                "PrimeTTC": Decimal("0.00"),
+                "PrimeTTC": montant_facultatif(row, ALIAS_PRIME_TTC, "PRIME TTC"),
                 "Offre": row.get("Offre", 0),
                 "Beneficiaires": [],
             }
@@ -1048,7 +1062,7 @@ def get_entete_devis(request_post_data: dict, flotte: bool = True) -> dict:
 
 
 def enregistrer_devis_ia(
-    entete_devis: dict, assure: dict, id_assure: int
+    entete_devis: dict, assure: dict, id_assure: int, lignes_existantes: dict = None
 ) -> int:
     """
     Enregistre le devis en Individuelle Accidents.
@@ -1064,6 +1078,12 @@ def enregistrer_devis_ia(
     try:
         id_devis = 0
         donnee_devis = copy.deepcopy(entete_devis)
+        # Import dans un devis d'incorporation : pas d'une personne déjà assurée sous la police
+        if int(donnee_devis.get("IdDevis") or 0):
+            from .incorporation import controler_assure_incorpore
+
+            with connection.cursor() as cursor:
+                controler_assure_incorpore(cursor, int(donnee_devis["IdDevis"]), id_assure, assure.get("Nom") or id_assure)
         donnee_devis["IdAssure"] = id_assure
         donnee_devis["CapitalDeces"] = assure["CapitalDeces"]
         donnee_devis["CapitalIpp"] = assure["CapitalInfirmite"]
@@ -1078,6 +1098,19 @@ def enregistrer_devis_ia(
 
         if assure["Offre"] != 0:
             donnee_devis["IdOffre"] = assure["Offre"]
+
+        # Assuré déjà inscrit au devis avant l'import (renouvellement : lignes recopiées du contrat ; même fichier importé deux fois) : sa ligne
+        # est mise à jour, sp_enregistrement_assure_ia refusant une seconde ligne (« Cet assuré est déjà enregistré dans ce devis ! »). Ligne
+        # reprise une seule fois : une personne en double dans le fichier reste refusée.
+        matricule = str(id_assure).zfill(20)
+        if lignes_existantes and matricule in lignes_existantes:
+            from .ia_montants_imposes import _decimal, oublier_si_change
+
+            donnee_devis["IdDevisDetail"] = lignes_existantes.pop(matricule)
+            # Montant reconduit du contrat : il tombe si le fichier change les capitaux, l'offre ou la prime
+            with connection.cursor() as cursor:
+                oublier_si_change(cursor, int(donnee_devis["IdDevis"]), matricule, _decimal(assure["CapitalDeces"]),
+                                  _decimal(assure["CapitalInfirmite"]), int(donnee_devis.get("IdOffre") or 0), assure.get("PrimeHT"))
 
         save_quotation_arg = unpack_ia_quotation_post_data(donnee_devis)
 

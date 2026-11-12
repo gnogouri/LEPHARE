@@ -14,9 +14,9 @@ import { useAuth } from '../../../context/AuthContext';
 
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
 
-const Parcours = ({ teinte, icone: Icone, titre, texte, points, action, pastille, principal, onClick, disabled, titreDesactive }) => (
+const Parcours = ({ teinte, icone: Icone, titre, texte, points, action, pastille, principal, onClick }) => (
   <button type="button" className={`trp-parcours-carte${principal ? ' principal' : ''}`} style={{ '--trp-teinte': teinte }}
-    onClick={onClick} disabled={disabled} title={disabled ? titreDesactive : undefined} aria-disabled={disabled}>
+    onClick={onClick}>
     {pastille && <span className="trp-pastille">{pastille}</span>}
     <span className="trp-parcours-icone"><Icone size={24} /></span>
     <span className="trp-parcours-titre">{titre}</span>
@@ -35,6 +35,10 @@ export const TransportAccueilPage = () => {
   const [aFacturer, setAFacturer] = useState(null);
 
   useEffect(() => {
+    if (!peut('contrats.view')) {
+      setAFacturer(null);
+      return undefined;
+    }
     let actif = true;
     transportHorsGuceApi.getAbonnements()
       .then((d) => {
@@ -48,7 +52,7 @@ export const TransportAccueilPage = () => {
       })
       .catch(() => { if (actif) setAFacturer(null); });
     return () => { actif = false; };
-  }, []);
+  }, [peut]);
 
   // Anciennes adresses : devis à modifier ou questionnaire à reprendre -> cotation hors GUCE
   if (parametres.get('edit') || parametres.get('questionnaire')) {
@@ -58,9 +62,11 @@ export const TransportAccueilPage = () => {
   return (
     <div className="trp-page">
       <div>
-        <button type="button" className="btn btn-link trp-retour" onClick={() => navigate('/user/quotes')}>
-          <ChevronLeft size={16} /> Registre des devis
-        </button>
+        {peut('devis.view') && (
+          <button type="button" className="btn btn-link trp-retour" onClick={() => navigate('/user/quotes')}>
+            <ChevronLeft size={16} /> Registre des devis
+          </button>
+        )}
         <h1 className="title-xl trp-titre"><Ship size={26} /> Transport de marchandises</h1>
         <p className="trp-sous-titre">
           Trois parcours distincts : une cotation pour les marchandises hors guichet unique, le suivi des polices
@@ -69,7 +75,7 @@ export const TransportAccueilPage = () => {
       </div>
 
       <div className="trp-parcours">
-        <Parcours
+        {peut(['devis.create', 'devis.update']) && <Parcours
           principal
           teinte="var(--primary-500)"
           icone={FileSignature}
@@ -78,10 +84,8 @@ export const TransportAccueilPage = () => {
           points={['Prime calculée en direct, étape par étape', 'Taux proposés par le barème, modifiables', 'Questionnaire du prospect repris']}
           action="Établir une cotation"
           onClick={() => navigate('/user/quotes/transport/hors-guce')}
-          disabled={!peut('devis.create')}
-          titreDesactive="Droit « Créer un devis » requis"
-        />
-        <Parcours
+        />}
+        {peut('contrats.view') && <Parcours
           teinte="var(--accent-amber)"
           icone={CalendarClock}
           titre="Polices d'abonnement"
@@ -90,10 +94,8 @@ export const TransportAccueilPage = () => {
           action="Déclarer un voyage"
           pastille={aFacturer?.voyages ? `${aFacturer.voyages} voyage${aFacturer.voyages > 1 ? 's' : ''} à facturer` : ''}
           onClick={() => navigate('/user/quotes/transport/abonnements')}
-          disabled={!peut('contrats.view')}
-          titreDesactive="Droit « Consulter les contrats » requis"
-        />
-        <Parcours
+        />}
+        {peut('imports.guce') && <Parcours
           teinte="var(--accent-cyan)"
           icone={UploadCloud}
           titre="Import GUCE"
@@ -101,16 +103,14 @@ export const TransportAccueilPage = () => {
           points={['Contrôle du fichier avant tout enregistrement', 'Contrat et quittance par client et police GUCE']}
           action="Importer un bordereau"
           onClick={() => navigate('/user/quotes/transport/guce')}
-          disabled={!peut('imports.guce')}
-          titreDesactive="Droit « Import GUCE » requis"
-        />
+        />}
       </div>
 
       <div className="trp-repere" aria-label="Repères">
         <div><strong>Police au voyage</strong>Un seul envoi ; le contrat prend fin à l'arrivée des marchandises.</div>
         <div><strong>Police annuelle</strong>Tous les envois de l'année ; renouvelable d'année en année.</div>
         <div><strong>Police d'abonnement</strong>Numéro de police sans prime ; chaque voyage déclaré l'alimente.</div>
-        {aFacturer?.montant > 0 && (
+        {peut('contrats.view') && aFacturer?.montant > 0 && (
           <div><strong>À facturer</strong>{fcfa(aFacturer.montant)} F sur {aFacturer.polices} police{aFacturer.polices > 1 ? 's' : ''} d'abonnement.</div>
         )}
       </div>

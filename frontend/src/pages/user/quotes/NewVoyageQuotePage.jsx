@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
 import { settingsApi, contractApi, quoteApi, voyageApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import { ViewQuoteModal } from './ViewQuoteModal';
@@ -35,7 +36,7 @@ const ETAPES = [
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
 const aujourdhui = () => new Date().toISOString().split('T')[0];
 const jour = (v) => (v ? String(v).slice(0, 10) : '');
-const dateFr = (iso) => (iso ? iso.split('-').reverse().join('/') : '—');
+const dateFr = (iso) => (iso ? iso.split('-').reverse().join('/') : '-');
 const versDmy = (iso) => (iso ? iso.split('-').reverse().join('-') : '');
 // Écart en jours entre la date d'effet et la date d'expiration (au moins 1, comme la base)
 const ecartJours = (debut, fin) => {
@@ -315,7 +316,7 @@ export const NewVoyageQuotePage = () => {
           return;
         }
         if (!d.Detail) {
-          toastError('Ce devis repris d\'URANUS n\'a pas de ligne de détail en base : il ne peut pas être modifié.');
+          toastError('Ce devis ne comporte aucune ligne de détail en base : il ne peut pas être modifié.');
           navigate('/user/quotes');
           return;
         }
@@ -350,7 +351,7 @@ export const NewVoyageQuotePage = () => {
         if (!d.Complement) manques.push('destination, nationalité, passeport, attestation et référence');
         if (!Number(d.Detail.IdOffre)) manques.push('offre');
         setAvertissementReprise(manques.length
-          ? `Devis repris d'URANUS : ${manques.join(' et ')} non enregistrés en base. Complétez-les ; la prime sera recalculée à l'enregistrement.`
+          ? `Données manquantes en base : ${manques.join(' et ')}. Complétez-les ; la prime sera recalculée à l'enregistrement.`
           : '');
       } catch (err) {
         if (actif) {
@@ -506,7 +507,7 @@ export const NewVoyageQuotePage = () => {
   const nomCompagnie = compagnies.find((c) => c.id === Number(compagnie))?.nom || '';
   const libelleFormule = tarifs.find((t) => Number(t.IdTarif) === Number(categorie))?.LibelleTarif || '';
   const libelleOffre = offres.find((o) => o.IdOffre === Number(offre))?.LibelleOffre || offreChoisie?.LibelleOffre || '';
-  const libelleNationalite = (p) => p.nationalite && /[a-zà-ÿ]/i.test(p.nationalite) ? p.nationalite : `— (${p.libelle_pays})`;
+  const libelleNationalite = (p) => p.nationalite && /[a-zà-ÿ]/i.test(p.nationalite) ? p.nationalite : `- (${p.libelle_pays})`;
   const nationalitesTriees = useMemo(() => {
     const comptes = {};
     nationalites.forEach((p) => { comptes[p.nationalite] = (comptes[p.nationalite] || 0) + 1; });
@@ -528,7 +529,7 @@ export const NewVoyageQuotePage = () => {
   const ligneRecap = (libelle, valeur, fort) => (
     <div style={styles.ligneRecap}>
       <span style={{ color: 'var(--text-muted)' }}>{libelle}</span>
-      <span style={{ textAlign: 'right', fontWeight: fort ? 800 : 600, color: 'var(--text-primary)' }}>{valeur || '—'}</span>
+      <span style={{ textAlign: 'right', fontWeight: fort ? 800 : 600, color: 'var(--text-primary)' }}>{valeur || '-'}</span>
     </div>
   );
 
@@ -546,7 +547,7 @@ export const NewVoyageQuotePage = () => {
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', margin: '0.3rem 0 0' }}>
             {idDevisEdite
-              ? <>Devis <strong>N° {numeroDevisEdite}</strong> — les primes sont recalculées selon la grille à l'enregistrement.</>
+              ? <>Devis <strong>N° {numeroDevisEdite}</strong> - les primes sont recalculées selon la grille à l'enregistrement.</>
               : 'Un voyageur par devis. La prime est lue dans la grille de la compagnie selon la zone de destination, la durée et l\'âge.'}
           </p>
         </div>
@@ -665,14 +666,14 @@ export const NewVoyageQuotePage = () => {
                 <Champ label="Pays de destination" requis erreur={erreurs.paysDestination}
                   aide={libelleZone ? undefined : (offreChoisie ? `Pays couverts par l'offre ${offreChoisie.LibelleOffre}` : 'La zone tarifaire dépend du pays choisi')}>
                   <select className="form-control" value={paysDestination} onChange={(e) => setPaysDestination(Number(e.target.value))} disabled={!paysProposes.length}>
-                    <option value={0}>{paysProposes.length ? '— Choisir —' : (chargementListes ? 'Chargement…' : 'Aucun pays paramétré')}</option>
+                    <option value={0}>{paysProposes.length ? 'Choisir' : (chargementListes ? 'Chargement…' : 'Aucun pays paramétré')}</option>
                     {paysProposes.map((p) => <option key={p.id_pays} value={p.id_pays}>{p.libelle_pays}</option>)}
                   </select>
                   {libelleZone && <div style={{ marginTop: '0.4rem' }}><span style={styles.pastille}><MapPin size={12} /> {libelleZone}</span></div>}
                 </Champ>
                 <Champ label="Nationalité" requis erreur={erreurs.nationalite}>
                   <select className="form-control" value={nationalite} onChange={(e) => setNationalite(Number(e.target.value))}>
-                    <option value={0}>— Choisir —</option>
+                    <option value={0}>Choisir</option>
                     {nationalitesTriees.map((p) => <option key={p.id_pays} value={p.id_pays}>{p.libelle}</option>)}
                   </select>
                 </Champ>
@@ -713,7 +714,7 @@ export const NewVoyageQuotePage = () => {
                 <Champ label="Durée" aide="Jours couverts, date d'effet et date d'expiration comprises">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minHeight: '2.4rem', fontWeight: 800, fontSize: '1.05rem', color: ecart !== null && ecart < 1 ? 'var(--accent-rose)' : 'var(--text-primary)' }}>
                     <CalendarDays size={18} style={{ color: 'var(--primary-500)' }} />
-                    {duree === null ? '—' : `${duree} jour${Math.abs(duree) > 1 ? 's' : ''}`}
+                    {duree === null ? '-' : `${duree} jour${Math.abs(duree) > 1 ? 's' : ''}`}
                   </div>
                 </Champ>
                 <Champ label="Terme du contrat">
@@ -779,7 +780,7 @@ export const NewVoyageQuotePage = () => {
                   <span>
                     {calcul?.tarif?.Motif
                       ? `Hors tarif : ${calcul.tarif.Motif}`
-                      : `Aucune prime dans la grille pour ces paramètres (âge ${age ?? '—'} ans, ${duree ?? '—'} jours, ${libelleZone || 'zone inconnue'})`}
+                      : `Aucune prime dans la grille pour ces paramètres (âge ${age ?? '-'} ans, ${duree ?? '-'} jours, ${libelleZone || 'zone inconnue'})`}
                     {' '}Le devis ne pourra pas être enregistré.
                   </span>
                 </div>
@@ -794,12 +795,12 @@ export const NewVoyageQuotePage = () => {
                 ].map(([libelle, valeur]) => (
                   <div key={libelle} style={{ padding: '0.75rem 0.9rem', borderRadius: '10px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)' }}>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>{libelle}</div>
-                    <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(valeur)} F` : '—'}</div>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(valeur)} F` : '-'}</div>
                   </div>
                 ))}
                 <div style={{ padding: '0.75rem 0.9rem', borderRadius: '10px', border: '1px solid var(--primary-500)', background: 'var(--primary-glow)' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--primary-500)', textTransform: 'uppercase', fontWeight: 800 }}>Prime TTC calculée</div>
-                  <div style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(montants.primeTtc)} F` : '—'}</div>
+                  <div style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--text-primary)', marginTop: '0.2rem' }}>{montants ? `${fcfa(montants.primeTtc)} F` : '-'}</div>
                 </div>
               </div>
 
@@ -810,7 +811,7 @@ export const NewVoyageQuotePage = () => {
                   <div style={{ ...styles.alerte('var(--border-subtle)'), marginTop: '0.9rem' }}>
                     <FileCheck size={18} style={{ color: 'var(--primary-500)', flexShrink: 0 }} />
                     <span>
-                      <strong>Ligne du tarif {nomCompagnie} appliquée</strong> : {libelleOffre}{libelleZone ? ` — ${libelleZone}` : ''} — {l.AgeMin} à {l.AgeMax} ans — {l.LibelleDuree}.
+                      <strong>Ligne du tarif {nomCompagnie} appliquée</strong> : {libelleOffre}{libelleZone ? ` - ${libelleZone}` : ''} - {l.AgeMin} à {l.AgeMax} ans - {l.LibelleDuree}.
                       {' '}Tarif : {fcfa(l.PrimeNette)} F de prime nette + {fcfa(l.Accessoire)} F d'accessoire + {fcfa(l.PrimeTtc - l.PrimeNette - l.Accessoire)} F de taxe = <strong>{fcfa(l.PrimeTtc)} F TTC</strong>
                       {montants.reduction > 0 ? ` ; la prime calculée applique la réduction de ${reduction} %.` : '.'}
                       <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.78rem', marginTop: '0.2rem' }}>
@@ -891,7 +892,7 @@ export const NewVoyageQuotePage = () => {
             <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--primary-500)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
               Prime TTC {calculEnCours && <Loader2 size={12} className="spin" />}
             </div>
-            <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--text-primary)' }}>{montants && montants.primeNette > 0 ? `${fcfa(montants.primeTtc)} F` : '—'}</div>
+            <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--text-primary)' }}>{montants && montants.primeNette > 0 ? `${fcfa(montants.primeTtc)} F` : '-'}</div>
             {montants && montants.primeNette > 0 && (
               <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
                 dont prime nette {fcfa(montants.primeNette)} F

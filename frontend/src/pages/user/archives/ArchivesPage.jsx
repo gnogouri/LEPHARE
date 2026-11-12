@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { DataTable } from '../../../components/common/DataTable';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { dataStore } from '../../../api/dataStore';
-import { customerApi, quoteApi, claimsApi } from '../../../api/endpoints';
+import { archivesApi, customerApi, quoteApi, claimsApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
-import { useAuth } from '../../../context/AuthContext';
-import { canUser } from '../../../utils/rbac';
+import { aLeDroit } from '../../../utils/droits';
+import { messageErreurApi } from '../../../utils/financeUtils';
 import { exportToPdf, printFicheClient } from '../../../utils/exportUtils';
 import {
   Archive,
@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 
 const fmtDate = (v) => {
-  if (!v) return '—';
+  if (!v) return '-';
   const d = new Date(v);
   if (isNaN(d.getTime())) return String(v);
   const pad = (n) => String(n).padStart(2, '0');
@@ -43,7 +43,6 @@ const TYPE_META = {
 };
 
 export const ArchivesPage = () => {
-  const { user } = useAuth();
   const navigate = useNavigate();
   const { success, error: toastError } = useToast();
 
@@ -82,7 +81,7 @@ export const ArchivesPage = () => {
           nom: c.nomcomplet || [c.Nom || c.nom, c.Prenoms || c.prenom].filter(Boolean).join(' ') || 'Client sans nom',
           detail: c.profession || c.libelleprofession || (c.typeclient === 'Entreprise' ? 'Entreprise' : 'Particulier'),
           dateArchivage: c.date_archivage || null,
-          motif: c.motif_archivage || '—',
+          motif: c.motif_archivage || '-',
           raw: c,
         })),
         ...quotes.map((q) => ({
@@ -91,9 +90,9 @@ export const ArchivesPage = () => {
           reference: q.numerodevis || `DEV-${q.id}`,
           numerodevis: q.numerodevis || `DEV-${q.id}`, // alias pour la recherche intégrée de DataTable
           nom: q.client_nom || q.nom_client || q.souscripteur || 'Client',
-          detail: q.branche || q.produit || '—',
+          detail: q.branche || q.produit || '-',
           dateArchivage: q.date_archivage || null,
-          motif: q.motif_archivage || '—',
+          motif: q.motif_archivage || '-',
           raw: q,
         })),
         ...contracts.map((c) => ({
@@ -102,9 +101,9 @@ export const ArchivesPage = () => {
           reference: c.numeropolice || `POL-${c.id}`,
           numeropolice: c.numeropolice || `POL-${c.id}`, // alias pour la recherche intégrée de DataTable
           nom: c.client_nom || c.souscripteur || c.assure || 'Assuré',
-          detail: c.produit || c.branche || '—',
+          detail: c.produit || c.branche || '-',
           dateArchivage: c.date_archivage || null,
-          motif: c.motif_archivage || '—',
+          motif: c.motif_archivage || '-',
           raw: c,
         })),
         ...claims.map((c) => ({
@@ -113,9 +112,9 @@ export const ArchivesPage = () => {
           reference: c.numero_sinistre || `SIN-${c.id}`,
           codeclient: c.numero_sinistre || `SIN-${c.id}`, // alias pour la recherche intégrée de DataTable
           nom: c.client_nom || c.souscripteur || 'Assuré',
-          detail: c.nature || '—',
+          detail: c.nature || '-',
           dateArchivage: c.date_archivage || c.date_cloture || null,
-          motif: c.motif_archivage || '—',
+          motif: c.motif_archivage || '-',
           raw: c,
         })),
       ];
@@ -161,39 +160,25 @@ export const ArchivesPage = () => {
     return c;
   }, [rows]);
 
-  // Vérifie l'habilitation de restauration selon le type d'enregistrement
-  const canRestore = (type) => {
-    const resourceMap = { client: 'clients', devis: 'quotes', contrat: 'contracts', sinistre: 'claims' };
-    return canUser(user, 'delete', resourceMap[type]); // même habilitation que l'archivage/suppression
-  };
+  // Droit à part, accordé dans Administration > Rôles ; le serveur le contrôle aussi
+  const peutRestaurer = aLeDroit('archives.restore');
 
   const handleRestore = async (row) => {
     try {
-      if (row.type === 'client') {
-        try {
-          await customerApi.updateClient(row.id, { ...row.raw, Statut: 'V' });
-        } catch {
-          dataStore.unarchiveClient(row.id);
-        }
-      } else if (row.type === 'devis') {
-        try {
-          await quoteApi.unarchiveQuote(row.id);
-        } catch {
-          dataStore.unarchiveQuote(row.id);
-        }
+      let message = '';
+      if (row.type === 'devis') {
+        await quoteApi.unarchiveQuote(row.id);
       } else if (row.type === 'contrat') {
+        // Contrats : pas d'archivage en base, il reste propre au navigateur (voir loadArchives)
         dataStore.unarchiveContract(row.id);
-      } else if (row.type === 'sinistre') {
-        try {
-          await claimsApi.updateClaim(row.id, { statut: "En cours d'instruction" });
-        } catch {
-          dataStore.unarchiveClaim(row.id);
-        }
+      } else {
+        // Client : de retour dans la liste des clients ; le serveur signale une autre fiche de même identité
+        message = (await archivesApi.restaurer(row.type, row.id))?.data?.Message || '';
       }
-      success(`${TYPE_META[row.type].label} « ${row.nom} » (${row.reference}) a été restauré avec succès.`);
+      success(`${TYPE_META[row.type].label} « ${row.nom} » (${row.reference}) a été restauré avec succès.${message && row.type === 'client' ? ` ${message}` : ''}`);
       loadArchives();
     } catch (err) {
-      toastError(err.response?.data?.detail || err.message || 'Erreur lors de la restauration.');
+      toastError(`Restauration impossible : ${messageErreurApi(err)}`);
     }
   };
 
@@ -304,19 +289,19 @@ export const ArchivesPage = () => {
 
           <button
             className="btn btn-secondary"
-            disabled={!canRestore(row.type)}
+            disabled={!peutRestaurer}
             style={{
               padding: '0.3rem 0.55rem',
               fontSize: '0.75rem',
               display: 'flex',
               alignItems: 'center',
               gap: '0.25rem',
-              color: canRestore(row.type) ? '#34d399' : 'var(--text-muted)',
-              opacity: canRestore(row.type) ? 1 : 0.45,
-              cursor: canRestore(row.type) ? 'pointer' : 'not-allowed',
+              color: peutRestaurer ? '#34d399' : 'var(--text-muted)',
+              opacity: peutRestaurer ? 1 : 0.45,
+              cursor: peutRestaurer ? 'pointer' : 'not-allowed',
             }}
-            onClick={() => canRestore(row.type) && handleRestore(row)}
-            title={canRestore(row.type) ? 'Désarchiver / Restaurer' : 'Non habilité pour restaurer'}
+            onClick={() => peutRestaurer && handleRestore(row)}
+            title={peutRestaurer ? 'Désarchiver / Restaurer' : 'Droit « Restaurer un élément archivé » requis : à accorder dans Administration > Rôles'}
           >
             <RotateCcw size={13} />
             <span>Restaurer</span>

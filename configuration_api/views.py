@@ -12,6 +12,7 @@ from institutionnel.authentication import KnoxOrDemoTokenAuthentication
 from rest_framework import permissions, status, viewsets
 from rest_framework.authentication import BasicAuthentication
 from rest_framework.decorators import (
+    action,
     api_view,
     authentication_classes,
     permission_classes,
@@ -438,7 +439,9 @@ class QualiteSouscripteurMrhViewSet(viewsets.ModelViewSet):
     ]
 
 
-class TarifDetailViewSet(viewsets.ModelViewSet):
+class TarifDetailViewSet(JournalModificationsMixin, viewsets.ModelViewSet):
+    # Barème automobile (Administration > Réglages par branche > Automobile > Barème automobile)
+    libelle_journal = "Barème automobile"
     queryset = TarifDetail.objects.all()
     serializer_class = TarifDetailSerializer
     filterset_fields = ["IdTarif", "IdGarantie"]
@@ -1042,7 +1045,7 @@ class ModeleVehiculeViewSet(viewsets.ModelViewSet):
 
 
 class UsageVehiculeViewSet(viewsets.ModelViewSet):
-    queryset = UsageVehicule.objects.filter(~Q(IdUsage=0))
+    queryset = UsageVehicule.objects.filter(~Q(IdUsage=0)).prefetch_related("Carrosseries__Usages")
     serializer_class = UsageVehiculeSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -1108,12 +1111,70 @@ class CategoriePermisViewSet(viewsets.ModelViewSet):
     ]
 
 
-class BanqueViewSet(viewsets.ModelViewSet):
-    queryset = Banque.objects.all()
+# Banque « NEANT » : celle que la caisse enregistre pour un règlement sans banque (espèces, paiement mobile…)
+ID_BANQUE_NEANT = 1
+# Tables d'URANUS qui désignent une banque (clés étrangères vers stdbanque) : clé renvoyée, libellés singulier et pluriel
+UTILISATIONS_BANQUE = (
+    ("stdencaissement", "Encaissements", "encaissement", "encaissements"),
+    ("stdcheque", "Cheques", "chèque", "chèques"),
+    ("stdreversementcompagnie", "Reversements", "reversement", "reversements"),
+    ("std_paiement_commission", "PaiementsCommission", "paiement de commissions", "paiements de commissions"),
+)
+
+
+def utilisations_banques(ids=None):
+    """{idbanque: {Encaissements, Cheques, Reversements, PaiementsCommission}} : lignes qui désignent chaque banque."""
+    resultat = {}
+    with connection.cursor() as cursor:
+        for table, cle, _, _ in UTILISATIONS_BANQUE:
+            cursor.execute(
+                f"SELECT idbanque, COUNT(*) FROM {table} WHERE idbanque IS NOT NULL"
+                + (" AND idbanque = ANY(%s)" if ids else "") + " GROUP BY idbanque",
+                [list(ids)] if ids else [])
+            for idbanque, nombre in cursor.fetchall():
+                resultat.setdefault(idbanque, {})[cle] = nombre
+    return resultat
+
+
+class BanqueViewSet(JournalModificationsMixin, viewsets.ModelViewSet):
+    """Banques des chèques, virements et traites, par ordre alphabétique. Création depuis l'administration (Listes de
+    référence > Banques) ou depuis la caisse (bouton « + » de la banque émettrice : droit encaissements.create, règle de
+    garde) ; modification et suppression depuis l'administration. « NEANT » n'est ni modifiable ni supprimable ; une
+    banque déjà désignée par un encaissement, un chèque, un reversement ou un paiement de commissions n'est pas
+    supprimable (elle se renomme)."""
+
+    libelle_journal = "Banques"
+    queryset = Banque.objects.all().order_by("libelle")
     serializer_class = BanqueSerializer
     permission_classes = [
         permissions.IsAuthenticated,
     ]
+
+    def _neant(self):
+        return Response({"error": "La banque « NEANT » sert aux règlements sans banque : elle ne se modifie pas."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    def update(self, request, *args, **kwargs):
+        if self.get_object().pk == ID_BANQUE_NEANT:
+            return self._neant()
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        banque = self.get_object()
+        if banque.pk == ID_BANQUE_NEANT:
+            return self._neant()
+        utilisations = utilisations_banques([banque.pk]).get(banque.pk, {})
+        if utilisations:
+            detail = ", ".join(f"{utilisations[cle]} {pluriel if utilisations[cle] > 1 else singulier}"
+                               for _, cle, singulier, pluriel in UTILISATIONS_BANQUE if utilisations.get(cle))
+            return Response({"error": f"{banque.libelle.strip()} est déjà utilisée ({detail}) : suppression impossible, "
+                                      "renommez-la si besoin."}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"])
+    def utilisations(self, request):
+        """GET /api/banque/utilisations/ : {idbanque: {Encaissements, Cheques, Reversements, PaiementsCommission}}."""
+        return Response({str(idbanque): valeurs for idbanque, valeurs in utilisations_banques().items()})
 
 
 class ModeEncaissementViewSet(viewsets.ModelViewSet):

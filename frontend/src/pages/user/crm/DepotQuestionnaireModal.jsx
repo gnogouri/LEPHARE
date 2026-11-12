@@ -57,7 +57,7 @@ const PanneauAnalyse = ({ analyse, modele, version, onUtiliser }) => {
           {(d.resume || s.nom) && (
             <div className="qp-analyse-ligne">
               {s.nom && <>Souscripteur : <strong>{s.nom}</strong>{s.telephone ? ` · ${s.telephone}` : ''}</>}
-              {s.nom && d.resume ? ' — ' : ''}
+              {s.nom && d.resume ? ' - ' : ''}
               {d.resume && <strong>{d.resume}</strong>}
             </div>
           )}
@@ -292,7 +292,7 @@ export const DepotQuestionnaireModal = ({
 
   const titre = version ? 'Nouvelle version du questionnaire' : 'Déposer un questionnaire rempli';
   const sousTitre = version
-    ? `${version.titre} — ${version.prospect_nom} (version ${version.version} actuellement)`
+    ? `${version.titre} - ${version.prospect_nom} (version ${version.version} actuellement)`
     : 'Le fichier est lu dès qu\'il est choisi, puis rattaché au prospect ; le devis s\'établit ensuite à partir de ces informations.';
 
   return (
@@ -351,7 +351,7 @@ export const DepotQuestionnaireModal = ({
                 ou <span style={{ color: 'var(--primary-500)', fontWeight: 600, textDecoration: 'underline' }}>parcourez vos fichiers</span>
               </div>
               <div id="qp-depot-aide" style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                {LIBELLES_EXTENSIONS} — {tailleLisible(tailleMax)} au plus
+                {LIBELLES_EXTENSIONS} - {tailleLisible(tailleMax)} au plus
               </div>
             </div>
           )}
@@ -373,7 +373,7 @@ export const DepotQuestionnaireModal = ({
                 aria-invalid={tentative && !modele}
                 onChange={(e) => { setModeleCode(e.target.value); setReconnu(false); }}
               >
-                <option value="">— Choisir le questionnaire —</option>
+                <option value="">Choisir le questionnaire</option>
                 {[...new Set(modeles.map((m) => m.branche))].map((b) => (
                   <optgroup key={b} label={b}>
                     {modeles.filter((m) => m.branche === b).map((m) => <option key={m.code} value={m.code}>{m.titre}</option>)}
@@ -382,7 +382,7 @@ export const DepotQuestionnaireModal = ({
               </select>
               {reconnu && modele && (
                 <div className="qp-indice">
-                  <Sparkles size={13} /> {reconnu === 'contenu' ? 'Reconnu d\'après le contenu du fichier' : 'Reconnu d\'après le nom du fichier'} — modifiable
+                  <Sparkles size={13} /> {reconnu === 'contenu' ? 'Reconnu d\'après le contenu du fichier' : 'Reconnu d\'après le nom du fichier'} - modifiable
                 </div>
               )}
             </section>

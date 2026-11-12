@@ -7,6 +7,7 @@ import { parametrageApi } from '../../../../api/endpoints';
 import { useToast } from '../../../../context/ToastContext';
 import { messageErreurApi } from '../../../../utils/financeUtils';
 import { Interrupteur } from '../../../../components/admin/Interrupteur';
+import { ReglagesIaForfaitsAutres } from './ReglagesIaForfaitsAutres';
 
 // Réglages Individuelle Accidents (configuration_api/parametrage_ia.py) : tarif NSIA par classe d'activité et
 // accessoires selon la prime nette, lus par fn_calcul_prime_ia_nsia et fn_get_accessoire_ia_nsia.
@@ -128,7 +129,7 @@ export const SectionIa = () => {
   return (
     <>
       <SectionParametrage icone={UserPlus} titre={`Tarif ${donnees.Compagnie} par classe d'activité`}
-        description="La classe vient de la profession de l'assuré. Prime = capital × taux ; décès et invalidité en ‰, frais médicaux en %. Les autres compagnies gardent le barème d'URANUS.">
+        description="La classe vient de la profession de l'assuré. Prime = capital × taux ; décès et invalidité en ‰, frais médicaux en %. Les autres compagnies utilisent leur barème enregistré.">
         <div className="rb-modes">
           {donnees.Classes.map((c) => (
             <ClasseIa key={c.Classe} classe={c} onEnregistre={(maj) => setDonnees((d) => ({ ...d, Classes: d.Classes.map((x) => (x.Classe === maj.Classe ? maj : x)) }))} />
@@ -202,6 +203,8 @@ export const SectionIa = () => {
           <button type="button" className="btn btn-primary" onClick={enregistrerOffres} disabled={!offresModifiees || envoi} aria-busy={envoi}><Save size={14} /> Enregistrer les offres</button>
         </div>
       </SectionParametrage>
+
+      <ReglagesIaForfaitsAutres reglages={donnees.Reglages} />
     </>
   );
 };

@@ -10,7 +10,7 @@ import { useToast } from '../../../context/ToastContext';
 
 // Administration > Journal d'audit : lecture seule (la table refuse toute modification ou suppression).
 // API : GET /api/securite/journal/ (autorisations/views_securite.py)
-const dateHeure = (iso) => (iso ? new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'medium' }) : '—');
+const dateHeure = (iso) => (iso ? new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'medium' }) : '-');
 const COULEURS = { SUCCES: 'var(--accent-emerald)', ECHEC: 'var(--accent-rose)', REFUS: 'var(--accent-amber)', CONFORME: 'var(--accent-emerald)' };
 const FILTRES_VIDES = { q: '', utilisateur: '', module: '', action: '', resultat: '', du: '', au: '' };
 
@@ -29,8 +29,8 @@ const Comparaison = ({ avant, apres }) => {
             {(changees.length ? changees : cles).map((k) => (
               <tr key={k} style={{ borderTop: '1px solid var(--border-subtle)', verticalAlign: 'top' }}>
                 <td style={{ padding: '0.3rem', fontWeight: 700 }}>{k}</td>
-                <td style={{ padding: '0.3rem', color: 'var(--accent-rose)' }}>{simple(avant[k]) ? String(avant[k] ?? '—') : <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(avant[k], null, 1)}</pre>}</td>
-                <td style={{ padding: '0.3rem', color: 'var(--accent-emerald)' }}>{simple(apres[k]) ? String(apres[k] ?? '—') : <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(apres[k], null, 1)}</pre>}</td>
+                <td style={{ padding: '0.3rem', color: 'var(--accent-rose)' }}>{simple(avant[k]) ? String(avant[k] ?? '-') : <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(avant[k], null, 1)}</pre>}</td>
+                <td style={{ padding: '0.3rem', color: 'var(--accent-emerald)' }}>{simple(apres[k]) ? String(apres[k] ?? '-') : <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(apres[k], null, 1)}</pre>}</td>
               </tr>
             ))}
           </tbody>
@@ -44,7 +44,7 @@ const Comparaison = ({ avant, apres }) => {
       {[['Avant', avant, 'var(--accent-rose)'], ['Après', apres, 'var(--accent-emerald)']].map(([titre, valeur, couleur]) => (
         <div key={titre}>
           <div style={{ fontSize: '0.72rem', fontWeight: 800, color: couleur, marginBottom: '0.25rem' }}>{titre}</div>
-          <pre style={{ margin: 0, maxHeight: 280, overflow: 'auto', fontSize: '0.74rem', padding: '0.5rem', borderRadius: 8, background: 'var(--bg-surface-elevated)', whiteSpace: 'pre-wrap' }}>{valeur === null || valeur === undefined ? '—' : JSON.stringify(valeur, null, 2)}</pre>
+          <pre style={{ margin: 0, maxHeight: 280, overflow: 'auto', fontSize: '0.74rem', padding: '0.5rem', borderRadius: 8, background: 'var(--bg-surface-elevated)', whiteSpace: 'pre-wrap' }}>{valeur === null || valeur === undefined ? '-' : JSON.stringify(valeur, null, 2)}</pre>
         </div>
       ))}
     </div>
@@ -172,7 +172,7 @@ export const JournalAuditPage = () => {
                 </td>
                 <td style={{ padding: '0.45rem 0.4rem', fontSize: '0.78rem' }}>{e.objet_type}{e.objet_id ? ` ${e.objet_id}` : ''}</td>
                 <td style={{ padding: '0.45rem 0.4rem', fontSize: '0.75rem', fontWeight: 800, color: COULEURS[e.resultat] || 'var(--text-secondary)' }}>{e.resultat}</td>
-                <td style={{ padding: '0.45rem 0.4rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>{e.adresse_ip || '—'}</td>
+                <td style={{ padding: '0.45rem 0.4rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>{e.adresse_ip || '-'}</td>
               </tr>
             ))}
             {!chargement && !donnees.resultats.length && <tr><td colSpan={6} style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>Aucune opération ne correspond aux filtres.</td></tr>}
@@ -187,9 +187,9 @@ export const JournalAuditPage = () => {
               <div><strong>Utilisateur :</strong> {detail.auteur}</div>
               <div><strong>Résultat :</strong> <span style={{ color: COULEURS[detail.resultat], fontWeight: 800 }}>{detail.resultat}</span>{detail.statut_http ? ` (HTTP ${detail.statut_http})` : ''}</div>
               <div><strong>Module :</strong> {detail.module}</div>
-              <div><strong>Action :</strong> {detail.action || '—'}</div>
-              <div><strong>Objet :</strong> {detail.objet_type || '—'} {detail.objet_id}</div>
-              <div><strong>Adresse IP :</strong> {detail.adresse_ip || '—'}</div>
+              <div><strong>Action :</strong> {detail.action || '-'}</div>
+              <div><strong>Objet :</strong> {detail.objet_type || '-'} {detail.objet_id}</div>
+              <div><strong>Adresse IP :</strong> {detail.adresse_ip || '-'}</div>
               <div style={{ gridColumn: '1 / -1' }}><strong>Description :</strong> {detail.description}</div>
               {detail.motif && <div style={{ gridColumn: '1 / -1' }}><strong>Motif :</strong> {detail.motif}</div>}
               {detail.chemin && <div style={{ gridColumn: '1 / -1', color: 'var(--text-muted)', fontSize: '0.75rem' }}>{detail.methode} {detail.chemin}</div>}

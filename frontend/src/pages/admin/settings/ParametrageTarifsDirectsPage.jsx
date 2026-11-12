@@ -113,7 +113,7 @@ const VueGrille = ({ grille, offres, energies }) => {
       <div style={{ fontSize: '0.84rem', marginBottom: '0.9rem', lineHeight: 1.6 }}>
         <span style={{ color: 'var(--text-muted)' }}>Offres tarifées par cette grille : </span>
         {libellesOffres.length ? libellesOffres.map((o, i) => <span key={o}>{i > 0 && ' · '}<strong>{o}</strong></span>)
-          : <em style={{ color: 'var(--accent-amber)' }}>aucune — la grille n'est appliquée à aucun devis</em>}
+          : <em style={{ color: 'var(--accent-amber)' }}>aucune - la grille n'est appliquée à aucun devis</em>}
         <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
           {grille.Source && <>Source : {grille.Source}</>}
           {grille.DateModification && <>{grille.Source ? ' · ' : ''}mis à jour le {new Date(grille.DateModification).toLocaleDateString('fr-FR')}{grille.ModifiePar ? ` par ${grille.ModifiePar}` : ''}</>}
@@ -180,7 +180,7 @@ const VueGrille = ({ grille, offres, energies }) => {
                             {nombre(l[m.champ])}
                             {m.champ === 'PrimeTtc' && Math.abs(ecartTtc(l)) > ECART_TOLERE && <AlertTriangle size={12} color="var(--accent-amber)" style={{ marginLeft: 4 }} />}
                           </span>
-                        ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        ) : <span style={{ color: 'var(--text-muted)' }}>-</span>}
                       </td>
                     ));
                   })}
@@ -363,7 +363,7 @@ const CarteGrille = ({ grille, compagnies, offres, energies, onEnregistree, onSu
 
   return (
     <SectionParametrage icone={Table2}
-      titre={`${affichee.Libelle || 'Nouveau tarif'}${nomCompagnie ? ` — ${nomCompagnie}` : ''}`}
+      titre={`${affichee.Libelle || 'Nouveau tarif'}${nomCompagnie ? ` - ${nomCompagnie}` : ''}`}
       description={enEdition ? 'Modification en cours : enregistrez pour appliquer la grille aux devis.' : 'Primes de la compagnie par tranche (lignes) et par durée (colonnes).'}
       actions={enEdition ? (
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -510,7 +510,7 @@ export const ParametrageTarifsDirectsPage = () => {
                 {libelles.map((l, k) => (
                   <div key={l} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '0.35rem 0.5rem', textAlign: 'center', background: [3, 6].includes(k) ? 'rgba(99, 102, 241, 0.08)' : 'var(--bg-surface)' }}>
                     <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{l}</div>
-                    <div style={{ fontWeight: 800, fontSize: '0.95rem', fontVariantNumeric: 'tabular-nums' }}>{valeurs[k] ?? '—'} %</div>
+                    <div style={{ fontWeight: 800, fontSize: '0.95rem', fontVariantNumeric: 'tabular-nums' }}>{valeurs[k] ?? '-'} %</div>
                   </div>
                 ))}
               </div>

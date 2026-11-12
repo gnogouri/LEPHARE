@@ -82,8 +82,8 @@ const COLONNES_ECHEANCES = [
   { champ: 'produit', titre: 'Produit', type: 'produit', requis: true, filtre: true },
   { champ: 'duree_contrat_minimum', titre: 'Contrats de (jours)', type: 'entier', requis: true, min: 1 },
   { champ: 'duree_contrat_maximum', titre: 'À (jours)', type: 'entier', requis: true, min: 1 },
-  { champ: 'delai_mono', titre: 'Délai — mono (jours)', type: 'entier', requis: true, min: 0, aide: 'Jours avant l\'échéance où le contrat apparaît dans les avis d\'échéance.' },
-  { champ: 'delai_flotte', titre: 'Délai — flotte (jours)', type: 'entier', requis: true, min: 0 },
+  { champ: 'delai_mono', titre: 'Délai - mono (jours)', type: 'entier', requis: true, min: 0, aide: 'Jours avant l\'échéance où le contrat apparaît dans les avis d\'échéance.' },
+  { champ: 'delai_flotte', titre: 'Délai - flotte (jours)', type: 'entier', requis: true, min: 0 },
 ];
 
 export const CabinetSettingsPage = () => {

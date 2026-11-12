@@ -290,7 +290,7 @@ export const SecteursActivitePage = () => {
       <Modal
         isOpen={isEditOpen}
         onClose={() => setIsEditOpen(false)}
-        title={`Modifier — ${editTarget?.Libelle || ''}`}
+        title={`Modifier - ${editTarget?.Libelle || ''}`}
         size="small"
       >
         <form onSubmit={handleEdit}>

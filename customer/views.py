@@ -107,6 +107,11 @@ class ClientViewSet(viewsets.ModelViewSet):
         # chaque client, calculés dans la même requête que la liste (voir activite.py)
         return queryset.annotate(**annotations_activite())
 
+    def perform_create(self, serializer):
+        # La clé unique est posée par le déclencheur de stdclient : la réponse la renvoie telle qu'en base
+        serializer.save()
+        serializer.instance.refresh_from_db(fields=["cle_unique"])
+
     @action(detail=True, methods=["get"], url_path="fiche")
     def fiche(self, request, pk=None):
         """Données de la fiche client imprimable : identité avec les libellés des

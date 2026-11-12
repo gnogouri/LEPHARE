@@ -4,7 +4,7 @@
  */
 export const formatMoney = (value, { suffix = '' } = {}) => {
   const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return '-';
   const formatted = Math.round(n).toLocaleString('fr-FR');
   return suffix ? `${formatted} ${suffix}` : formatted;
 };

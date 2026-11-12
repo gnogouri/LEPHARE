@@ -109,7 +109,7 @@ export default function PoliceMineneConnexe({ value, onChange, onPolice, produit
         <small style={{ display: 'flex', alignItems: 'flex-start', gap: '0.35rem', color: 'var(--accent-emerald, #10b981)', fontSize: '0.76rem', marginTop: '0.3rem' }}>
           <CheckCircle2 size={14} style={{ flexShrink: 0, marginTop: 1 }} />
           <span>
-            {police.Client} — du {jma(police.DateEffet)} au {jma(police.DateExpiration)} — {police.Adherents} adhérent{police.Adherents > 1 ? 's' : ''} :
+            {police.Client} - du {jma(police.DateEffet)} au {jma(police.DateExpiration)} - {police.Adherents} adhérent{police.Adherents > 1 ? 's' : ''} :
             client, date d&apos;effet et échéance repris de la police Santé.
           </span>
         </small>

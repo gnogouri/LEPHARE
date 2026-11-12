@@ -22,6 +22,7 @@ import {
   Printer,
 } from 'lucide-react';
 import { trierParLibelle } from '../../../utils/sortUtils';
+import { estSolde, resteAEncaisser } from '../../../utils/resteEncaissement';
 
 export const AsaciPage = () => {
   const [activeTab, setActiveTab] = useState('attestations'); // 'attestations' | 'demandes' | 'passerelle'
@@ -98,8 +99,9 @@ export const AsaciPage = () => {
     (c) => String(c.idcontrat || c.id) === String(selectedContractId)
   );
 
+  // Reliquat de moins de 5 F compté comme nul : il ne bloque pas l'attestation
   const isContractPaid = selectedContract
-    ? Number(selectedContract.montant_encaisse || 0) >= Number(selectedContract.prime_totale || selectedContract.primettc || 0)
+    ? estSolde(selectedContract.prime_totale || selectedContract.primettc, selectedContract.montant_encaisse)
     : false;
 
   // Soumission réelle de la demande d'attestation à l'ASACI via PostgreSQL / fn_demande_attestation
@@ -601,10 +603,10 @@ export const AsaciPage = () => {
               <option value="">-- Choisir une police d'assurance --</option>
               {trierParLibelle(contracts, (c) => c.numeropolice || '').map((c) => {
                 const id = c.idcontrat || c.id;
-                const sold = Number(c.montant_encaisse || 0) >= Number(c.prime_totale || c.primettc || 0);
+                const sold = estSolde(c.prime_totale || c.primettc, c.montant_encaisse);
                 return (
                   <option key={id} value={id}>
-                    {c.numeropolice || `POL-${id}`} - {c.client_nom || c.souscripteur || 'Client'} — {c.compagnie || 'NSIA'} —{sold ? '✓ Soldé' : '⚠️ Non soldé'}
+                    {c.numeropolice || `POL-${id}`} - {c.client_nom || c.souscripteur || 'Client'} - {c.compagnie || 'NSIA'} -{sold ? '✓ Soldé' : '⚠️ Non soldé'}
                   </option>
                 );
               })}
@@ -632,7 +634,7 @@ export const AsaciPage = () => {
                 <strong style={{ fontSize: '0.85rem', color: isContractPaid ? '#34d399' : '#f87171' }}>
                   {isContractPaid
                     ? '✓ Prime Intégralement Réglée (Délivrance Autorisée)'
-                    : `⚠️ Reste à Encaisser : ${(Number(selectedContract.prime_totale || selectedContract.primettc || 0) - Number(selectedContract.montant_encaisse || 0)).toLocaleString('fr-FR')} FCFA`}
+                    : `⚠️ Reste à Encaisser : ${resteAEncaisser(selectedContract.prime_totale || selectedContract.primettc, selectedContract.montant_encaisse).toLocaleString('fr-FR')} FCFA`}
                 </strong>
               </div>
               <span className={`badge ${isContractPaid ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: '0.7rem' }}>

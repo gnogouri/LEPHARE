@@ -1053,6 +1053,7 @@ class MRHCalculService:
         adresse: Optional[str] = None,
         description: Optional[str] = None,
         repartition_manuelle: Optional[Dict[str, Decimal]] = None,
+        mettre_a_jour_totaux: bool = True,
     ) -> Dict:
         """
         Méthode combinée : calcule la prime d'une maison ET l'enregistre dans le devis.
@@ -1069,6 +1070,7 @@ class MRHCalculService:
             sous_garanties_optionnelles: Liste des codes de sous-garanties optionnelles
             adresse: Adresse de la maison
             description: Description
+            mettre_a_jour_totaux: Recalculer les totaux du devis après l'enregistrement
 
         Returns:
             Dict contenant:
@@ -1102,12 +1104,14 @@ class MRHCalculService:
         )
 
         # 3. Mettre à jour les totaux du devis (avec accessoires)
-        totaux_devis = self.mettre_a_jour_totaux_devis(
-            id_devis=id_devis,
-            id_produit=id_produit,
-            id_compagnie=id_compagnie,
-            inclure_accessoires=True,
-        )
+        totaux_devis = None
+        if mettre_a_jour_totaux:
+            totaux_devis = self.mettre_a_jour_totaux_devis(
+                id_devis=id_devis,
+                id_produit=id_produit,
+                id_compagnie=id_compagnie,
+                inclure_accessoires=True,
+            )
 
         # 4. Retourner le résultat complet
         return {
@@ -1326,23 +1330,25 @@ class MRHCalculService:
         # Année courante
         annee = datetime.now().year
 
-        # Compter les maisons MRH créées cette année
+        # Plus grand numéro déjà attribué cette année, devis et contrats compris. Le nombre de maisons de l'année
+        # (règle d'origine) baissait après une suppression ou une modification de devis et redonnait un matricule
+        # existant : deux maisons d'une même police se confondaient alors dans fn_liste_objets_assures
+        # (incorporation, renouvellement).
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT COUNT(*) 
-                FROM stddevisdetail dd
-                JOIN stddevis d ON dd.iddevis = d.iddevis
-                WHERE d.idproduit = 4  -- Produit MRH
-                AND EXTRACT(YEAR FROM d.dateemission) = %s
+                SELECT COALESCE(MAX(SUBSTRING(TRIM(matricule) FROM '^MRH-[0-9]{4}-([0-9]+)$')::int), 0)
+                FROM (SELECT matricule FROM stddevisdetail WHERE matricule LIKE %s
+                      UNION ALL
+                      SELECT matricule FROM stdcontratdetail WHERE matricule LIKE %s) AS m
             """,
-                [annee],
+                [f"MRH-{annee}-%", f"MRH-{annee}-%"],
             )
 
-            count = cursor.fetchone()[0] or 0
+            dernier = cursor.fetchone()[0] or 0
 
         # Numéro séquentiel (incrémenté)
-        numero = count + 1
+        numero = dernier + 1
 
         # Générer le matricule avec padding sur 5 chiffres
         matricule = f"MRH-{annee}-{numero:05d}"
@@ -1766,6 +1772,9 @@ class MRHCalculService:
             item["id_maison"]: Decimal(str(item["montant"]))
             for item in (repartition_maisons or [])
         }
+        # Taxe imposée répartie sur les maisons au prorata de leurs nouvelles primes (la somme des primes
+        # en cours mêlait primes déjà imposées et primes calculées : taxe d'une maison faussée)
+        total_nouvelles_primes = sum(map_repartition.values()) if map_repartition else Decimal(str(montant_impose))
 
         for maison in maisons:
             if map_repartition:
@@ -1784,8 +1793,7 @@ class MRHCalculService:
             # Taxe par maison : imposée globalement → répartir proportionnellement,
             # sinon recalculer via le ratio actuel taxe/prime
             if montant_taxe is not None and montant_taxe > 0:
-                total_prime_pour_ratio = sum(m.primenette for m in maisons) or Decimal("1")
-                ratio_maison = nouvelle_prime_maison / total_prime_pour_ratio if total_prime_pour_ratio else Decimal("0")
+                ratio_maison = nouvelle_prime_maison / total_nouvelles_primes if total_nouvelles_primes else Decimal("0")
                 nouvelle_taxe_maison = self._arrondir(montant_taxe * ratio_maison)
             elif maison.primenette and maison.primenette != 0:
                 ratio_taxe_maison = maison.taxeenregistrement / maison.primenette

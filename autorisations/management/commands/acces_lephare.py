@@ -75,7 +75,7 @@ class Command(BaseCommand):
                 utilisateur=utilisateur, auteur=operateur, module="users",
                 action="users.create" if cree else "users.password",
                 description=f"{'Création' if cree else 'Mot de passe redéfini et compte réactivé'} depuis la console "
-                            f"du serveur : {email}" + (f" — rôles ajoutés : {', '.join(r.code for r in roles)}" if roles else ""),
+                            f"du serveur : {email}" + (f" - rôles ajoutés : {', '.join(r.code for r in roles)}" if roles else ""),
                 objet_type="utilisateur", objet_id=utilisateur.pk,
                 apres={"email": email, "roles": [r.code for r in roles], "doit_changer_mot_de_passe": provisoire},
             )

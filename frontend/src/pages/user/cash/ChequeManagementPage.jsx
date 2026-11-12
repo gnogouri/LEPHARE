@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { DataTable } from '../../../components/common/DataTable';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
-import { Receipt, Plus, Trash2, AlertTriangle, RotateCcw, Ban, BellRing } from 'lucide-react';
+import { Receipt, Plus, Trash2, AlertTriangle, RotateCcw, Ban, BellRing, Search, Repeat } from 'lucide-react';
 import { cashApi, customerApi, settingsApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import { formatDate } from '../../../utils/dateUtils';
@@ -17,6 +18,8 @@ import {
   natureMode,
   reglementVide,
 } from '../../../components/cash/ChampsReglement';
+import { ChoixBanque } from '../../../components/cash/BanqueModal';
+import { HistoriqueDecaissements, ReglementsDecaissables } from '../../../components/cash/DecaissementsReglements';
 
 const fcfa = (v) => `${Math.round(Number(v) || 0).toLocaleString('fr-FR')} F`;
 // Nom comparé sans majuscules, accents ni espaces en trop
@@ -35,7 +38,7 @@ const versJjMmAaaa = (iso) => iso.split('-').reverse().join('-');
 const STATUTS = [
   { code: 'A_DEPOSER', libelle: 'À déposer', couleur: 'blue' },
   { code: 'ENCAISSE', libelle: 'Encaissé', couleur: 'emerald' },
-  { code: 'IMPAYE', libelle: 'Impayé', couleur: 'rose' },
+  { code: 'IMPAYE', libelle: 'Annulé', couleur: 'rose' },
   { code: 'REENCAISSE', libelle: 'Réencaissé', couleur: 'amber' },
 ];
 const statut = (code) => STATUTS.find((s) => s.code === code) || STATUTS[1];
@@ -63,7 +66,7 @@ const messageErreur = (err, defaut) => {
 const ligneVide = (banque = '') => ({ numero: '', montant: 0, date: '', banque });
 
 // Portefeuille des chèques (stdcheque) : chèques reçus en caisse et chèques remis d'avance par
-// un client avec un échéancier de dépôt ; suivi des impayés (décaissement puis réencaissement).
+// un client avec un échéancier de dépôt ; suivi des chèques annulés (annulation puis réencaissement ; « Annuler » à la place de « Impayé » depuis le 2026-11-11).
 export const ChequeManagementPage = () => {
   const { success, error: toastError } = useToast();
   const [cheques, setCheques] = useState([]);
@@ -72,6 +75,10 @@ export const ChequeManagementPage = () => {
   const [banques, setBanques] = useState([]);
   const [modes, setModes] = useState([]);
   const [envoi, setEnvoi] = useState(false);
+  // Onglets : chèques du portefeuille, autres règlements à décaisser, historique des décaissements
+  const [vue, setVue] = useState('cheques');
+  const navigate = useNavigate();
+  const [versionDecaissements, setVersionDecaissements] = useState(0);
 
   const chargerCheques = async () => {
     setIsLoading(true);
@@ -224,7 +231,7 @@ export const ChequeManagementPage = () => {
   };
 
   // ---------------------------------------------------------------------------------------------
-  // Chèque impayé : décaissement (motif), puis réencaissement (références)
+  // Chèque annulé (revenu impayé, rejeté…) : annulation (motif), puis réencaissement (références)
   // ---------------------------------------------------------------------------------------------
   const [decaissement, setDecaissement] = useState(null); // { cheque, motif, date }
 
@@ -237,11 +244,11 @@ export const ChequeManagementPage = () => {
         motif: decaissement.motif.trim(),
         date_decaissement: decaissement.date,
       });
-      success(res.data?.message || 'Chèque déclaré impayé.');
+      success(res.data?.message || 'Chèque annulé.');
       setDecaissement(null);
       chargerCheques();
     } catch (err) {
-      toastError(messageErreur(err, "Le décaissement n'a pas pu être enregistré."));
+      toastError(messageErreur(err, "L'annulation n'a pas pu être enregistrée."));
     } finally {
       setEnvoi(false);
     }
@@ -296,7 +303,7 @@ export const ChequeManagementPage = () => {
         reference_reencaissement: reencaissement.references.trim(),
         id_cheque_impaye: reencaissement.cheque.id,
       });
-      success(res.data?.message || 'Réencaissement enregistré.');
+      success(`${res.data?.message || 'Réencaissement enregistré.'}${res.data?.cheque_reutilise ? ' Le chèque est de nouveau en service.' : ''}`);
       setReencaissement(null);
       chargerCheques();
       const [ligne] = await cashApi.getDetailsEncaissement(res.data?.id_encaissement);
@@ -323,7 +330,7 @@ export const ChequeManagementPage = () => {
     { header: 'Montant', render: (row) => <strong>{fcfa(row.montant)}</strong> },
     {
       header: 'Affecté / Solde',
-      render: (row) => (row.statut === 'A_DEPOSER' ? '—' : (
+      render: (row) => (row.statut === 'A_DEPOSER' ? '-' : (
         <span>
           <span style={{ color: '#34d399' }}>{fcfa(row.affecte)}</span>
           {' / '}
@@ -331,7 +338,7 @@ export const ChequeManagementPage = () => {
         </span>
       )),
     },
-    { header: 'Quittance(s)', accessor: 'quittances_reglees', render: (row) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.quittances_reglees || '—'}</span> },
+    { header: 'Quittance(s)', accessor: 'quittances_reglees', render: (row) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.quittances_reglees || '-'}</span> },
     {
       header: 'Statut',
       accessor: 'statut_libelle',
@@ -342,6 +349,11 @@ export const ChequeManagementPage = () => {
           {row.statut === 'IMPAYE' && Number(row.montant_reencaisse) > 0 && (
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Réencaissé : {fcfa(row.montant_reencaisse)} / {fcfa(row.montant_impaye)}</span>
           )}
+          {row.statut !== 'IMPAYE' && row.statut !== 'REENCAISSE' && row.date_decaissement && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }} title={row.observation || undefined}>
+              Annulé le {formatDate(row.date_decaissement)} puis réutilisé
+            </span>
+          )}
         </div>
       ),
     },
@@ -349,15 +361,21 @@ export const ChequeManagementPage = () => {
       header: 'Actions',
       render: (row) => (
         <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+          {Number(row.nombre_operations) > 0 && (
+            <Link to={`/user/cash/recherche?q=${encodeURIComponent(row.numero_cheque)}`} className="btn btn-secondary"
+              style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem' }} title="Voir les polices et quittances payées par ce chèque">
+              <Search size={13} /> Utilisation
+            </Link>
+          )}
           {row.statut === 'ENCAISSE' && Number(row.nombre_operations) > 0 && (
             <button
               type="button"
               className="btn btn-secondary"
               style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem', color: '#f87171' }}
-              title="Chèque revenu impayé : annule ses encaissements"
+              title="Annuler le chèque (revenu impayé, rejeté, erreur…) : ses encaissements sont contre-passés"
               onClick={() => setDecaissement({ cheque: row, motif: '', date: aujourdhui() })}
             >
-              <Ban size={13} /> Impayé
+              <Ban size={13} /> Annuler
             </button>
           )}
           {row.statut === 'IMPAYE' && (
@@ -369,6 +387,17 @@ export const ChequeManagementPage = () => {
               onClick={() => ouvrirReencaissement(row)}
             >
               <RotateCcw size={13} /> Réencaisser
+            </button>
+          )}
+          {(row.statut === 'IMPAYE' || row.statut === 'REENCAISSE') && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem' }}
+              title="Réutiliser ce chèque pour régler une quittance à la caisse (erreur de client, de quittance ou de montant, chèque représenté à la banque…)"
+              onClick={() => navigate(`/user/cash?cheque=${row.id}`)}
+            >
+              <Repeat size={13} /> Réutiliser
             </button>
           )}
           {row.statut === 'A_DEPOSER' && Number(row.nombre_operations) === 0 && (
@@ -393,18 +422,34 @@ export const ChequeManagementPage = () => {
         <div>
           <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
             <Receipt size={26} color="#fbbf24" />
-            Portefeuille des Chèques
+            Portefeuille des règlements
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-            Chèques reçus en caisse, échéanciers de chèques à déposer et suivi des chèques impayés.
+            Chèques reçus en caisse, échéanciers de chèques à déposer, annulation des chèques et de tout autre règlement (espèces, virement, paiement mobile…) et réencaissement.
           </p>
         </div>
-        <button type="button" className="btn btn-primary" onClick={ouvrirEcheancier}>
-          <Plus size={16} /> Nouvel échéancier
-        </button>
+        {vue === 'cheques' && (
+          <button type="button" className="btn btn-primary" onClick={ouvrirEcheancier}>
+            <Plus size={16} /> Nouvel échéancier
+          </button>
+        )}
       </div>
 
-      {alertes.length > 0 && (
+      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }} role="tablist">
+        {[['cheques', 'Chèques'], ['reglements', 'Autres règlements'], ['decaissements', 'Annulations']].map(([code, libelle]) => (
+          <button key={code} type="button" role="tab" aria-selected={vue === code} className={`btn ${vue === code ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setVue(code)}>
+            {libelle}
+          </button>
+        ))}
+      </div>
+
+      {vue === 'reglements' && <ReglementsDecaissables onDecaisse={() => setVersionDecaissements((v) => v + 1)} />}
+      {vue === 'decaissements' && (
+        <HistoriqueDecaissements modes={modes} banques={banques} version={versionDecaissements}
+          onBanqueCreee={(banque) => setBanques((liste) => [...liste, banque])} />
+      )}
+
+      {vue === 'cheques' && alertes.length > 0 && (
         <div className="glass-panel" style={{ padding: '1rem 1.25rem', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700, marginBottom: '0.6rem', color: '#fbbf24' }}>
             <BellRing size={18} /> {alertes.length} chèque{alertes.length > 1 ? 's' : ''} à déposer
@@ -415,7 +460,7 @@ export const ChequeManagementPage = () => {
                 <StatusBadge label={ALERTES[c.niveau_alerte].libelle} color={ALERTES[c.niveau_alerte].couleur} />
                 <span>
                   Chèque <strong style={{ fontFamily: 'var(--font-mono)' }}>{c.numero_cheque}</strong> ({c.nom_banque}) de <strong>{c.client_nom}</strong>,
-                  {' '}{fcfa(c.montant)} — {c.niveau_alerte === 'ECHU' ? 'à déposer depuis le' : 'dépôt prévu le'} <strong>{formatDate(c.date_echeance)}</strong>
+                  {' '}{fcfa(c.montant)} - {c.niveau_alerte === 'ECHU' ? 'à déposer depuis le' : 'dépôt prévu le'} <strong>{formatDate(c.date_echeance)}</strong>
                 </span>
               </div>
             ))}
@@ -423,7 +468,7 @@ export const ChequeManagementPage = () => {
         </div>
       )}
 
-      <div className="glass-panel" style={{ padding: '1.5rem' }}>
+      {vue === 'cheques' && <div className="glass-panel" style={{ padding: '1.5rem' }}>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
           {[{ code: 'TOUS', libelle: 'Tous' }, ...STATUTS].map((s) => {
             const nombre = s.code === 'TOUS' ? cheques.length : cheques.filter((c) => c.statut === s.code).length;
@@ -447,7 +492,7 @@ export const ChequeManagementPage = () => {
           </p>
         )}
         <DataTable columns={columns} data={chequesAffiches} loading={isLoading} searchPlaceholder="Rechercher par client ou n° de chèque..." />
-      </div>
+      </div>}
 
       {/* Échéancier de chèques d'un client */}
       <Modal isOpen={echeancierOuvert} onClose={() => setEcheancierOuvert(false)} title="Nouvel échéancier de chèques" size="large">
@@ -472,7 +517,7 @@ export const ChequeManagementPage = () => {
                   if (choisi) setRechercheClient(choisi.nom);
                 }}
               >
-                <option value="">{chargementClients ? 'Chargement des clients…' : '— Choisir —'}</option>
+                <option value="">{chargementClients ? 'Chargement des clients…' : 'Choisir'}</option>
                 {clientsFiltres.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
               </select>
             </div>
@@ -502,11 +547,9 @@ export const ChequeManagementPage = () => {
               {echeancier.lignes.map((l, i) => (
                 // eslint-disable-next-line react/no-array-index-key
                 <tr key={i}>
-                  <td style={{ padding: '0.25rem', minWidth: 170 }}>
-                    <select className="form-control" value={l.banque} onChange={(e) => changerLigne(i, 'banque', e.target.value)}>
-                      <option value="">— Banque —</option>
-                      {banques.map((b) => <option key={b.idbanque} value={b.idbanque}>{b.libelle}</option>)}
-                    </select>
+                  <td style={{ padding: '0.25rem', minWidth: 210 }}>
+                    <ChoixBanque banques={banques} value={l.banque} libelleVide="Banque" onChange={(idBanque) => changerLigne(i, 'banque', idBanque)}
+                      onBanqueCreee={(banque) => setBanques((liste) => [...liste, banque])} />
                   </td>
                   <td style={{ padding: '0.25rem' }}>
                     <input type="text" className="form-control" maxLength={50} value={l.numero}
@@ -559,19 +602,19 @@ export const ChequeManagementPage = () => {
         </form>
       </Modal>
 
-      {/* Décaissement d'un chèque impayé */}
-      <Modal isOpen={Boolean(decaissement)} onClose={() => setDecaissement(null)} title="Chèque impayé : décaissement">
+      {/* Annulation d'un chèque */}
+      <Modal isOpen={Boolean(decaissement)} onClose={() => setDecaissement(null)} title="Annulation d'un chèque">
         {decaissement && (
           <form onSubmit={enregistrerDecaissement}>
             <div style={{ display: 'flex', gap: '0.6rem', padding: '0.85rem', borderRadius: 'var(--radius-md)', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', marginBottom: '1rem', fontSize: '0.85rem' }}>
               <AlertTriangle size={18} color="#f87171" style={{ flexShrink: 0 }} />
               <div>
                 Chèque <strong>{decaissement.cheque.numero_cheque}</strong> ({decaissement.cheque.nom_banque}) de {fcfa(decaissement.cheque.montant)}.
-                {' '}Les encaissements qu'il a réglés ({decaissement.cheque.quittances_reglees || '—'}) seront annulés : les quittances redeviennent à encaisser.
+                {' '}Les encaissements qu'il a réglés ({decaissement.cheque.quittances_reglees || '-'}) seront annulés : les quittances redeviennent à encaisser.
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">Motif du décaissement (* requis)</label>
+              <label className="form-label">Motif de l'annulation (* requis)</label>
               <textarea
                 className="form-control"
                 required
@@ -583,28 +626,28 @@ export const ChequeManagementPage = () => {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Date du décaissement</label>
+              <label className="form-label">Date de l'annulation</label>
               <input type="date" className="form-control" required value={decaissement.date}
                 onChange={(e) => setDecaissement((prev) => ({ ...prev, date: e.target.value }))} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setDecaissement(null)}>Annuler</button>
+              <button type="button" className="btn btn-secondary" onClick={() => setDecaissement(null)}>Fermer</button>
               <button type="submit" className="btn btn-primary" disabled={envoi} style={{ background: '#dc2626', borderColor: '#dc2626' }}>
-                {envoi ? 'Enregistrement…' : 'Déclarer impayé'}
+                {envoi ? 'Enregistrement…' : 'Annuler le chèque'}
               </button>
             </div>
           </form>
         )}
       </Modal>
 
-      {/* Réencaissement d'un chèque impayé */}
-      <Modal isOpen={Boolean(reencaissement)} onClose={() => setReencaissement(null)} title="Réencaissement d'un chèque impayé" size="large">
+      {/* Réencaissement d'un chèque annulé */}
+      <Modal isOpen={Boolean(reencaissement)} onClose={() => setReencaissement(null)} title="Réencaissement d'un chèque annulé" size="large">
         {reencaissement && (
           <form onSubmit={enregistrerReencaissement}>
             <div style={{ padding: '0.85rem', borderRadius: 'var(--radius-md)', background: 'rgba(30, 41, 59, 0.6)', marginBottom: '1rem', fontSize: '0.85rem' }}>
-              Chèque impayé <strong>{reencaissement.cheque.numero_cheque}</strong> ({reencaissement.cheque.nom_banque}) —
-              {' '}décaissé le {formatDate(reencaissement.cheque.date_decaissement)} : « {reencaissement.cheque.motif_decaissement} ».
-              {' '}Montant impayé : <strong>{fcfa(reencaissement.cheque.montant_impaye)}</strong>
+              Chèque annulé <strong>{reencaissement.cheque.numero_cheque}</strong> ({reencaissement.cheque.nom_banque}) -
+              {' '}annulé le {formatDate(reencaissement.cheque.date_decaissement)} : « {reencaissement.cheque.motif_decaissement} ».
+              {' '}Montant annulé : <strong>{fcfa(reencaissement.cheque.montant_impaye)}</strong>
               {Number(reencaissement.cheque.montant_reencaisse) > 0 && <>, déjà réencaissé : {fcfa(reencaissement.cheque.montant_reencaisse)}</>}.
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', marginBottom: '1rem' }}>
@@ -619,7 +662,7 @@ export const ChequeManagementPage = () => {
                 {reencaissement.quittances.map((q, i) => (
                   <tr key={q.numero}>
                     <td style={{ padding: '0.3rem', fontFamily: 'var(--font-mono)' }}>{q.numero}</td>
-                    <td style={{ padding: '0.3rem' }}>{q.client || '—'}</td>
+                    <td style={{ padding: '0.3rem' }}>{q.client || '-'}</td>
                     <td style={{ padding: '0.3rem' }}>
                       <input type="number" className="form-control" min="0" value={q.montant}
                         onChange={(e) => setReencaissement((prev) => ({
@@ -647,9 +690,33 @@ export const ChequeManagementPage = () => {
                 />
               </div>
             </div>
+            {modes.some((m) => natureMode(m).cheque) && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.78rem', padding: '0.35rem 0.7rem' }}
+                  title="Chèque représenté à la banque : le même chèque règle de nouveau ses quittances"
+                  onClick={() => setReencaissement((prev) => ({
+                    ...prev,
+                    references: prev.references || `Chèque n° ${prev.cheque.numero_cheque} représenté`,
+                    reglement: {
+                      ...prev.reglement,
+                      idMode: String(modes.find((m) => natureMode(m).cheque).idmodeencaissement),
+                      idBanque: String(prev.cheque.banque),
+                      numero: prev.cheque.numero_cheque,
+                      montantInitialCheque: String(Math.round(Number(prev.cheque.montant_initial) || 0)),
+                    },
+                  }))}
+                >
+                  <Repeat size={13} /> Avec ce même chèque
+                </button>
+              </div>
+            )}
             <ChampsReglement
               modes={modes}
               banques={banques}
+              onBanqueCreee={(banque) => setBanques((liste) => [...liste, banque])}
               valeurs={reencaissement.reglement}
               onChange={(champ, valeur) => setReencaissement((prev) => ({ ...prev, reglement: { ...prev.reglement, [champ]: valeur } }))}
             />

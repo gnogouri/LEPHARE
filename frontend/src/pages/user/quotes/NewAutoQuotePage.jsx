@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { confirmer } from '../../../utils/dialogue';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
 import { dataStore } from '../../../api/dataStore';
+import { joursAnneeDepuis, joursInclusifs } from '../../../utils/dateUtils';
 import { quoteApi, customerApi, settingsApi, contractApi, brouillonApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import {
@@ -34,6 +36,10 @@ import { ViewQuoteModal } from './ViewQuoteModal';
 import { GarantiesVehiculeFlotteModal } from './GarantiesVehiculeFlotteModal';
 import { ImportFlotteModal } from './ImportFlotteModal';
 import { BandeauQuestionnaire, useQuestionnaireDevis } from './QuestionnaireDevis';
+import {
+  messageErreurDemandeEditionAttestation,
+  telechargerDemandeEditionAttestationAuto,
+} from '../../../utils/attestationAuto';
 import { aLeDroit } from '../../../utils/droits';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { TermeContratSelect } from '../../../components/common/TermeContratSelect';
@@ -62,6 +68,7 @@ import {
   ID_SOUS_GARANTIE_CEDEAO,
   noteCalculGarantie,
   sansGarantiesNonAdmises,
+  ventilerPrimeFichier,
 } from '../../../utils/tarificationAuto';
 
 // Références conformes Django std & CIMA pour fallback instantané si API indisponible
@@ -157,6 +164,15 @@ const DEFAULT_OFFRES = [
 const TUILES_NON_IMPOSEES = { taxe: null, fga: null, accessoire: null, pa: null, pn: null, ttc: null };
 
 // Message d'erreur lisible d'un appel d'enregistrement (erreurs DRF ou OutputMessage des procédures)
+// Message d'une procédure PL/pgSQL sans le préfixe « ERREUR: » ni le contexte technique
+// (« fonction PL/pgsql sp_enregistrement_vehicule(integer, …), ligne 230 à RAISE »), ni sa ponctuation finale :
+// il est repris dans une phrase qui a la sienne (« changer.. »)
+const sansContexteSql = (texte) => String(texte || '')
+  .replace(/^\s*(ERREUR|ERROR)\s*:\s*/i, '')
+  .replace(/\s*:?\s*(fonction PL\/pgsql|PL\/pgSQL function|CONTEXTE?\s*:)[\s\S]*$/i, '')
+  .replace(/[\s.!]+$/, '')
+  .trim();
+
 const messageEnregistrement = (e) => {
   const reponse = e?.response?.data;
   // Erreurs de validation Django ({ "Valeur accessoire": ["…"] }) : seuls les messages sont affichés
@@ -167,7 +183,7 @@ const messageEnregistrement = (e) => {
     ? reponse[0]?.OutputMessage
     : (reponse?.OutputMessage || reponse?.detail || messagesValidation
       || (reponse && typeof reponse === 'object' ? JSON.stringify(reponse) : null));
-  return detail || e?.message || 'erreur du serveur';
+  return sansContexteSql(detail) || e?.message || 'erreur du serveur';
 };
 
 // Garanties d'un véhicule telles que le moteur CIMA les calcule (fn_garantie_offre)
@@ -258,6 +274,9 @@ const listeGarantiesVehicule = (garanties) => garanties
     capital: g.is_new_garantie ? Number(g.capitalMontant) || 0 : null,
   }));
 
+// Date AAAA-MM-JJ affichée JJ/MM/AAAA
+const dateFrIso = (iso) => String(iso || '').slice(0, 10).split('-').reverse().join('/');
+
 // Formateur DD-MM-YYYY pour Django
 const toDmy = (dStr) => {
   if (!dStr) return '';
@@ -270,7 +289,28 @@ const toDmy = (dStr) => {
 
 export const NewAutoQuotePage = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const incorporationParam = searchParams.get('incorporation') === '1';
   const { success, error: toastError, info } = useToast();
+
+  // Devis d'incorporation dans une flotte (page Incorporation, ou devis INC rouvert depuis le registre) : période
+  // fixée (date d'incorporation, échéance du contrat principal) et tarification au prorata des jours restants, ou
+  // affaire forfaitaire : prime annuelle sans prorata, prime nette du fichier Excel reprise telle quelle
+  const idDevisEdite = searchParams.get('edit');
+  const [incorporation, setIncorporation] = useState(null);
+  const enIncorporation = incorporationParam || Boolean(incorporation);
+  const forfaitIncorporation = Boolean(incorporation?.Forfaitaire);
+  useEffect(() => {
+    if (!idDevisEdite) {
+      setIncorporation(null);
+      return undefined;
+    }
+    let actif = true;
+    contractApi.lireDevisIncorporation(idDevisEdite)
+      .then((r) => { if (actif) setIncorporation(r?.Incorporation ? r : null); })
+      .catch(() => { if (actif) setIncorporation(null); });
+    return () => { actif = false; };
+  }, [idDevisEdite]);
 
   // Navigation étapes : 1 = CONTRAT, 2 = VÉHICULE, 3 = OFFRE & DÉCOMPTE, 4 = CLIENT/ASSURÉ/CONDUCTEUR
   const [step, setStep] = useState(1);
@@ -359,6 +399,7 @@ export const NewAutoQuotePage = () => {
   const [dureeId, setDureeId] = useState(4); // 1: 1M, 2: 3M, 3: 6M, 4: 12M, 5: libre (terme « Autre »)
   const [dureeContrat, setDureeContrat] = useState('Annuelle');
   const [customDateExpiration, setCustomDateExpiration] = useState('');
+  const [dateExpirationIncorporation, setDateExpirationIncorporation] = useState('');
 
   // Calcul dynamique de la Date d'expiration selon Date Effet + Durée
   const calculatedDateExpiration = useMemo(() => {
@@ -377,7 +418,13 @@ export const NewAutoQuotePage = () => {
     return d.toISOString().split('T')[0];
   }, [dateEffet, dureeId, customDateExpiration]);
 
-  const effectiveDateExpiration = Number(dureeId) === 5 ? (customDateExpiration || calculatedDateExpiration) : calculatedDateExpiration;
+  const effectiveDateExpiration = enIncorporation
+    ? (incorporation?.DateExpiration || dateExpirationIncorporation || customDateExpiration || calculatedDateExpiration)
+    : Number(dureeId) === 5 ? (customDateExpiration || calculatedDateExpiration) : calculatedDateExpiration;
+  // Incorporation : date au choix, seule l'échéance est figée ; durée et prorata suivent la date affichée
+  const joursCouverts = joursInclusifs(dateEffet, effectiveDateExpiration);
+  const joursAnneeCouverte = joursAnneeDepuis(dateEffet);
+  const prorataIncorporation = Math.min(1, joursCouverts / joursAnneeCouverte);
 
   // ----------------------------------------------------
   // ÉCRAN 2 : VÉHICULE & FLOTTE
@@ -435,8 +482,8 @@ export const NewAutoQuotePage = () => {
   const [offreId, setOffreId] = useState(2);
   const [offreSelectionnee, setOffreSelectionnee] = useState('OFFRE AUTOMOBILE TOUS RISQUES');
   // Offres proposées pour le véhicule, comme dans URANUS : celles de sa catégorie
-  // (fn_liste_offre_produit) — { idTarif, liste } — et, pour les signaler, celles que la
-  // compagnie a paramétrées (stdoffregarantie) — Map id → nombre de garanties
+  // (fn_liste_offre_produit) - { idTarif, liste } - et, pour les signaler, celles que la
+  // compagnie a paramétrées (stdoffregarantie) - Map id → nombre de garanties
   const [offresCategorie, setOffresCategorie] = useState(null);
   const [offresCompagnie, setOffresCompagnie] = useState(null);
   // Vrai quand l'utilisateur vient de changer de catégorie : l'offre suit alors la nouvelle liste
@@ -456,7 +503,7 @@ export const NewAutoQuotePage = () => {
 
   // Tableau des garanties interactives avec inline editing et suppressions.
   // Vide au départ : les garanties viennent uniquement de l'offre (moteur CIMA / stdoffregarantie)
-  // ou du devis rouvert — plus de liste figée avec des primes fictives.
+  // ou du devis rouvert - plus de liste figée avec des primes fictives.
   const [garanties, setGaranties] = useState([]);
   // Garanties non admises pour l'âge du véhicule que l'utilisateur a cochées quand même : un
   // recalcul du barème ne les décoche plus
@@ -489,7 +536,7 @@ export const NewAutoQuotePage = () => {
   };
 
   // Ligne cumul (IdGarantie = 0) renvoyée par fn_garantie_offre : accessoire (fn_get_accessoire,
-  // fonction de la tranche de prime nette) et taxe sur accessoire — introuvables autrement côté écran.
+  // fonction de la tranche de prime nette) et taxe sur accessoire - introuvables autrement côté écran.
   const [ligneCumul, setLigneCumul] = useState(null);
   // Numéro du dernier calcul de garanties lancé (handleRecalculateApi)
   const dernierCalculRef = useRef(0);
@@ -611,7 +658,7 @@ export const NewAutoQuotePage = () => {
   // (valeurs véhicule à 0, réduction/BNS initiaux…) saisies avant l'écran Véhicule.
   const offreSelectionneeObj = offresList.find((o) => o.id === Number(offreId));
   // Comme URANUS, le calcul utilise la catégorie (grille stdtarif) choisie à l'écran
-  // Contrat — c'est aussi celle transmise à l'enregistrement (details.idTarif). Calculer
+  // Contrat - c'est aussi celle transmise à l'enregistrement (details.idTarif). Calculer
   // avec la grille de l'offre affichait un montant différent du montant enregistré, par
   // exemple pour une société en catégorie 212 (RC +5 %) avec une offre paramétrée en 201.
   // Tant que les vraies grilles ne sont pas chargées (DEFAULT_CATEGORIES contient des
@@ -725,6 +772,8 @@ export const NewAutoQuotePage = () => {
       TransportEmployes: Boolean(v.transportEmployes),
       TansportPassagerSupplementaire: Boolean(v.transportPassagerSupplementaire),
       IdOptionAssistance: Number(v.idOptionAssistance || 0),
+      // Incorporation : le moteur calcule comme à l'enregistrement (prorata des jours restants, ou prime entière)
+      ...(incorporation ? { IdDevisIncorporation: Number(incorporation.IdDevis) } : {}),
     };
   };
 
@@ -733,7 +782,7 @@ export const NewAutoQuotePage = () => {
     valeurVenale, valeurAccessoire, puissanceFiscale, chargeUtile, reductionCommerciale, dateEffet,
     effectiveDateExpiration, dateMec, bonusMalus, remorqueAttelee, genreVehicule, isNsiaCompany, formuleSecuriteCode,
     nombrePlace, usageId, carburantAutreMatiere, transportEleves, transportEmployes, transportPassagerSupplementaire,
-    formuleAssistanceId,
+    formuleAssistanceId, incorporation,
   ]);
 
   // Tarif à lecture directe applicable (un véhicule) : recherché à chaque changement des données de tarification
@@ -1189,17 +1238,21 @@ export const NewAutoQuotePage = () => {
       importe: { ligne: l.Ligne, primeNetteFichier: l.Fichier?.PrimeNette ?? null },
     }));
     const retirees = new Map(lignes.map((l, i) => [ajouts[i].cle, new Set((l.GarantiesRetirees || []).map(Number))]));
+    // Incorporation dans une affaire à tarif forfaitaire : la prime nette du fichier est celle du véhicule, sans
+    // prorata (répartie sur ses garanties) ; sinon le fichier n'est qu'indicatif et le barème s'applique
+    const primeFichier = (v) => (forfaitIncorporation ? Number(v.importe?.primeNetteFichier) || 0 : 0);
     const personnalisees = {};
     const echecs = [];
-    const aPersonnaliser = ajouts.filter((v) => retirees.get(v.cle).size);
+    const aPersonnaliser = ajouts.filter((v) => retirees.get(v.cle).size || primeFichier(v) > 0);
     for (let i = 0; i < aPersonnaliser.length; i += 4) {
       // eslint-disable-next-line no-await-in-loop
       await Promise.all(aPersonnaliser.slice(i, i + 4).map(async (v) => {
         try {
           const bareme = await chargerBaremeVehicule(v);
           const sans = retirees.get(v.cle);
+          const garanties = bareme.map((g) => (sans.has(Number(g.id_garantie)) ? { ...g, acquise: false } : g));
           personnalisees[v.cle] = {
-            garanties: bareme.map((g) => (sans.has(Number(g.id_garantie)) ? { ...g, acquise: false } : g)),
+            garanties: primeFichier(v) > 0 ? ventilerPrimeFichier(garanties, primeFichier(v)) : garanties,
             signature: signatureTarif(v),
           };
         } catch {
@@ -1228,7 +1281,15 @@ export const NewAutoQuotePage = () => {
       success(`${ajouts.length} véhicule${ajouts.length > 1 ? 's' : ''} ajouté${ajouts.length > 1 ? 's' : ''} à la flotte : enregistrez le devis pour les tarifer définitivement.`);
     }
     if (echecs.length) {
-      toastError(`Garanties « Non » du fichier non retirées pour ${echecs.join(', ')} : ajustez-les avec « Garanties de l'offre ».`);
+      toastError(forfaitIncorporation
+        ? `Garanties « Non » ou prime du fichier non appliquées pour ${echecs.join(', ')} : ajustez-les avec « Garanties de l'offre ».`
+        : `Garanties « Non » du fichier non retirées pour ${echecs.join(', ')} : ajustez-les avec « Garanties de l'offre ».`);
+    }
+    if (forfaitIncorporation) {
+      const sansPrime = ajouts.filter((v) => !(primeFichier(v) > 0)).map((v) => v.immatriculation);
+      if (sansPrime.length) {
+        info(`Affaire forfaitaire : aucune prime nette dans le fichier pour ${sansPrime.join(', ')} ; prime annuelle du barème, sans prorata.`);
+      }
     }
   };
 
@@ -1399,7 +1460,6 @@ export const NewAutoQuotePage = () => {
   // MODE ÉDITION : préremplissage depuis un devis existant
   // (bouton « Modifier » du Registre des Devis, /user/quotes/auto?edit=<iddevis>)
   // ----------------------------------------------------
-  const [searchParams] = useSearchParams();
   const editIddevisParam = searchParams.get('edit');
   // Devis de renouvellement (page Renouvellement) : véhicules retarifés à l'enregistrement (âge, valeurs vénales)
   const renouvellementParam = searchParams.get('renouvellement') === '1';
@@ -1502,7 +1562,7 @@ export const NewAutoQuotePage = () => {
     const donnees = Object.fromEntries(Object.entries(champsBrouillon).map(([cle, [valeur]]) => [cle, valeur]));
     const client = clients.find((c) => String(c.id) === String(souscripteurId));
     const vehicule = [marqueVehicule, immatriculation].filter(Boolean).join(' ');
-    const libelle = [client?.nomcomplet || nomAssure, vehicule].filter(Boolean).join(' — ') || 'Devis automobile sans client';
+    const libelle = [client?.nomcomplet || nomAssure, vehicule].filter(Boolean).join(' - ') || 'Devis automobile sans client';
     const charge = { type_brouillon: 'DEVIS_AUTO', libelle, etape: step, donnees, iddevis: editIddevis || null };
     try {
       const res = brouillonId ? await brouillonApi.update(brouillonId, charge) : await brouillonApi.create(charge);
@@ -1550,7 +1610,7 @@ export const NewAutoQuotePage = () => {
   // chargement du devis en édition.
   useEffect(() => {
     // Pendant le chargement d'un devis existant, on attend que ses garanties
-    // réellement enregistrées soient chargées avant d'envisager un recalcul —
+    // réellement enregistrées soient chargées avant d'envisager un recalcul -
     // sinon un appel lancé avec les valeurs par défaut (avant l'arrivée des
     // vraies données) pourrait, selon le timing réseau, écraser ces garanties.
     // En mode "Imposer la prime" (en cours ou enregistré), on ne réécrase pas non plus les primes saisies.
@@ -1634,7 +1694,7 @@ export const NewAutoQuotePage = () => {
         if (!isMounted) return;
         if (!d.iddevis) throw new Error('devis introuvable');
         setAvertissementReprise(lignes.length ? '' : (
-          'Ce devis repris d\'URANUS n\'a aucun véhicule ni garantie en base : seuls l\'en-tête et les montants ont été repris. '
+          'Aucun véhicule ni aucune garantie n\'est enregistré pour ce devis : seuls l\'en-tête et les montants sont disponibles. '
           + 'Complétez le véhicule puis « Recalculer CIMA » avant d\'enregistrer.'
         ));
 
@@ -1672,9 +1732,8 @@ export const NewAutoQuotePage = () => {
               idDevisDetail: l.iddevisdetail,
               enregistre: true,
               // Garanties du véhicule en base, montrées par « Garanties de l'offre » tant qu'il est
-              // inchangé ; dans l'ordre des garanties (RC en tête) comme le barème
-              garantiesEnregistrees: garantiesDepuisDevis(l.garanties_enregistrees, Number(l.nombreplace) || 5)
-                .sort((a, b) => Number(a.id_garantie) - Number(b.id_garantie)),
+              // inchangé ; dans l'ordre du barème (RC en tête), rendu par le serveur
+              garantiesEnregistrees: garantiesDepuisDevis(l.garanties_enregistrees, Number(l.nombreplace) || 5),
               primesEnregistrees: {
                 pa: Number(l.primeannuelle) || 0,
                 pn: (Number(l.primenette) || 0) - cedeao,
@@ -1694,7 +1753,7 @@ export const NewAutoQuotePage = () => {
         }
         setNumeroPoliceCompagnie(d.numero_police_compagnie || '');
         // d.compagnie peut être soit un id simple, soit l'objet compagnie complet
-        // selon le point d'API — gérer les deux pour ne jamais obtenir NaN
+        // selon le point d'API - gérer les deux pour ne jamais obtenir NaN
         // (NaN est falsy et empêcherait silencieusement le calcul des garanties).
         const compagnieIdFromDevis = d.compagnie?.IdCompagnie ?? d.compagnie;
         if (compagnieIdFromDevis !== undefined && compagnieIdFromDevis !== null) {
@@ -1711,6 +1770,7 @@ export const NewAutoQuotePage = () => {
         setTermeContrat(libelleTerme(charge.termeId));
         setDateEffet(toIsoDate(d.dateeffet) || dateEffet);
         setCustomDateExpiration(toIsoDate(d.dateexpiration));
+        setDateExpirationIncorporation(toIsoDate(d.dateexpiration));
 
         // Véhicule (le premier pour une flotte) ; devis sans véhicule en base : seule l'offre
         // de l'en-tête est reprise, le reste de l'écran Véhicule est à compléter
@@ -1765,7 +1825,7 @@ export const NewAutoQuotePage = () => {
           });
         }
 
-        // Souscripteur / conducteur — d.client peut être un id simple ou l'objet
+        // Souscripteur / conducteur - d.client peut être un id simple ou l'objet
         // client complet ({IdClient, Nom, ...}) selon le point d'API : gérer les
         // deux, sinon la comparaison vaut "[object Object]" et ne matche jamais,
         // laissant le client du devis sur la valeur par défaut au lieu de la vraie.
@@ -1875,7 +1935,7 @@ export const NewAutoQuotePage = () => {
             setOffresList(mappedOffres);
             // Filet de sécurité : sur une nouvelle offre (pas en édition), si l'id par
             // défaut ne correspond pas réellement au libellé affiché dans le menu
-            // (décalage id/libellé codé en dur), on recale sur le vrai id — sinon le
+            // (décalage id/libellé codé en dur), on recale sur le vrai id - sinon le
             // calcul partirait silencieusement sur une offre inexistante ou différente.
             if (!editIddevisParam && !brouillonParam) {
               const matching = mappedOffres.find((o) => o.libelle === offreSelectionnee);
@@ -2033,8 +2093,8 @@ export const NewAutoQuotePage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listeOffresCategorie, offresList, offresCompagnie, categories, offreId, offreSelectionnee]);
 
-  const libelleOptionOffre = (o) => `${o.libelle}${o.horsCategorie ? ' — hors de cette catégorie' : ''}`
-    + `${o.parametree ? '' : ` — non paramétrée pour ${compagnie || 'cette compagnie'}`}`;
+  const libelleOptionOffre = (o) => `${o.libelle}${o.horsCategorie ? ' - hors de cette catégorie' : ''}`
+    + `${o.parametree ? '' : ` - non paramétrée pour ${compagnie || 'cette compagnie'}`}`;
 
   const choisirOffre = (id) => {
     const offre = offresProposees.find((o) => o.id === Number(id));
@@ -2311,7 +2371,34 @@ export const NewAutoQuotePage = () => {
 
     let idDevis = editIddevis || 0;
     let aFinaliser = finalisationFlotteEnAttente;
-    const aEnvoyer = vehicules.filter(vehiculeAEnvoyer);
+
+    // Véhicule nouveau à l'écran mais dont l'immatriculation est déjà en base dans ce devis (flotte remplacée par
+    // un fichier, véhicule retiré puis ressaisi, ou enregistré lors d'un essai interrompu) : il reprend la ligne
+    // existante, mise à jour au lieu d'un second ajout que sp_enregistrement_vehicule refuse (« Ce vehicule est
+    // déjà enregistré dans ce devis! ») ; cette ligne n'est alors plus à supprimer
+    let retires = vehiculesRetires;
+    if (idDevis && vehicules.some((v) => !v.enregistre)) {
+      const lignesEnBase = await quoteApi.getDevisDetailsAuto(idDevis).catch(() => []);
+      const cleImmat = (texte) => String(texte || '').replace(/\s+/g, '').toUpperCase();
+      const enBase = new Map(lignesEnBase.map((l) => [cleImmat(l.matricule), Number(l.iddevisdetail)]));
+      const prises = new Set(vehicules.filter((v) => v.enregistre && v.idDevisDetail).map((v) => Number(v.idDevisDetail)));
+      let repris = 0;
+      vehicules = vehicules.map((v) => {
+        const id = v.enregistre ? 0 : enBase.get(cleImmat(v.immatriculation));
+        if (!id || prises.has(id)) return v;
+        prises.add(id);
+        repris += 1;
+        retires = retires.filter((r) => Number(r.idDevisDetail) !== id);
+        return { ...v, idDevisDetail: id, enregistre: true, origine: null };
+      });
+      // Gardé tout de suite : un essai interrompu ne doit plus supprimer la ligne reprise
+      if (repris) {
+        setFlotteVehicules(vehicules);
+        setVehiculesRetires(retires);
+      }
+    }
+    // Mises à jour avant les ajouts : une immatriculation libérée par un véhicule modifié peut être reprise
+    const aEnvoyer = [...vehicules.filter((v) => v.enregistre), ...vehicules.filter((v) => !v.enregistre)].filter(vehiculeAEnvoyer);
 
     // Garanties non admises pour l'âge d'un véhicule tarifé au barème : sp_creation_devis les accorde,
     // elles sont retirées ensuite comme des garanties personnalisées. Gardées dans l'état pour qu'un
@@ -2350,7 +2437,7 @@ export const NewAutoQuotePage = () => {
           },
         });
         obj = Array.isArray(res?.data) ? res.data[0] : res?.data;
-        if (!obj?.IdDevis) erreur = obj?.OutputMessage || 'réponse inattendue du serveur';
+        if (!obj?.IdDevis) erreur = sansContexteSql(obj?.OutputMessage) || 'réponse inattendue du serveur';
       } catch (e) {
         erreur = messageEnregistrement(e);
       }
@@ -2379,7 +2466,7 @@ export const NewAutoQuotePage = () => {
 
     // Véhicules retirés de la liste (sp_suppression_vehicule)
     const nonSupprimes = [];
-    for (const r of vehiculesRetires) {
+    for (const r of retires) {
       try {
         const res = await quoteApi.deleteFlotteVehicle(r.idDevisDetail);
         const message = (Array.isArray(res?.data) ? res.data[0]?.OutputMessage : res?.data?.OutputMessage) || '';
@@ -2474,7 +2561,7 @@ export const NewAutoQuotePage = () => {
       // En mode édition (Modifier), on repasse le vrai id du devis existant : save_quotation
       // (Django) le détecte et met à jour ce devis/véhicule au lieu d'en créer un nouveau.
       id: editIddevis || undefined,
-      client_nom: selectedClient?.nomcomplet || nomAssure || 'Assuré Uranus',
+      client_nom: selectedClient?.nomcomplet || nomAssure || 'Assuré',
       client_id: selectedClient?.id,
       produit: typeContrat === 'FLOTTE'
         ? `Flotte Automobile (${flotteVehicules.length} Véhicules)`
@@ -2683,19 +2770,41 @@ export const NewAutoQuotePage = () => {
       success(`Devis Automobile ${saved.numerodevis} ${editIddevis ? 'mis à jour' : 'créé'} avec succès !`);
     }
 
+    if (!editIddevis) {
+      try {
+        await telechargerDemandeEditionAttestationAuto(devisApiId);
+      } catch (e) {
+        console.error('Téléchargement de la demande d’édition d’attestation impossible', e);
+        toastError(`Devis créé, mais le modèle de demande d’attestation n’a pas pu être généré : ${await messageErreurDemandeEditionAttestation(e)}.`);
+      }
+    }
+
     setCreatedQuote(devisEnregistre || saved);
   };
 
   const handleConvertToContract = async (quoteToConvert) => {
+    let idContrat;
     try {
-      await contractApi.createContractFromQuote(quoteToConvert.id);
+      const res = await contractApi.createContractFromQuote(quoteToConvert.id);
+      idContrat = Number(res?.data?.[0]?.ObjectId);
+      if (!Number.isInteger(idContrat) || idContrat <= 0) {
+        throw new Error('Le serveur n’a pas retourné l’identifiant du contrat créé.');
+      }
     } catch (e) {
-      console.warn('Fallback conversion contrat');
+      console.error('Conversion du devis automobile en contrat impossible', e);
+      toastError(e.response?.data?.detail || e.response?.data?.message || e.message || 'Le contrat n’a pas pu être créé.');
+      return;
+    }
+    try {
+      await telechargerDemandeEditionAttestationAuto(quoteToConvert.id);
+    } catch (e) {
+      console.error('Téléchargement de la demande d’édition d’attestation impossible', e);
+      toastError(`Contrat créé, mais le modèle de demande d’attestation n’a pas pu être généré : ${await messageErreurDemandeEditionAttestation(e)}.`);
     }
     const newContract = dataStore.convertQuoteToContract(quoteToConvert);
     success(`Devis ${quoteToConvert.numerodevis} converti en Contrat sous le numéro ${newContract.numeropolice} !`);
     setCreatedQuote(null);
-    navigate(`/user/contracts/${newContract.id || newContract.numeropolice}`);
+    navigate(`/user/contracts/${idContrat}`);
   };
 
   if (isLoadingEdit) {
@@ -2724,6 +2833,16 @@ export const NewAutoQuotePage = () => {
             <Car size={26} color="#3b82f6" />
             {editIddevis ? `Modifier le Devis Automobile [${editNumeroDevis || editIddevis}]` : 'Nouveau Devis Automobile'}
           </h1>
+          {enIncorporation && (
+            <p role="note" style={{ marginTop: '0.5rem', padding: '0.6rem 0.75rem', borderRadius: '8px', background: 'rgba(37, 99, 235, 0.1)', border: '1px solid rgba(37, 99, 235, 0.35)', color: 'var(--text-secondary)', fontSize: '0.85rem', maxWidth: '760px', lineHeight: 1.55 }}>
+              <strong>Incorporation{incorporation?.NumeroPolice ? ` dans la police ${incorporation.NumeroPolice}` : ''}</strong>
+              {incorporation && ` : du ${dateFrIso(dateEffet)} à l'échéance inchangée du ${dateFrIso(incorporation.DateExpiration)} (${joursCouverts} jours). La date d'émission n'est pas imprimée sur les documents.`}
+              {' '}
+              {forfaitIncorporation
+                ? "Affaire à tarif forfaitaire : aucun prorata. Les véhicules importés d'un fichier Excel gardent la prime nette du fichier, les autres la prime annuelle du barème."
+                : incorporation && `Prime du véhicule : prime annuelle du tarif × ${joursCouverts}/${joursAnneeCouverte} (${(prorataIncorporation * 100).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} %).`}
+            </p>
+          )}
           {avertissementReprise && (
             <p style={{ marginTop: '0.5rem', padding: '0.6rem 0.75rem', borderRadius: '8px', background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.4)', color: '#f59e0b', fontSize: '0.85rem', maxWidth: '760px' }}>
               {avertissementReprise}
@@ -3042,29 +3161,39 @@ export const NewAutoQuotePage = () => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Date d'effet (* requis)</label>
+              <label className="form-label">{enIncorporation ? "Date d'incorporation" : "Date d'effet (* requis)"}</label>
               <input
                 type="date"
                 className="form-control"
                 value={dateEffet}
                 onChange={(e) => setDateEffet(e.target.value)}
+                min={enIncorporation ? incorporation?.DateEffetContrat : undefined}
+                max={enIncorporation ? effectiveDateExpiration : undefined}
               />
             </div>
 
             <div className="form-group">
               <label className="form-label">Durée du contrat</label>
-              <DureeContratSelect
-                value={dureeId}
-                onChange={(id) => {
-                  setDureeId(id);
-                  setDureeContrat(libelleDuree(id));
-                }}
-              />
+              {enIncorporation ? (
+                <div className="form-control" aria-readonly="true">
+                  {incorporation ? `${joursCouverts} jours jusqu'à l'échéance` : "Durée restante jusqu'à l'échéance initiale"}
+                </div>
+              ) : (
+                <DureeContratSelect
+                  value={dureeId}
+                  onChange={(id) => {
+                    setDureeId(id);
+                    setDureeContrat(libelleDuree(id));
+                  }}
+                />
+              )}
             </div>
 
             <div className="form-group">
-              <label className="form-label">Date d'expiration (* requis)</label>
-              {Number(dureeId) === 5 ? (
+              <label className="form-label">{enIncorporation ? 'Échéance du contrat principal (inchangée)' : "Date d'expiration (* requis)"}</label>
+              {enIncorporation ? (
+                <input type="date" className="form-control" value={effectiveDateExpiration} readOnly disabled />
+              ) : Number(dureeId) === 5 ? (
                 <input
                   type="date"
                   className="form-control"
@@ -3705,7 +3834,7 @@ export const NewAutoQuotePage = () => {
                             {veh.importe && (
                               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                                 Importé (ligne {veh.importe.ligne})
-                                {veh.importe.primeNetteFichier != null && ` — PN du fichier : ${Number(veh.importe.primeNetteFichier).toLocaleString('fr-FR')} F`}
+                                {veh.importe.primeNetteFichier != null && ` - PN du fichier : ${Number(veh.importe.primeNetteFichier).toLocaleString('fr-FR')} F`}
                               </div>
                             )}
                             {garantiesPersonnalisees(veh) && (
@@ -4376,7 +4505,7 @@ export const NewAutoQuotePage = () => {
               )}
             </div>
 
-            {/* Tuile 5 : TOTAL PRIME NETTE — toutes les garanties de la liste, CEDEAO comprise
+            {/* Tuile 5 : TOTAL PRIME NETTE - toutes les garanties de la liste, CEDEAO comprise
                 (elle n'a plus de tuile à part : prime nette + taxe + FGA + accessoire = TTC) */}
             <div style={{ background: 'rgba(30, 41, 59, 0.5)', padding: '1.25rem', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase' }}>
@@ -4477,7 +4606,7 @@ export const NewAutoQuotePage = () => {
                 >
                   {clientsProposes.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.nomcomplet} — {c.codeclient}
+                      {c.nomcomplet} - {c.codeclient}
                     </option>
                   ))}
                 </select>

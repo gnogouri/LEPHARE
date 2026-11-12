@@ -106,7 +106,7 @@ export const EditQuoteModal = ({ isOpen, onClose, quote, onSuccess }) => {
 
         {/* Souscripteur / compagnie / produit : identité du devis, non modifiable ici (le
             backend ne permet pas de réassigner un devis existant à un autre client, une
-            autre compagnie ou un autre produit — seule la décomposition actuarielle l'est,
+            autre compagnie ou un autre produit - seule la décomposition actuarielle l'est,
             via sp_maj_manuelle_primes). */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
           <div>

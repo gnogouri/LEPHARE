@@ -224,19 +224,19 @@ export const ParametrageReglesGarantiesPage = () => {
                     <td style={{ ...td, minWidth: 220 }}>
                       {AVEC_LIEES.includes(r.Type)
                         ? <ChoixLiees valeur={r.Liees} garanties={donnees.Garanties} exclure={r.IdSousGarantie} onChange={(v) => changer(i, 'Liees', v)} />
-                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>—</span>}
+                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>-</span>}
                     </td>
                     <td style={td}><input className="form-control" style={{ padding: '0.25rem', fontSize: '0.8rem', width: 150 }} placeholder={r.Type === 'NON_PROPOSEE' ? 'obligatoire' : 'toutes'} value={r.Categories || ''} onChange={(e) => changer(i, 'Categories', e.target.value)} /></td>
                     <td style={td}>
                       {AVEC_PRIME.includes(r.Type)
                         ? <input type="number" min={0} className="form-control" style={{ padding: '0.25rem', fontSize: '0.8rem', width: 100, textAlign: 'right' }} value={r.PrimeAnnuelle ?? ''} onChange={(e) => changer(i, 'PrimeAnnuelle', e.target.value === '' ? null : Number(e.target.value))} />
-                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>—</span>}
+                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>-</span>}
                     </td>
                     <td style={td}><input className="form-control" style={{ padding: '0.25rem', fontSize: '0.8rem', minWidth: 240 }} value={r.Commentaire || ''} onChange={(e) => changer(i, 'Commentaire', e.target.value)} /></td>
                     <td style={{ ...td, textAlign: 'center' }}>
                       {TYPES_BAREME.includes(r.Type) && <input type="checkbox" checked={Boolean(r.AppliqueeBareme)} onChange={(e) => changer(i, 'AppliqueeBareme', e.target.checked)} title={ouEllesSappliquent({ ...r, AppliqueeBareme: !r.AppliqueeBareme })} />}
                       {r.Type === 'PRIME_MINIMUM' && <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }} title={ouEllesSappliquent(r)}>toujours</span>}
-                      {!TYPES_BAREME.includes(r.Type) && r.Type !== 'PRIME_MINIMUM' && <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>—</span>}
+                      {!TYPES_BAREME.includes(r.Type) && r.Type !== 'PRIME_MINIMUM' && <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>-</span>}
                     </td>
                     <td style={{ ...td, textAlign: 'center' }}><input type="checkbox" checked={r.Actif !== false} onChange={(e) => changer(i, 'Actif', e.target.checked)} /></td>
                     <td style={td}><button type="button" className="btn btn-secondary" style={{ padding: '0.3rem 0.45rem' }} title="Supprimer la règle" onClick={() => setBrouillon((l) => l.filter((_, k) => k !== i))}><Trash2 size={13} /></button></td>

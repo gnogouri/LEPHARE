@@ -123,7 +123,7 @@ export const EmissionSummaryPage = () => {
   const buildExportPayload = () => ({
     filename: `Bordereau_Emissions_${dateDebut}_${dateFin}`,
     title: `BORDEREAU DES EMISSIONS PAR COMPAGNIE, PAR BRANCHE ET PAR CLIENT ${periodeLabel.toUpperCase()}`,
-    subtitle: 'État réglementaire certifié conforme — Code CIMA (CRCA)',
+    subtitle: 'État réglementaire certifié conforme - Code CIMA (CRCA)',
     metadata: {
       'Organisme': nomCabinet(),
       'Période': periodeLabel,

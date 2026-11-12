@@ -255,7 +255,7 @@ export const CatalogCompaniesPage = () => {
       </div>
 
       {/* Fiche compagnie */}
-      <Modal isOpen={!!fiche} onClose={fermer} title={s?.RaisonSociale || 'Compagnie'} subtitle={s ? `${s.Contrats.toLocaleString('fr-FR')} contrat(s) — ${s.Active ? 'active' : 'inactive'}` : ''} size="large">
+      <Modal isOpen={!!fiche} onClose={fermer} title={s?.RaisonSociale || 'Compagnie'} subtitle={s ? `${s.Contrats.toLocaleString('fr-FR')} contrat(s) - ${s.Active ? 'active' : 'inactive'}` : ''} size="large">
         {s && (
           <div>
             <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
@@ -364,9 +364,9 @@ export const CatalogCompaniesPage = () => {
                     <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Une garantie par ligne (12 au plus), imprimées telles quelles.</span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', columnGap: '1rem' }}>
-                    {champTexte('Telephone', 'Assistance — téléphone', { valeur: att.Telephone, onChange: (v) => changerAttestation('Telephone', v) })}
-                    {champTexte('Email', 'Assistance — e-mail', { valeur: att.Email, onChange: (v) => changerAttestation('Email', v) })}
-                    {champTexte('Whatsapp', 'Assistance — WhatsApp', { valeur: att.Whatsapp, onChange: (v) => changerAttestation('Whatsapp', v) })}
+                    {champTexte('Telephone', 'Assistance - téléphone', { valeur: att.Telephone, onChange: (v) => changerAttestation('Telephone', v) })}
+                    {champTexte('Email', 'Assistance - e-mail', { valeur: att.Email, onChange: (v) => changerAttestation('Email', v) })}
+                    {champTexte('Whatsapp', 'Assistance - WhatsApp', { valeur: att.Whatsapp, onChange: (v) => changerAttestation('Whatsapp', v) })}
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', columnGap: '1rem' }}>
                     {champTexte('PortailAssistance', 'QR code du portail d’assistance (adresse)', { longueur: 250, valeur: att.PortailAssistance, onChange: (v) => changerAttestation('PortailAssistance', v), placeholder: 'https://claims.cover-edge.com/links/' })}

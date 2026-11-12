@@ -179,6 +179,12 @@ class ConventionAssureur(models.Model):
         verbose_name="Conditions de participation bénéficiaire"
     )
     date_creation = models.DateTimeField(auto_now_add=True)
+    # Compagnie du référentiel (stdcompagnie) : conditions saisies dans Administration > Conventions avec les
+    # compagnies (production/views_conventions.py) ; vide pour les anciennes lignes de démonstration, non affichées
+    idcompagnie = models.IntegerField(null=True, blank=True, unique=True, db_column="idcompagnie",
+                                      verbose_name="Compagnie (référentiel)")
+    date_maj = models.DateTimeField(null=True, blank=True, verbose_name="Dernière mise à jour")
+    maj_par = models.CharField(max_length=150, blank=True, default="", verbose_name="Mis à jour par")
 
     class Meta:
         verbose_name = "Convention Assureur"

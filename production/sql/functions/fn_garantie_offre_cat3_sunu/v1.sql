@@ -1,0 +1,351 @@
+CREATE OR REPLACE FUNCTION public.fn_garantie_offre_cat3_sunu(idcompagnie_ integer, idoffre_ integer, idtarif_ integer, valneuve_ numeric, valvenale_ numeric, valaccessoire_ numeric, puissance_ integer, codecarburant_ integer, tonnage_ integer, tauxreduc_ numeric, codealarme_ integer, dateeffet_ date, dateexpiration_ date, bns_ numeric, datemec_ date, remorqueattelee_ boolean, formulesecuriteroutiere_ character varying, idoptionassistance_ integer, nombreplace_ integer, codeusage_ integer DEFAULT NULL::integer, carburantautrematiere_ boolean DEFAULT NULL::boolean, transporteleves_ boolean DEFAULT NULL::boolean, transportemployes_ boolean DEFAULT NULL::boolean, transportpassagersupplementaire_ boolean DEFAULT NULL::boolean)
+ RETURNS TABLE(idgarantie integer, libellegarantie character varying, idsousgarantie integer, libellesousgarantie character varying, acquise boolean, capital numeric, nombreplace smallint, primeannuelle numeric, primenette numeric, taxe numeric, montantaccessoire numeric, tauxfranchise numeric, franchiseminimum numeric, franchisemaximum numeric, franchisetexte character varying, idformule integer, capitaldeces numeric, capitalipp numeric, capitalft numeric)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+	var_rec RECORD;
+	prime_rc numeric;
+	prime_fga numeric;
+	prime_cedeao numeric;
+    capital_rc_corporelle numeric;
+	capital_rc_materielle numeric;
+	taux_reduction numeric;
+	duree_contrat integer;
+	duree_totale integer;
+	debut_annee date;
+	fin_annee date;
+	dommage bool;
+	age_vehicule integer;
+	id_formule integer;
+	prime_minimum numeric;
+	prime_assist_car numeric;
+	libelle_assist_car character varying;
+	code_usage_char character varying(3);
+
+	----Pour le calcul des totaux des composantes de prime
+	taux_taxe numeric;
+	prime_annuelle_totale numeric;
+	prime_nette_totale numeric;
+	v_accessoire numeric;
+	v_accessoire_intermediaire numeric;
+	--taux_taxe_accessoire numeric;
+	taxe_accessoire numeric;
+	taxe_totale numeric;
+BEGIN
+
+	--debut_annee := CAST (CONCAT(CAST(DATE_PART('year',CURRENT_DATE) AS VARCHAR(4)),'-01-01') AS DATE);
+	--fin_annee := CAST (CONCAT(CAST(DATE_PART('year',CURRENT_DATE) AS VARCHAR(4)),'-12-31') AS DATE);
+	--duree_totale := fin_annee - debut_annee + 1;
+	duree_totale := fn_get_duree_annuelle_contrat(dateeffet_);
+	duree_contrat := dateexpiration_ - dateeffet_ + 1;
+	capital_rc_corporelle := 3500000000;
+	capital_rc_materielle := 500000000;
+	dommage := False;
+	age_vehicule := EXTRACT ('year' FROM AGE(CURRENT_DATE, datemec_))::integer;
+	
+	SELECT CodeUsage
+	INTO code_usage_char
+	FROM StdUsage
+	WHERE IdUsage = codeusage_;
+	code_usage_char := COALESCE(code_usage_char, '000');
+	
+	IF idcompagnie_ = 1 THEN ---- Recherche de l'IdFormule Securité routière------
+		SELECT SR.IdFormule
+		INTO id_formule
+		FROM StdFormuleSecuriteRoutiere AS SR
+		WHERE (SR.IdCompagnie = idcompagnie_) AND (SR.LibelleFormule = formulesecuriteroutiere_)
+		      AND (SR.NombrePlace = CASE WHEN nombreplace_ < 4 THEN 3 ELSE nombreplace_ END)
+		LIMIT 1;
+	ELSE 
+		SELECT SR.IdFormule
+		INTO id_formule
+		FROM StdFormuleSecuriteRoutiere AS SR
+		WHERE (SR.IdCompagnie = idcompagnie_) AND (SR.LibelleFormule = formulesecuriteroutiere_)
+		LIMIT 1;
+	END IF;
+	id_formule := COALESCE(id_formule, 0);
+	
+	SELECT SAA.PrimeNette, SAA.LibelleOption
+	INTO prime_assist_car, libelle_assist_car
+	FROM StdAssistanceAutomobile AS SAA
+	WHERE SAA.IdOption = idoptionassistance_ AND SAA.IdCompagnie = idcompagnie_;
+	prime_assist_car := COALESCE(prime_assist_car, 0);
+	libelle_assist_car := COALESCE(libelle_assist_car, '');
+
+	---La reduction bns est exprimée en valeur entière. On calcule le coefficient multiplicateur.
+	bns_ := (100 - bns_)/100;
+	
+	IF EXISTS (SELECT * FROM StdOffreGarantie AS SOG
+			   WHERE IdOffre = idoffre_ AND IdCompagnie = idcompagnie_ AND SOG.IdSousGarantie IN (7,8)) THEN
+			   dommage := True;
+	END IF; 
+	
+	SELECT TauxReduction
+	INTO taux_reduction 
+	FROM StdSystemeSecurite
+	WHERE IdSystemeSecurite = codealarme_;
+	taux_reduction := COALESCE(taux_reduction, 0);
+	
+	IF code_usage_char = '017' THEN
+		prime_rc := 489000; --489000
+	ELSE
+		SELECT PrimeGar
+		INTO prime_rc
+		FROM StdTarifDetail AS STD
+		WHERE IdTarif = idtarif_ AND STD.IdGarantie = 1
+		  		AND (puissance_ BETWEEN PuissanceMin AND PuissanceMax)
+		  		AND (tonnage_ BETWEEN TonnageMin AND TonnageMax)
+		  		AND CodeCarburant = 3;
+	END IF;
+	prime_rc := COALESCE(prime_rc, 0);
+	
+	IF remorqueattelee_ THEN
+		prime_rc := ROUND(prime_rc * 1.1, 0);
+	END IF;
+	
+	IF carburantautrematiere_ AND idcompagnie_ = 14 THEN
+		prime_rc := ROUND(prime_rc * 1.15, 0);
+	END IF;
+	
+    SELECT PrimeGar
+	INTO prime_cedeao
+	FROM StdTarifDetail AS STD
+	WHERE IdTarif = idtarif_ 
+	      AND STD.IdGarantie = 3
+		  AND (puissance_ between PuissanceMin and PuissanceMax)
+		  AND (tonnage_ between TonnageMin and TonnageMax);
+	prime_cedeao := COALESCE(prime_cedeao, 0);
+       
+	prime_fga := ROUND((prime_rc*2)/100,0);
+	
+	---Initialisation des cumuls
+	prime_annuelle_totale := 0;
+	prime_nette_totale := 0;
+	v_accessoire := 0;
+	v_accessoire_intermediaire := 0;
+	taxe_totale := 0;
+    FOR var_rec IN (
+                    SELECT StdSousGarantie.IdGarantie AS id_gar, StdGarantie.LibelleGarantie AS lib_gar,
+                             StdOffreGarantie.IdSousGarantie AS id_sous_gar, StdSousGarantie.LibelleSousGarantie AS lib_sous_gar,
+                            True AS acq, 0 AS cap, 0 AS nbr, 0 AS prime_ann, 0 AS prime_n, 0 AS taxe_enregistrement, 0 AS montant_accessoire,
+		                    StdOffreGarantie.TauxFranchise AS tx_franchise, StdOffreGarantie.FranchiseMinimum AS franchise_min, StdOffreGarantie.FranchiseMaximum AS franchise_max,
+		                    ' ' AS franchise_txt, 0 AS id_form, 0 AS deces, 0 AS ipp, 0 AS ft 
+	                FROM StdOffreGarantie
+	                INNER JOIN StdSousGarantie ON(StdSousGarantie.IdSousGarantie=StdOffreGarantie.IdSousGarantie)
+	                INNER JOIN StdGarantie ON(StdGarantie.IdGarantie=StdSousGarantie.IdGarantie)
+	                WHERE (IdOffre = idoffre_) AND (IdCompagnie = idcompagnie_)  AND (StdOffreGarantie.IdSousGarantie <> 2) --Ignorer la garantie FGA même si elle est confugurée. Elle est une composante de prime et traitée comme telle.
+                	ORDER BY 1,3
+                   )
+    LOOP
+        IF (idoffre_ IN (2, 46, 50)) AND (var_rec.id_sous_gar = 5) THEN --Exclure la garantie Recours anticipé des offres TOUS RISQUES
+			CONTINUE;
+		END IF;
+		IdGarantie := var_rec.id_gar;
+        LibelleGarantie := var_rec.lib_gar;
+        IdSousGarantie := var_rec.id_sous_gar;
+        LibelleSousGarantie := var_rec.lib_sous_gar;
+        Acquise := var_rec.acq;
+        Capital := COALESCE(var_rec.cap, 0.0);
+        NombrePlace := COALESCE(var_rec.nbr, 0.0);
+        PrimeAnnuelle := COALESCE(var_rec.prime_ann, 0.0);
+        PrimeNette := COALESCE(var_rec.prime_n, 0.0);
+		Taxe := COALESCE(var_rec.taxe_enregistrement, 0.0);
+		MontantAccessoire := COALESCE(var_rec.montant_accessoire, 0.0);
+		TauxFranchise := COALESCE(var_rec.tx_franchise, 0.0);
+		FranchiseMinimum := COALESCE(var_rec.franchise_min, 0.0);
+		FranchiseMaximum := COALESCE(var_rec.franchise_max, 0.0);
+		FranchiseTexte := COALESCE(var_rec.franchise_txt, '');
+		IdFormule := COALESCE(var_rec.id_form, 0);
+		CapitalDeces := COALESCE(var_rec.deces, 0.0);
+		CapitalIPP := COALESCE(var_rec.ipp, 0.0);
+		CapitalFT := COALESCE(var_rec.ft, 0.0);
+        IF (var_rec.id_gar = 1) THEN
+            IF (var_rec.id_sous_gar = 1) THEN
+                PrimeAnnuelle := prime_rc;
+                PrimeNette := prime_rc;
+                Capital := capital_rc_corporelle;
+            ELSIF (var_rec.id_sous_gar = 2) THEN
+                PrimeAnnuelle := prime_fga;
+                PrimeNette := prime_fga;
+            ELSIF (var_rec.id_sous_gar = 3) THEN
+                PrimeAnnuelle := prime_cedeao;
+                PrimeNette := prime_cedeao;
+			ELSIF (var_rec.id_sous_gar = 165) THEN
+				PrimeAnnuelle := 0;
+        		PrimeNette := 0;
+				Capital := capital_rc_materielle;
+            END IF;
+        ELSIF  (var_rec.id_sous_gar = 163) THEN
+			SELECT SR.CapitalDeces, SR.CapitalIPP, SR.CapitalFT, SR.PrimeNette
+			INTO CapitalDeces, CapitalIPP, CapitalFT, PrimeNette
+			FROM StdFormuleSecuriteRoutiere AS SR
+			WHERE SR.IdFormule = id_formule AND SR.IdCompagnie = idcompagnie_
+			LIMIT 1;
+			CapitalDeces := COALESCE(CapitalDeces,0);
+			CapitalIPP := COALESCE(CapitalIPP, 0.0);
+			CapitalFT := COALESCE(CapitalFT, 0.0);
+			PrimeNette := COALESCE(PrimeNette, 0.0);
+			IF (nombreplace_ > 5) THEN --PRISE EN COMPTE DE LA SURPRIME POUR PLUS DE 5 PLACES
+				IF (id_formule IN (68, 69, 70)) THEN --Formule 1 avec les différentes valeures de Frais de traitement
+					PrimeNette := PrimeNette + 1120 * (nombreplace_ - 5);
+				ELSIF (id_formule IN (71, 72)) THEN --Formule 2 avec les différentes valeures de Frais de traitement
+					PrimeNette := PrimeNette + 1800 * (nombreplace_ - 5);
+				ELSIF (id_formule IN (73, 74)) THEN --Formule 3 avec les différentes valeures de Frais de traitement
+					PrimeNette := PrimeNette + 2000 * (nombreplace_ - 5);
+				ELSIF (id_formule = 75) THEN --Formule 4 avec les différentes valeures de Frais de traitement
+					PrimeNette := PrimeNette + 3000 * (nombreplace_ - 5);
+				END IF;
+			END IF;
+			PrimeAnnuelle := PrimeNette;
+			IdFormule := id_formule;
+		ELSIF (var_rec.id_sous_gar IN (4,5)) THEN
+			SELECT COALESCE(PrimeGar, 0.0)
+			INTO PrimeAnnuelle
+			FROM StdTarifDetail AS STD
+			WHERE IdTarif = idtarif_ AND STD.IdGarantie = var_rec.id_sous_gar
+			LIMIT 1;
+			PrimeAnnuelle := COALESCE(PrimeAnnuelle, 0);
+			PrimeNette := PrimeAnnuelle;
+		ELSIF (var_rec.id_sous_gar IN (7, 8, 9)) THEN
+			Capital := valneuve_;
+	    	IF (var_rec.id_sous_gar IN (7,8)) THEN
+				PrimeAnnuelle := CASE WHEN valneuve_ < 50000000 THEN (valneuve_ * 4.5)/100
+			                       WHEN valneuve_ >= 50000000  AND valneuve_ < 80000001 THEN (valneuve_ * 4)/100
+								   ELSE (valneuve_ * 3.85)/100
+							     END;
+				PrimeAnnuelle := ROUND(PrimeAnnuelle, 0);
+		    	FranchiseMinimum := CASE WHEN valneuve_ > 80000000 THEN 2000000 ELSE 0 END;
+			ELSE
+				PrimeAnnuelle := CASE WHEN ROUND(((valneuve_ * 0.3) / 100), 0) > 15000 THEN ROUND(((valneuve_ * 0.3) / 100), 0) ELSE 15000 END;
+				IF (idoffre_ IN (2, 46, 50, 57)) THEN
+					PrimeAnnuelle := 0.0;
+				END IF;
+			END IF;
+			PrimeNette := PrimeAnnuelle;
+		ELSIF (var_rec.id_sous_gar IN (10, 11, 12, 13, 14, 15)) THEN
+			IF (var_rec.id_sous_gar IN (10, 11, 12, 13)) THEN
+				Capital := valvenale_;
+			ELSE
+				Capital := valaccessoire_;
+			END IF;
+			
+			IF (var_rec.id_sous_gar IN (10,11)) THEN
+				PrimeAnnuelle := ROUND(((valvenale_ * 0.25) / 100), 0);
+				TauxFranchise := 10;
+				FranchiseMinimum := 50000;
+				FranchiseMaximum := 500000;
+			END IF;
+			
+			IF (var_rec.id_sous_gar IN (12,13)) THEN
+				PrimeAnnuelle := ROUND(((valvenale_ * 0.775) / 100), 0);
+				TauxFranchise := 10;
+				FranchiseMinimum := 250000;
+			END IF;
+			IF (var_rec.id_sous_gar IN (14,15)) THEN
+				PrimeAnnuelle := ROUND(((valvenale_ * 0.775) / 100), 0);
+				TauxFranchise := 10;
+				FranchiseMinimum := 10000;
+				FranchiseMaximum := 50000;
+			END IF;
+			
+			IF carburantautrematiere_ AND (var_rec.id_sous_gar IN (10,11,12,13)) THEN
+				PrimeAnnuelle := ROUND(PrimeAnnuelle * 1.5, 0);
+			END IF;
+			PrimeNette := PrimeAnnuelle;
+		ELSIF (var_rec.id_sous_gar = 22) THEN
+			PrimeAnnuelle := COALESCE(prime_assist_car, 0.0);
+			PrimeNette := COALESCE(prime_assist_car, 0.0);
+		END IF;
+        --Règle de gestion applicable au vol 
+		IF var_rec.id_gar = 5 THEN
+		    PrimeNette := COALESCE(PrimeNette, 0.0);
+			PrimeNette := ROUND(PrimeNette - ((PrimeNette * COALESCE(taux_reduction,0))/100),0);
+		END IF;
+		--Règle dommage --
+		IF dommage AND var_rec.id_sous_gar = 4 THEN
+			PrimeNette := 4200;
+		END IF;
+ 		-----Calcul de la reduction commerciale---------------------------
+		IF var_rec.id_gar <> 1 AND var_rec.id_sous_gar NOT IN (22,4,3) THEN
+		    PrimeNette := COALESCE(PrimeNette, 0.0);
+			PrimeNette := ROUND((PrimeNette - (PrimeNette * tauxreduc_) / 100), 0);
+		END IF;
+		
+		--Détermination de la Prime de la période de couverture---------------------
+		IF var_rec.id_sous_gar NOT IN (22,3) THEN
+			PrimeNette := COALESCE(PrimeNette, 0.0);
+			--duree_contrat := dateexpiration_ - dateeffet_;
+			PrimeNette := ROUND((PrimeNette * bns_ * duree_contrat)/duree_totale,0);
+		END IF;
+		PrimeAnnuelle:= COALESCE(PrimeAnnuelle, 0.0);
+		PrimeNette := COALESCE(PrimeNette, 0.0);
+		
+		---Calcul de la taxe
+		SELECT tauxtaxe
+		INTO taux_taxe
+		FROM stdtauxtaxegarantieproduit AS TT
+		WHERE (idproduit = 1) AND (TT.idgarantie = var_rec.id_sous_gar)
+		       AND dateeffet_ BETWEEN DebutValidite AND FinValidite;
+		taux_taxe := COALESCE(taux_taxe, 0);
+		Taxe := ROUND((PrimeNette * taux_taxe)/100,0);
+		
+		---Faire le cumul des 2 composantes de prime (prime nette et taxe)
+		prime_annuelle_totale := prime_annuelle_totale + PrimeAnnuelle;
+		prime_nette_totale := prime_nette_totale + PrimeNette;
+		taxe_totale := taxe_totale + Taxe;
+		-------------------------------Traitement du texte de la franchise-------------------------
+		IF var_rec.id_sous_gar = 22 THEN
+			FranchiseTexte := libelle_assist_car;
+		ELSE
+			FranchiseTexte := fn_franchise_texte(TauxFranchise, FranchiseMinimum, FranchiseMaximum);
+		END IF;
+						  
+		--Calculer le montant du FGA et l'ajouter à la prime nette totale
+		IF var_rec.id_gar = 1  AND var_rec.id_sous_gar = 1 THEN
+			prime_annuelle_totale := prime_annuelle_totale + ROUND((PrimeAnnuelle * 2) / 100, 0);
+			prime_nette_totale := prime_nette_totale + ROUND((PrimeNette * 2) / 100, 0);
+		END IF;
+		
+        RETURN NEXT;
+
+    END LOOP;
+	
+	--Calcul de l'accessoire
+-- 	SELECT accessoires
+-- 	INTO v_accessoire
+-- 	FROM stdaccessoire
+-- 	WHERE prime_nette_totale between primemin and primemax and idproduit = 1;
+-- 	v_accessoire := COALESCE(v_accessoire, 0.0);
+	
+-- 	taux_taxe_accessoire := fn_get_taux_taxe(1, idoffre_, dateeffet_);
+-- 	taxe_accessoire := (v_accessoire * taux_taxe_accessoire)/100;
+	
+	SELECT * 
+	INTO v_accessoire, v_accessoire_intermediaire, taxe_accessoire
+	FROM fn_get_accessoire(prime_nette_totale, 1, idoffre_, idcompagnie_, dateeffet_);
+	
+	--- Retourner la ligne des cumuls
+	IdGarantie := 0;
+	LibelleGarantie := 'CUMUL DES MONTANTS DES GARANTIES';
+	IdSousGarantie := 0;
+	LibelleSousGarantie := 'CUMUL DES MONTANTS DES S/GARANTIES';
+	Acquise := True;
+	Capital := 0.0;
+	NombrePlace := 0.0;
+    PrimeAnnuelle := prime_annuelle_totale;
+	PrimeNette := prime_nette_totale;
+	Taxe := taxe_totale + taxe_accessoire;
+	MontantAccessoire := v_accessoire + v_accessoire_intermediaire;
+	TauxFranchise := 0.0;
+	FranchiseMinimum := 0.0;
+	FranchiseMaximum := 0.0;
+	FranchiseTexte := '';
+	IdFormule :=  0.0;
+	CapitalDeces :=  0.0;
+	CapitalIPP :=  0.0;
+	CapitalFT :=  0.0;
+	
+	RETURN NEXT;
+	
+END; 
+$function$;

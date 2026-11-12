@@ -2,7 +2,7 @@
  * UTILS D'EXPORTATION MULTI-FORMATS LE PHARE (PDF, EXCEL, CSV, XML)
  * Conforme aux exigences réglementaires du Code CIMA et de la comptabilité générale.
  */
-import { annexeFlotteApi, cashApi, conditionsParticulieresFlotteApi, conditionsParticulieresMonoApi, contractApi, customerApi, dommagesApi, impressionIaApi, impressionMrhApi, impressionVoyageApi, quoteApi, transportApi } from '../api/endpoints';
+import { annexeFlotteApi, cashApi, conditionsParticulieresFlotteApi, conditionsParticulieresMonoApi, conditionsParticulieresMrhApi, contractApi, customerApi, dommagesApi, impressionIaApi, impressionMrhApi, impressionRcApi, impressionVoyageApi, quoteApi, transportApi } from '../api/endpoints';
 import { arrondirMontant, construireModeleAttestation, documentsCompagnie, logoCabinetEntete, logoCabinetPied, logoCompagnie, mentionCabinet, modeleAttestationVoyage, nomCabinet, parametre, ttcRetombe, villeSignature } from './parametrage';
 import { cedeaoDansPrimeNette } from './tarificationAuto';
 import { estDevisSante, imprimerDocumentSante } from './impressionsSante';
@@ -159,10 +159,12 @@ export const exportToExcel = ({ filename, title, subtitle, metadata = {}, header
 };
 
 /**
- * Export PDF Officiel Certifié CIMA avec déclenchement direct d'impression PDF et téléchargement.
- * enTete : bloc République / société / titre / sous-titre ; piedDePage : attestation et signatures.
+ * Ouvre l'aperçu moderne d'un document destiné à l'impression ou à l'enregistrement en PDF.
+ * enTete : bloc République / société / titre / sous-titre ; piedDePage : attestation et signatures ; paysage : A4 en
+ * largeur (tableaux de nombreuses colonnes).
  */
-export const exportToPdf = ({ filename, title, subtitle, metadata = {}, headers, rows, totals, enTete = true, piedDePage = true }) => {
+export const exportToPdf = ({ filename, title, subtitle, metadata = {}, headers, rows, totals, enTete = true, piedDePage = true, paysage = false }) => {
+  const titreDocument = title || String(filename || 'Export Officiel CIMA').replace(/\.pdf$/i, '');
   const metaHtml = Object.entries(metadata)
     .map(([k, v]) => `<div><span style="color:#64748b;font-weight:600;">${k} :</span> <strong>${v}</strong></div>`)
     .join('');
@@ -197,10 +199,10 @@ export const exportToPdf = ({ filename, title, subtitle, metadata = {}, headers,
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>${title || 'Export Officiel CIMA'}</title>
+  <title>${echapperHtml(titreDocument)}</title>
   <style>
     @page {
-      size: A4 portrait;
+      size: A4 ${paysage ? 'landscape' : 'portrait'};
       margin: 12mm 15mm;
     }
     body {
@@ -339,29 +341,17 @@ export const exportToPdf = ({ filename, title, subtitle, metadata = {}, headers,
     </div>
   </div>` : ''}
 
-  <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 350);
-    };
-  </script>
 </body>
 </html>
   `;
 
-  // 1. Open instant Print-to-PDF Window
+  // L'aperçu permet de vérifier le document avant de lancer l'impression ou l'enregistrement PDF.
   const printWindow = ouvrirApercuImpression();
   if (printWindow) {
     printWindow.document.open();
     printWindow.document.write(docHtml);
     printWindow.document.close();
   }
-
-  // 2. Also trigger a direct download of the official certified HTML file as fallback
-  const cleanName = filename.endsWith('.pdf') ? filename.replace(/\.pdf$/, '.html') : (filename.endsWith('.html') ? filename : `${filename}.html`);
-  const blob = new Blob([docHtml], { type: 'text/html;charset=utf-8;' });
-  downloadBlob(blob, cleanName);
 };
 
 // Texte inséré dans un document HTML : les caractères spéciaux sont neutralisés
@@ -808,7 +798,7 @@ export const exportToXml = ({ filename, rootTag = 'BORDEREAU_CIMA', metadata = {
 };
 
 /* =========================================================================
-   IMPRESSION DES DEVIS/FACTURES PROFORMA — 3 GABARITS REPRIS D'URANUS
+   IMPRESSION DES DEVIS/FACTURES PROFORMA - 3 GABARITS REPRIS D'URANUS
    (Auto, IA/Voyage/Transport, MRH), d'après les modèles PDF fournis par
    OREOLE ASSURANCE. Ouvre une fenêtre d'impression dédiée, indépendante
    du contenu affiché à l'écran.
@@ -817,7 +807,7 @@ export const exportToXml = ({ filename, rootTag = 'BORDEREAU_CIMA', metadata = {
 const money = (v) => Number(v || 0).toLocaleString('fr-FR');
 
 const formatFrDate = (value) => {
-  if (!value) return '—';
+  if (!value) return '-';
   const d = new Date(value);
   if (isNaN(d.getTime())) return String(value);
   const pad = (n) => String(n).padStart(2, '0');
@@ -988,6 +978,14 @@ const printDocEntete = (compagnie) => {
 // titre « DEVIS N° <numéro du devis> » (demande du 2026-10-12). Les documents d'un contrat passent par les
 // mêmes gabarits (contratCommeDevis, estContrat) et gardent le leur.
 const estImpressionContrat = (quote) => Boolean(quote?.estContrat);
+// Avenant d'incorporation (véhicule en Auto, membre en Santé) : date d'incorporation au choix, y compris passée ; sa date
+// d'émission reste à l'écran et n'est pas imprimée, « Fait à » porte la date d'incorporation (demande du 2026-11-03)
+const estAvenantIncorporation = (quote) => {
+  const raw = quote?.raw || {};
+  const avenant = [raw.idavenant, raw.avenant].find((a) => a && typeof a === 'object');
+  const code = String(avenant?.CodeAvenant || raw.code_avenant || quote?.code_avenant || '').trim();
+  return code === 'INC' || (code === 'MOD' && estDevisSante(quote));
+};
 const titreDevis = (numero) => `DEVIS N° ${numero || ''}`.trim();
 
 const printDocHeader = (quote, docTitle) => `
@@ -1007,7 +1005,7 @@ const printDocFooter = (withBarcode) => `
   </div>
 `;
 
-// --- GABARIT A : AUTO (facture proforma / facture de prime définitive) — modèle
+// --- GABARIT A : AUTO (facture proforma / facture de prime définitive) - modèle
 // NSIA ASSURANCES. Toutes les valeurs viennent du devis brut (quote.raw) : une
 // donnée absente laisse la case vide au lieu d'être inventée.
 const buildAutoFacture = (quote) => {
@@ -1029,7 +1027,7 @@ const buildAutoFacture = (quote) => {
   // et comparée au montant enregistré sur le devis
   const montantValide = (v) => v !== undefined && v !== null && v !== '' && !Number.isNaN(Number(v));
   // Modèle Uranus : stddevis.primenette inclut déjà le FGA et la CEDEAO (sp_finalisation_devis) ;
-  // la Prime Nette imprimée les retire pour que PN + Accessoire + Taxes + FDG + CEDEAO = Prime TTC.
+  // la Prime Nette imprimée les retire pour que PN + Accessoire + Taxes + FGA + CEDEAO = Prime TTC.
   // NSIA (compagnie 1) : la TTC peut être arrondie au multiple de 5 supérieur (fn_calculer_primettc,
   // appliqué sur l'historique mais plus rattaché à aucun trigger) : les deux formes sont acceptées.
   const composantes = [raw.primenette, raw.accessoire, raw.taxe, raw.fga, raw.cedeao];
@@ -1066,8 +1064,8 @@ const buildAutoFacture = (quote) => {
   const alerteEcart = ecartTtc ? `
     <div class="alerte-ecart no-print">
       <strong>⚠ Écart détecté sur la Prime TTC.</strong>
-      Montant enregistré sur le devis : <strong>${fcfa(ttcEnregistre)} FCFA</strong> —
-      somme Prime Nette + Accessoire + Taxes + FDG + CEDEAO : <strong>${fcfa(ttcCalcule)} FCFA</strong>
+      Montant enregistré sur le devis : <strong>${fcfa(ttcEnregistre)} FCFA</strong> -
+      somme Prime Nette + Accessoire + Taxes + FGA + CEDEAO : <strong>${fcfa(ttcCalcule)} FCFA</strong>
       (écart de ${fcfa(Math.abs(ttcCalcule - ttcEnregistre))} FCFA).
       La facture affiche le montant recalculé. Vérifiez le devis avant de la transmettre.
       <em>(Ce bandeau n'apparaît pas à l'impression.)</em>
@@ -1108,7 +1106,7 @@ const buildAutoFacture = (quote) => {
       </tr>
       <tr><td colspan="6" style="border:none;height:10px;"></td></tr>
       <tr class="ligne-labels">
-        <td>PRIME NETTE</td><td>ACCESSOIRE</td><td>TAXES</td><td>FDG</td><td>CEDEAO</td><td>PRIME TTC</td>
+        <td>PRIME NETTE</td><td>ACCESSOIRE</td><td>TAXES</td><td>FGA</td><td>CEDEAO</td><td>PRIME TTC</td>
       </tr>
       <tr class="ligne-valeurs facture-montants">
         <td><strong>${primeNetteAffichee !== null ? fcfa(primeNetteAffichee) : VIDE}</strong></td>
@@ -1128,7 +1126,7 @@ const buildAutoFacture = (quote) => {
     <p class="texte-politesse">Dans cette attente, nous vous prions d'agréer l'expression de nos sentiments dévoués.</p>
 
     <div class="bloc-signature-droite">
-      <div>Fait à ${echapperHtml(villeSignature())}, le <strong>${date(raw.dateemission)}</strong>.</div>
+      <div>Fait à ${echapperHtml(villeSignature())}, le <strong>${date(estAvenantIncorporation(quote) ? raw.dateeffet : raw.dateemission)}</strong>.</div>
       <div style="margin-top:28px;"><strong>Pour la société</strong></div>
     </div>
 
@@ -1145,12 +1143,12 @@ const buildAutoFacture = (quote) => {
   // Relecture finale : aucun résidu technique ne doit apparaître dans le document
   if (/\b(undefined|null|NaN)\b/.test(html.replace(/<[^>]*>/g, ' '))) {
     console.error('Facture proforma : valeur non résolue détectée', raw.iddevis);
-    return `<div class="alerte-ecart no-print"><strong>⚠ Donnée non résolue détectée dans la facture</strong> — vérifiez le devis avant impression.</div>${html}`;
+    return `<div class="alerte-ecart no-print"><strong>⚠ Donnée non résolue détectée dans la facture</strong> - vérifiez le devis avant impression.</div>${html}`;
   }
   return html;
 };
 
-// --- CONDITIONS PARTICULIÈRES — ASSURANCE AUTOMOBILE (modèle NSIA/OREOLE, cf.
+// --- CONDITIONS PARTICULIÈRES - ASSURANCE AUTOMOBILE (modèle NSIA/OREOLE, cf.
 // police n°1186201263196A). Structure unique Mono / Flotte : en-tête, références
 // client / quittance, tableau des garanties par nature de risque, récapitulatif
 // financier et signatures. Les données proviennent de
@@ -1164,6 +1162,7 @@ const ID_GARANTIE_RC = 1;
 const fcfa = (v) => String(Math.round(Number(v) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 
 const buildConditionsParticulieres = (quote, cp) => {
+  const rc = estDevisRc(quote);
   const val = (v) => (v === undefined || v === null || v === '' ? VIDE : v);
   const date = (v) => (v ? formatFrDate(v) : VIDE);
   const client = cp.client || {};
@@ -1204,12 +1203,12 @@ const buildConditionsParticulieres = (quote, cp) => {
     || ttcRetombe(m.prime_ttc_enregistree, sommeTtc, { idProduit: 1, nsia: Number(idCompagnie) === 1 })
     ? m.prime_ttc_enregistree : arrondirMontant(sommeTtc, 1);
   // Prime imposée ou corrigée : les garanties ne retombent pas sur la TTC enregistrée (celle de la
-  // facture) — écart signalé à l'écran, comme sur la facture proforma
+  // facture) - écart signalé à l'écran, comme sur la facture proforma
   const ttcEnregistree = Number(m.prime_ttc_enregistree) || 0;
   const alerteEcart = ttcEnregistree > 0 && ttcEnregistree !== primeTtc ? `
     <div class="alerte-ecart no-print">
       <strong>⚠ Écart avec la prime enregistrée.</strong>
-      Prime TTC enregistrée (facture) : <strong>${fcfa(ttcEnregistree)} FCFA</strong> —
+      Prime TTC enregistrée (facture) : <strong>${fcfa(ttcEnregistree)} FCFA</strong> -
       total recalculé à partir des garanties : <strong>${fcfa(primeTtc)} FCFA</strong>
       (écart de ${fcfa(Math.abs(ttcEnregistree - primeTtc))} FCFA, prime probablement imposée).
       Vérifiez le dossier avant de transmettre ces Conditions Particulières.
@@ -1220,9 +1219,9 @@ const buildConditionsParticulieres = (quote, cp) => {
     <tr>
       <td class="g-lib">${g.nature}</td>
       <td>${enAnnexe ? 'Voir Annexes' : 'ACQUISE'}</td>
-      <td class="g-num">${sommesGaranties(g)}</td>
-      <td>${franchise(g)}</td>
-      <td class="g-num">${fcfa(g.prime_nette)}</td>
+      <td class="g-num">${rc ? VIDE : sommesGaranties(g)}</td>
+      <td>${rc ? VIDE : franchise(g)}</td>
+      <td class="g-num">${rc ? VIDE : fcfa(g.prime_nette)}</td>
     </tr>`;
 
   return `
@@ -1260,7 +1259,7 @@ const buildConditionsParticulieres = (quote, cp) => {
           <tr><td class="label">Offre</td><td>${q.offre ? String(q.offre).toUpperCase() : VIDE}</td></tr>
           <tr><td class="label">Mouvement</td><td>${q.mouvement ? String(q.mouvement).toUpperCase() : VIDE}</td></tr>
           <tr><td class="label">Durée</td><td>${q.duree_jours !== null && q.duree_jours !== undefined ? `${q.duree_jours} Jours` : VIDE}</td></tr>
-          <tr><td class="label">Date d'émission</td><td>${date(q.date_emission)}</td></tr>
+          ${estAvenantIncorporation(quote) ? '' : `<tr><td class="label">Date d'émission</td><td>${date(q.date_emission)}</td></tr>`}
         </table>
       </div>
     </div>
@@ -1302,7 +1301,7 @@ const buildConditionsParticulieres = (quote, cp) => {
   `;
 };
 
-// --- CONDITIONS PARTICULIÈRES AUTO MONO — mise en page des CP NSIA (police 11862122595290Z) :
+// --- CONDITIONS PARTICULIÈRES AUTO MONO - mise en page des CP NSIA (police 11862122595290Z) :
 // cadres client / quittance, fiche véhicule, garanties (prime annuelle, BNS, autres réductions,
 // nette annuelle, prime comptant), capitaux sécurité routière, récapitulatif et signatures.
 // Le nombre de lignes de garanties suit l'offre souscrite. Sources : quittancecontrat|quittanceproposition,
@@ -1521,7 +1520,7 @@ const buildConditionsParticulieresMono = (quote, cp, { contrat = false } = {}) =
   `;
 };
 
-// --- CONDITIONS PARTICULIÈRES FLOTTE AUTO — « Liste des véhicules en Automobile » (modèle NSIA
+// --- CONDITIONS PARTICULIÈRES FLOTTE AUTO - « Liste des véhicules en Automobile » (modèle NSIA
 // imprimé, A4 paysage) : un tableau par catégorie, trois lignes par véhicule sous chaque garantie
 // (prime, état Oui / Non, capital ; capital et franchise pour la RC), totaux par catégorie et
 // général, récapitulatif de la quittance. Sources : quittanceproposition|quittancecontrat et
@@ -1592,9 +1591,11 @@ const CP_FLOTTE_STYLES = `
   .cpf-recap td:first-child { text-align: right; padding-right: 10px; }
   .cpf-recap .cpf-net { border-top: 1px solid #000; margin: 4px -12px 0; padding: 5px 12px; text-align: center; font-weight: 700; font-size: 9.5pt; }
   .cpf-recap .cpf-net span + span { margin-left: 10px; }
+  .cpf-recap .cpf-avenants { margin-top: 5px; font-size: 7.5pt; font-style: italic; line-height: 1.3; }
 `;
 
-const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules }, { contrat = false } = {}) => {
+// periode : contrat de base dont la période a des avenants (incorporations…) : véhicules et primes à jour, avenants rappelés
+const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules, periode }, { contrat = false } = {}) => {
   const q = quittance || {};
   const t = (x) => echapperHtml(x === undefined || x === null ? '' : String(x).trim());
   const date = (x) => (x ? formatFrDate(x) : VIDE);
@@ -1732,7 +1733,7 @@ const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules }, { c
   const alerteEcart = primeNetteRecap !== null && vehicules?.length && Math.abs(primeNetteRecap - totalGeneral) > 1 ? `
     <div class="alerte-ecart no-print">
       <strong>⚠ Écart avec la prime enregistrée.</strong> Total des véhicules : <strong>${montant(totalGeneral)}</strong>
-      — prime nette du récapitulatif : <strong>${montant(primeNetteRecap)}</strong> (prime probablement imposée).
+      - prime nette du récapitulatif : <strong>${montant(primeNetteRecap)}</strong> (prime probablement imposée).
       <em>(Ce bandeau n'apparaît pas à l'impression.)</em>
     </div>` : '';
 
@@ -1746,7 +1747,7 @@ const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules }, { c
             ${logo ? `<img src="${logo}" alt="${t(compagnie)}" class="cpf-logo" />` : `<div class="cpf-compagnie">${t(compagnie)}</div>`}
             <table class="cpf-refs">
               <tr><td class="l">Numéro</td><td>${t(q.IdClient)}</td></tr>
-              <tr><td class="l">Date</td><td>${date(q.DateEmission)}</td></tr>
+              ${estAvenantIncorporation(quote) ? '' : `<tr><td class="l">Date</td><td>${date(q.DateEmission)}</td></tr>`}
             </table>
           </div>
           <div class="cpf-nom">${t([q.TitreClient, q.NomClient].filter((x) => x && String(x).trim()).join(' '))}</div>
@@ -1755,7 +1756,9 @@ const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules }, { c
         <div class="cpf-titre">${contrat ? 'CONDITIONS PARTICULIERES' : titreDevis(t(q.NumeroDevis || quote.numerodevis))} : Liste des véhicules en Automobile</div>
         <div class="cpf-droite">
           <table class="cpf-refs">
-            <tr><td class="l">Quittance N°</td><td>${contrat ? t(q.NumeroQuittance) : 'DEVIS'}</td><td class="l e">Emission</td><td>${date(q.DateEmission)}</td></tr>
+            <tr><td class="l">Quittance N°</td>${estAvenantIncorporation(quote)
+              ? `<td colspan="3">${contrat ? t(q.NumeroQuittance) : 'DEVIS'}</td>`
+              : `<td>${contrat ? t(q.NumeroQuittance) : 'DEVIS'}</td><td class="l e">Emission</td><td>${date(q.DateEmission)}</td>`}</tr>
             <tr><td class="l">${contrat ? 'N° Police' : 'N° Devis'}</td><td>${t(contrat ? q.NumeroPolice : q.NumeroDevis)}</td>
               <td class="l e">Avenant N°</td><td>${Number(q.NumeroAvenant) ? Number(q.NumeroAvenant) : t(q.NumeroAvenant)}</td></tr>
             <tr><td class="l">Assuré(e)</td><td colspan="3">${t(q.NomAssure)}</td></tr>
@@ -1776,6 +1779,204 @@ const buildConditionsParticulieresFlotte = (quote, { quittance, vehicules }, { c
             <tr><td>Prime TTC</td><td>${montant(q.PrimeTtc)}</td></tr>
           </table>
           <div class="cpf-net"><span>Total net à payer</span><span>${montant(q.PrimeTtc)}</span></div>
+          ${periode?.Mouvements?.length ? `<div class="cpf-avenants">Liste et primes de la période, avenants compris : ${periode.Mouvements
+            .map((m) => `avenant${m.NumeroAvenant ? ` n° ${t(m.NumeroAvenant)}` : ''} (${t((m.LibelleAvenant || m.Avenant).toLowerCase())}) du ${date(m.DateEffet)} : ${montant(m.PrimeTtc)}`)
+            .join(' ; ')}.</div>` : ''}
+        </div>
+      </div>
+    </div>`;
+};
+
+// --- CONDITIONS PARTICULIÈRES MRH - « Liste des garanties MRH multisites » (modèle NSIA imprimé,
+// police 20003201906101, reçu le 2026-10-29) : cadres « Références du Souscripteur » et « Références
+// de la Quittance », liste des garanties (capitaux, franchise, prime nette annuelle et du contrat),
+// total général, récapitulatif et signatures ; ni logo ni pied de page, comme le modèle. Plusieurs
+// maisons : un intertitre et un total par site. Sources : quittanceproposition|quittancecontrat et
+// /devis|contrat/:id/conditions-particulieres/ (sites et garanties de chaque site).
+
+// Ordre des garanties du modèle NSIA (stdsousgarantie : tempête, vol, bris de glaces, denrées, RC vie
+// privée, RC des membres de la famille, incendie, dommages électriques, dégâts des eaux) ; les autres
+// suivent par libellé
+const ORDRE_GARANTIES_CP_MRH = [50, 12, 9, 156, 59, 131, 30, 40, 47];
+
+const CP_MRH_STYLES = `
+  body { max-width: 192mm; color: #000; }
+  @media print { body { padding: 12mm 9mm 10mm 12mm; } }
+  .cpm { font-family: 'Times New Roman', Times, serif; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cpm-devis { text-align: center; font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 13pt; margin-bottom: 3mm; }
+  .cpm-refs { display: flex; gap: 2mm; align-items: stretch; }
+  .cpm-cadre { flex: 1; border: 1px solid #000; border-radius: 10px; padding-bottom: 2mm; }
+  .cpm-cadre-titre { text-align: center; font-weight: 700; font-style: italic; font-size: 11.5pt; border-bottom: 1px solid #000; padding: 1mm 0 0.8mm; margin-bottom: 1mm; }
+  /* Libellé suivi de sa valeur ; une seconde paire commence à --g de la largeur du cadre (modèle) */
+  .cpm-ligne { display: flex; align-items: baseline; padding: 0.6mm 2mm; font-style: italic; }
+  .cpm-ligne > span { display: flex; flex: 0 0 var(--g, 52%); min-width: 0; }
+  .cpm-ligne > span:only-child { flex-basis: 100%; }
+  .cpm-ligne > span + span { flex: 1; }
+  .cpm-ligne b { flex: none; font-weight: 700; margin-right: 3mm; }
+  .cpm-ligne .petit { font-size: 7.5pt; line-height: 1.2; }
+  .cpm-saut { height: 2.5mm; }
+  .cpm-titre { width: 112mm; margin: 4mm auto 5mm; border: 1px solid #000; border-radius: 6px; padding: 3mm 0; text-align: center; font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 15pt; }
+  table.cpm-garanties { width: 100%; border-collapse: collapse; table-layout: fixed; border: 1.5px solid #000; }
+  table.cpm-garanties td { border: 1px solid #000; padding: 0.3mm 1.5mm; height: 5.6mm; font-size: 7pt; vertical-align: middle; overflow-wrap: anywhere; }
+  table.cpm-garanties tr { break-inside: avoid; }
+  table.cpm-garanties td.lib { font-size: 6.5pt; text-transform: uppercase; }
+  table.cpm-garanties td.p { font-size: 9pt; white-space: nowrap; }
+  table.cpm-garanties tr.entete td { height: 12mm; padding: 0.3mm 0.5mm; font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 8.5pt; text-align: center; }
+  table.cpm-garanties tr.entete td.p { font-size: 7.8pt; }
+  table.cpm-garanties tr.site td { font-weight: 700; font-size: 8pt; text-transform: uppercase; background: #f2f2f2; }
+  table.cpm-garanties tr.total td { height: 8mm; }
+  table.cpm-garanties tr.total td.l { text-align: right; padding-right: 3mm; font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 11pt; }
+  table.cpm-garanties tr.sous-total td.l { font-size: 8.5pt; }
+  table.cpm-garanties tr.general td { border-top: 1.5px solid #000; }
+  .cpm-fin { break-inside: avoid; }
+  .cpm-recap { display: grid; grid-template-columns: 30% 27% 43%; border: 1px solid #000; margin-top: 1.5mm; padding: 5mm 3mm 2mm; font-size: 11pt; }
+  .cpm-recap b, .cpm-ttc b { font-family: Arial, Helvetica, sans-serif; }
+  .cpm-recap b { font-size: 10.5pt; }
+  .cpm-ttc { width: 61mm; margin: 1.5mm 0 0 auto; border: 1px solid #000; background: #e6e6e6; padding: 3.5mm 4mm; font-size: 11.5pt; }
+  .cpm-ttc b { font-size: 12.5pt; }
+  .cpm-signatures { display: flex; justify-content: space-between; min-height: 42mm; padding: 13mm 20mm 0 8mm; font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-style: italic; font-size: 11pt; text-decoration: underline; }
+  .cpm-signatures div + div { margin-top: -3mm; }
+`;
+
+const buildConditionsParticulieresMrh = (quote, { quittance, cp }, { contrat = false } = {}) => {
+  const q = quittance || {};
+  const client = cp?.client || {};
+  const qcp = cp?.quittance || {};
+  const sites = cp?.sites || [];
+  const propre = (x) => (x === undefined || x === null || ['', '-'].includes(String(x).trim()) ? '' : String(x).trim());
+  const t = (x) => echapperHtml(propre(x));
+  const date = (x) => (x ? formatFrDate(x) : VIDE);
+
+  // Prime saisie pour la durée du contrat (pas de barème MRH) : ramenée à l'année au prorata des jours
+  // pour un contrat de moins d'un an, égale sinon
+  const duree = Number(q.Duree) || Number(qcp.duree_jours) || 0;
+  const annuelle = (prime) => Math.round((Number(prime) || 0) * (duree > 0 && duree < 365 ? 365 / duree : 1));
+  // Capital et franchise dans l'écriture du modèle : « 66852845.00 », « 10% Mini. 20000 Maxi. 200000 »
+  const capital = (g) => (Number(g.capital) > 0 ? Number(g.capital).toFixed(2) : VIDE);
+  const franchise = (g) => {
+    if (propre(g.texte_franchise) && !/^n[ée]ant$/i.test(propre(g.texte_franchise))) return propre(g.texte_franchise);
+    const parts = [];
+    if (Number(g.taux_franchise) > 0) parts.push(`${Number(g.taux_franchise)}%`);
+    if (Number(g.min_franchise) > 0) parts.push(`Mini. ${Number(g.min_franchise)}`);
+    if (Number(g.max_franchise) > 0) parts.push(`Maxi. ${Number(g.max_franchise)}`);
+    if (parts.length) return parts.join(' ');
+    return Number(g.franchise) > 0 ? String(Number(g.franchise)) : VIDE;
+  };
+  const rang = (g) => {
+    const i = ORDRE_GARANTIES_CP_MRH.indexOf(Number(g.id_garantie));
+    return i < 0 ? ORDRE_GARANTIES_CP_MRH.length : i;
+  };
+  const trier = (liste) => [...(liste || [])].sort((a, b) => rang(a) - rang(b)
+    || String(a.libelle || '').localeCompare(String(b.libelle || ''), 'fr'));
+  const totaux = (liste) => liste.reduce((s, g) => ({
+    annuelle: s.annuelle + annuelle(g.prime_nette),
+    contrat: s.contrat + Math.round(Number(g.prime_nette) || 0),
+  }), { annuelle: 0, contrat: 0 });
+
+  const ligne = (g) => `
+    <tr>
+      <td class="lib">${t(g.libelle)}</td>
+      <td>${capital(g)}</td>
+      <td>${t(franchise(g))}</td>
+      <td class="p">${VIDE}</td>
+      <td class="p">${VIDE}</td>
+    </tr>`;
+  const ligneTotal = (libelle, total, classe) => `
+    <tr class="total ${classe}">
+      <td colspan="3" class="l">${libelle}</td>
+      <td class="p">${VIDE}</td>
+      <td class="p">${VIDE}</td>
+    </tr>`;
+
+  const plusieurs = sites.length > 1;
+  const toutes = sites.flatMap((s) => s.garanties || []);
+  const corps = sites.map((s, i) => {
+    const garanties = trier(s.garanties);
+    const site = [propre(s.usage).toUpperCase(), propre(s.adresse)].filter(Boolean).join(' - ');
+    return `
+      ${plusieurs ? `<tr class="site"><td colspan="5">Site N° ${i + 1}${site ? ` : ${echapperHtml(site)}` : ''}</td></tr>` : ''}
+      ${garanties.map(ligne).join('')}
+      ${plusieurs && garanties.length ? ligneTotal(`TOTAL SITE N° ${i + 1}`, totaux(garanties), 'sous-total') : ''}`;
+  }).join('');
+  const totalGeneral = totaux(toutes);
+
+  // Récapitulatif : montants enregistrés sur le devis ou le contrat (prime imposée comprise)
+  const m = cp?.montants || {};
+  const primeNette = q.PrimeNette ?? totalGeneral.contrat;
+  const accessoire = q.Accessoire ?? m.accessoire;
+  const taxe = q.TaxeEnregistrement ?? m.taxe;
+  const primeTtc = q.PrimeTtc ?? m.prime_ttc_enregistree;
+  const alerteEcart = toutes.length && Math.abs(Number(primeNette) - totalGeneral.contrat) > 1 ? `
+    <div class="alerte-ecart no-print">
+      <strong>⚠ Écart avec la prime enregistrée.</strong> Total des garanties : <strong>${fcfa(totalGeneral.contrat)}</strong>
+      - prime nette enregistrée : <strong>${fcfa(primeNette)}</strong>. Vérifiez la répartition des garanties avant de transmettre ces Conditions Particulières.
+      <em>(Ce bandeau n'apparaît pas à l'impression.)</em>
+    </div>` : '';
+
+  const telephones = [...new Set([q.TelephoneClient, q.MobileClient, client.fixe].map(propre).filter(Boolean))];
+  const usages = [...new Set(sites.map((s) => propre(s.usage).toUpperCase()).filter(Boolean))];
+  const categorie = [propre(q.LibelleCategorie).toUpperCase(), usages.join(' / ')].filter(Boolean).join(' ');
+  // Ligne d'un cadre : une ou deux paires libellé / valeur (valeurs déjà échappées)
+  const ligneRef = ([l1, v1], second = null, g = '52%') => `
+    <div class="cpm-ligne" style="--g:${g}">
+      <span><b>${l1}</b><span>${v1}</span></span>${second ? `<span><b>${second[0]}</b><span>${second[1]}</span></span>` : ''}
+    </div>`;
+  const avenant = Number(q.NumeroAvenant) ? Number(q.NumeroAvenant) : t(q.NumeroAvenant);
+  const intermediaire = [propre(q.LibelleIntermediaire) || propre(cp?.intermediaire), propre(q.CodeIntermediaire) ? `( ${propre(q.CodeIntermediaire)} )` : '']
+    .filter(Boolean).join(' ');
+
+  return `
+    <style>${CP_MRH_STYLES}</style>
+    ${alerteEcart}
+    <div class="cpm">
+      ${contrat ? '' : `<div class="cpm-devis">${titreDevis(t(q.NumeroDevis || quote.numerodevis))}</div>`}
+      <div class="cpm-refs">
+        <div class="cpm-cadre">
+          <div class="cpm-cadre-titre">Références du Souscripteur</div>
+          ${ligneRef(['Numéro', t(q.IdClient)], ['Titre', t(q.TitreClient || client.titre)], '40%')}
+          ${ligneRef(['Nom et prénoms', t(q.NomClient || client.nom)])}
+          ${ligneRef(['Adresse', t(q.AdresseClient || client.adresse)])}
+          ${ligneRef(['Téléphone', echapperHtml(telephones.join(' / '))], ['Fax', t(client.fax)], '70%')}
+          ${ligneRef(['Profession', t(q.ProfessionClient || client.profession)])}
+          ${ligneRef(['Mail', t(q.EmailClient || client.email)])}
+          <div class="cpm-saut"></div>
+          ${ligneRef(['Réseau', t(q.LibelleIntermediaire || cp?.intermediaire)])}
+          ${ligneRef(['Intermédiaire', echapperHtml(intermediaire)])}
+        </div>
+        <div class="cpm-cadre">
+          <div class="cpm-cadre-titre">Références de la Quittance</div>
+          ${ligneRef(['Quittance', contrat ? t(q.NumeroQuittance) : VIDE], ['Emission', date(q.DateEmission || qcp.date_emission)])}
+          ${ligneRef([contrat ? 'N° Police' : 'N° Devis', t(contrat ? (propre(q.NumeroPolice) || quote.numerodevis) : (q.NumeroDevis || quote.numerodevis))], ['Avenant', avenant])}
+          ${ligneRef(['Assuré(e)', t(q.NomAssure || qcp.assure)])}
+          ${ligneRef(['Adresse', t(q.AdresseAssure || qcp.adresse_assure)])}
+          ${ligneRef(['Effet', date(q.DateEffet || qcp.date_effet)], ['Expiration', date(q.DateExpiration || qcp.date_expiration)], '46%')}
+          ${ligneRef(['Catégorie', `<span class="petit">${echapperHtml(categorie)}</span>`])}
+          ${ligneRef(['Mouvement', t(q.LibelleMouvement || qcp.mouvement)])}
+          ${ligneRef(['Ecriture', t(q.LibelleBareme)], ['Durée', duree ? `${duree} jours` : VIDE])}
+        </div>
+      </div>
+
+      <div class="cpm-titre">Liste des garanties MRH multisites</div>
+
+      <table class="cpm-garanties">
+        <colgroup><col style="width:36%" /><col style="width:19%" /><col style="width:19%" /><col style="width:11%" /><col style="width:15%" /></colgroup>
+        <tr class="entete">
+          <td>GARANTIES</td><td>CAPITAUX</td><td>FRANCHISE</td><td class="p">PRIME NETTE<br/>ANNUELLE</td><td class="p">PRIME NETTE<br/>CONTRAT</td>
+        </tr>
+        ${toutes.length ? corps : '<tr><td colspan="5" style="text-align:center">Aucune garantie enregistrée</td></tr>'}
+        ${ligneTotal('TOTAL GENERAL', totalGeneral, 'general')}
+      </table>
+
+      <div class="cpm-fin">
+        <div class="cpm-recap">
+          <div><b>Prime Nette :</b> ${fcfa(primeNette)}</div>
+          <div><b>Accessoires :</b> ${fcfa(accessoire)}</div>
+          <div><b>Taxe d'enregistrement :</b> ${fcfa(taxe)}</div>
+        </div>
+        <div class="cpm-ttc"><b>PRIME TTC :</b> ${fcfa(primeTtc)}</div>
+        <div class="cpm-signatures">
+          <div>L'Assuré(e)</div>
+          <div>Pour la Compagnie</div>
         </div>
       </div>
     </div>`;
@@ -1917,7 +2118,7 @@ const decompteIa = (q, primeNette) => `
     <p>Il n'est pas autrement dérogé au terme du présent contrat</p>
   </div>`;
 
-// Proposition IA « groupe » (devis flotte) — modèle URANUS « PROPOSITION INDIVIDUELLE ACCIDENTS GROUPE »
+// Proposition IA « groupe » (devis flotte) - modèle URANUS « PROPOSITION INDIVIDUELLE ACCIDENTS GROUPE »
 const buildPropositionIaGroupe = (quote, donnees) => {
   const q = quittanceIa(quote, donnees.quittance);
   return `
@@ -1942,12 +2143,12 @@ const buildPropositionIaGroupe = (quote, donnees) => {
       ${paragrapheProposition(q)}
       ${estCategorieGroupe(q) ? '' : tableauGarantiesIa(donnees.garanties, { capitalTexte: true })}
       ${decompteIa(q, q.PrimeNetteHorsFga)}
-      <div class="ia-fait">Fait à ${echapperHtml(villeSignature())}, le ${dateTiret(q.DateEmission)}</div>
+      <div class="ia-fait">Fait à ${echapperHtml(villeSignature())}, le ${dateTiret(estAvenantIncorporation(quote) ? q.DateEffet : q.DateEmission)}</div>
       <div class="ia-signatures"><div>LE SOUSCRIPTEUR</div><div>POUR LA COMPAGNIE</div></div>
     </div>`;
 };
 
-// Conditions Particulières IA individuelle — modèle URANUS (assuré, bénéficiaires, garanties)
+// Conditions Particulières IA individuelle - modèle URANUS (assuré, bénéficiaires, garanties)
 const buildConditionsParticulieresIa = (quote, donnees) => {
   const q = quittanceIa(quote, donnees.quittance);
   const groupe = estCategorieGroupe(q);
@@ -2002,12 +2203,12 @@ const buildConditionsParticulieresIa = (quote, donnees) => {
       </div>
       ${tableauGarantiesIa(donnees.garanties)}`}
       ${decompteIa(q, q.PrimeNette)}
-      <div class="ia-fait">Fait à ${echapperHtml(villeSignature())} le ${dateBarre(q.DateEmission)}</div>
+      <div class="ia-fait">Fait à ${echapperHtml(villeSignature())} le ${dateBarre(estAvenantIncorporation(quote) ? q.DateEffet : q.DateEmission)}</div>
       <div class="ia-signatures"><div>Le Souscripteur</div><div>Pour la Compagnie</div></div>
     </div>`;
 };
 
-// Facture IA — modèle URANUS « FACTURE N° … » avec assurés et ayants droit
+// Facture IA - modèle URANUS « FACTURE N° … » avec assurés et ayants droit
 const buildFactureIa = (quote, donnees) => {
   const q = quittanceIa(quote, donnees.quittance);
   const ligneValeur = (libelle, valeur) => `
@@ -2043,12 +2244,12 @@ const buildFactureIa = (quote, donnees) => {
         <div>PRIME TOTALE A PAYER: ${fcfaIa(q.PrimeTtc)}</div>
       </div>
       <div class="iaf-cima">Conformément aux dispositions de l’Article 13 et suivants du Code des Assurances (Code CIMA) « La prise d’effet du contrat est subordonnée au paiement intégral de la prime ». « Pour les polices des risques autres que la maladie, l’automobile et les marchandises transportées dont la prime est supérieure à 80 fois le SMIG annuel, un délai maximum du contrat peut être accordé au souscripteur » de paiement de 60 jours à compter de la date de prise d'effet ou de renouvellement « A défaut du paiement de la prime dans le délai convenu, le contrat est résilié de plein droit. La portion de prime courue reste acquise à l’assureur sans préjudice des éventuels frais de poursuite et de recouvrement » « Lorsqu’un chèque ou effet remis en paiement de la prime revient impayé, l’assuré est mis en demeure de régulariser le paiement dans un délai de 8 jours ouvrés à compter de la réception de l’acte ou de la lettre de mise en demeure. A l’expiration de ce délai, si la régularisation n’est pas effectuée, le contrat est résilié de plein droit La portion de prime courue reste acquise</div>
-      <div class="iaf-fait">Fait à ${echapperHtml(villeSignature())}, le <b>${dateBarre(q.DateEmission)}.</b></div>
+      <div class="iaf-fait">Fait à ${echapperHtml(villeSignature())}, le <b>${dateBarre(estAvenantIncorporation(quote) ? q.DateEffet : q.DateEmission)}.</b></div>
       <div class="iaf-signatures"><div>LE SOUSCRIPTEUR</div><div>LA COMPAGNIE</div></div>
     </div>`;
 };
 
-// Annexe IA — liste des assurés du devis avec capitaux et ayants droit (modèle URANUS)
+// Annexe IA - liste des assurés du devis avec capitaux et ayants droit (modèle URANUS)
 const buildAnnexeIa = (quote, donnees) => {
   const q = quittanceIa(quote, donnees.quittance);
   // Capitaux en nombre entier sans séparateur, comme sur l'annexe URANUS
@@ -2157,7 +2358,7 @@ const buildPropositionVoyage = (quote, { quittance: q = {}, garanties = [], voya
     ${printDocHeader({ ...quote, compagnie: q.RaisonSociale || quote.compagnie }, '')}
     <div class="titre-cp">
       <div>${titreDevis(q.NumeroDevis || quote.numerodevis)}</div>
-      <div>${String(q.LibelleCategorie || 'ASSURANCE VOYAGE').toUpperCase()} — ${q.RaisonSociale || ''}</div>
+      <div>${String(q.LibelleCategorie || 'ASSURANCE VOYAGE').toUpperCase()} - ${q.RaisonSociale || ''}</div>
     </div>
     <div class="ligne-identifiants">N° CLIENT : ${q.MobileClient || VIDE} | Id. POLICE : ${q.IdDevis || ''} | N° DEVIS : ${q.NumeroDevis || quote.numerodevis || ''}</div>
     <table class="bloc-libre">
@@ -2233,7 +2434,7 @@ const buildBordereauTransport = (donnees) => {
       <div>BORDEREAU N°${libelleNumeroBordereau(donnees.DebutPeriode)} DE RESSORTIE DE PRIMES FACULTES ${annee}</div>
       <div style="font-size:10pt;">GUCE P/C ${souscripteurs || VIDE}</div>
     </div>
-    <div class="ligne-dates" style="text-align:center;">Période du ${jma(donnees.DebutPeriode)} au ${jma(donnees.FinPeriode)}${assureurs.length ? ` — Assureur : ${assureurs.join(', ')}` : ''}</div>
+    <div class="ligne-dates" style="text-align:center;">Période du ${jma(donnees.DebutPeriode)} au ${jma(donnees.FinPeriode)}${assureurs.length ? ` - Assureur : ${assureurs.join(', ')}` : ''}</div>
     <table class="tableau-garanties">
       <tr class="ligne-labels">
         <td>N° requête</td><td>Date certificat</td><td>Réf. certificat</td><td>Assuré</td><td>Moyen de transport</td>
@@ -2362,7 +2563,7 @@ export const buildCotationDommages = (quote, d) => {
   const logo = logoCompagnie(d.Compagnie);
   const client = d.Client || {};
   const telephone = [client.Telephone, client.Fax].filter(Boolean).join(' / ');
-  const adresse = [client.Adresse, client.AdresseGeographique, client.Email].filter(Boolean).join(' — ');
+  const adresse = [client.Adresse, client.AdresseGeographique, client.Email].filter(Boolean).join(' - ');
   const garanties = d.Garanties || [];
   const capitaux = garanties.filter((g) => Number(g.Capital) > 0).map((g) => [
     LIBELLES_CAPITAL_COTATION[Number(g.IdSousGarantie)] || (garanties.length === 1 ? 'Capital assuré' : `Capital ${String(g.Libelle || '').toLowerCase()}`),
@@ -2375,14 +2576,14 @@ export const buildCotationDommages = (quote, d) => {
   const periode = debut ? `du ${dateCourte(debut)} au ${dateCourte(fin)}` : '';
   const antecedent = { 1: 'Affaire nouvelle', 2: 'Renouvellement' }[Number(d.IdAvenant)] || 'Affaire nouvelle';
   const ligne = (libelle, valeur, classe = '') => `<tr><td class="l">${e(libelle)}</td><td class="v ${classe}">${valeur}</td></tr>`;
-  const liste = (elements) => (elements?.length ? `<ul>${elements.map((x) => `<li>${e(x)}</li>`).join('')}</ul>` : '—');
+  const liste = (elements) => (elements?.length ? `<ul>${elements.map((x) => `<li>${e(x)}</li>`).join('')}</ul>` : '-');
   const ttc = Math.round(Number(d.PrimeTtc) || 0);
   // Tableau des garanties en annexe (page 2) selon la catégorie (Réglages Dommages) ; Caution : garanties
   // citées dans la cotation, sans annexe (compte rendu du 12-10-2026)
   const annexe = fiche.annexe_garanties !== false;
   const garantiesCitees = garanties.length
     ? `<ul>${garanties.map((g) => `<li>${e(g.Libelle)}${Number(g.Capital) > 0 ? ` : ${f(g.Capital)} FCFA` : ''}</li>`).join('')}</ul>`
-    : '—';
+    : '-';
 
   const entete = (titre) => `
     <div class="cot-entete">
@@ -2415,8 +2616,8 @@ export const buildCotationDommages = (quote, d) => {
 
     <table class="cot-bloc">
       <tr><th colspan="2">Informations sur la cotation :</th></tr>
-      ${ligne('Offre proposée :', e(`${d.Compagnie || ''} — ${d.Detail?.LibelleOffre || d.Detail?.LibelleTarif || ''}`.toUpperCase()))}
-      ${ligne('Objet de la garantie :', e(fiche.objet_garantie || '—'))}
+      ${ligne('Offre proposée :', e(`${d.Compagnie || ''} - ${d.Detail?.LibelleOffre || d.Detail?.LibelleTarif || ''}`.toUpperCase()))}
+      ${ligne('Objet de la garantie :', e(fiche.objet_garantie || '-'))}
       ${ligne('Contre garanties et mesures préalables à la souscription :', liste(fiche.contre_garanties), 'ombre')}
       ${ligne("Antécédent de l'affaire :", e(antecedent))}
       ${ligne('Garanties demandées :', annexe ? 'Voir tableau de garanties en annexe' : garantiesCitees)}
@@ -2445,7 +2646,7 @@ export const buildCotationDommages = (quote, d) => {
 
     <div class="cot-fait">Fait à ${e(villeSignature())}, le ${e(dateEnLettres(d.DateEmission, false))}</div>
     <div class="cot-signatures"><span>Le rédacteur</span><span>Pour la compagnie</span></div>
-    <div class="cot-pied"><span>${e(nomCabinet())} — courtier</span><span>Page 1 de ${annexe ? 2 : 1}</span></div>
+    <div class="cot-pied"><span>${e(nomCabinet())} - courtier</span><span>Page 1 de ${annexe ? 2 : 1}</span></div>
   </div>
   ${annexe ? `
   <div class="cot cot-page">
@@ -2454,12 +2655,12 @@ export const buildCotationDommages = (quote, d) => {
       <table>
         <tr><th colspan="5">Annexe : tableau des garanties</th></tr>
         <tr><th>Garantie</th><th>Capital</th><th>Franchise</th><th>Prime nette</th><th>Taxe</th></tr>
-        ${garanties.map((g) => `<tr><td>${e(g.Libelle)}</td><td class="n">${Number(g.Capital) > 0 ? f(g.Capital) : '—'}</td>
+        ${garanties.map((g) => `<tr><td>${e(g.Libelle)}</td><td class="n">${Number(g.Capital) > 0 ? f(g.Capital) : '-'}</td>
           <td>${e(g.TexteFranchise && g.TexteFranchise !== 'NEANT' ? g.TexteFranchise : 'Néant')}</td>
           <td class="n">${f(g.PrimeNette)}</td><td class="n">${f(g.Taxe)}</td></tr>`).join('') || '<tr><td colspan="5">Aucune garantie enregistrée.</td></tr>'}
       </table>
     </div>
-    <div class="cot-pied"><span>${e(nomCabinet())} — courtier</span><span>Page 2 de 2</span></div>
+    <div class="cot-pied"><span>${e(nomCabinet())} - courtier</span><span>Page 2 de 2</span></div>
   </div>` : ''}`;
 };
 
@@ -2729,6 +2930,117 @@ export const printPieceDommages = async (idContrat, piece = 'facture') => {
     if (fenetre) {
       fenetre.document.open();
       fenetre.document.write('<p style="font-family:Arial;padding:20px;color:#b91c1c;">Impossible de préparer le document du contrat. Veuillez réessayer.</p>');
+      fenetre.document.close();
+    }
+  }
+};
+
+/* =========================================================================
+   FACTURE DE PRIME RC au modèle OREOLE (« FACTURE DE PRIME N° 000005/01/26 » transmis le 2026-10-28) : logo du
+   cabinet et son anneau en filigrane, « ASSURANCE RESPONSABILITE CIVILE », compagnie (ordre des chèques), souscripteur
+   et assuré, références de la police, primes, montant en lettres, « Fait à …, le 01 Décembre 2025 », « Pour la société ».
+   Données : quittance du contrat ou du devis (quittancecontrat / quittanceproposition, comme la facture OREOLE
+   d'URANUS : Id. Police = identifiant du contrat, N° Acte = numéro d'avenant). Un devis garde son titre
+   « DEVIS N° … » et la colonne N° Devis, sans identifiant (colonne Id. Devis retirée le 2026-10-28). Frais de gestion
+   (RC chef de famille MINENE) : colonne ajoutée s'il y en a.
+   ========================================================================= */
+const STYLES_FACTURE_RC = `
+  .fp { overflow: hidden; }
+  .fp > :not(.fp-filigrane) { position: relative; z-index: 1; }
+  .fp-filigrane { position: absolute; z-index: 0; left: 50%; top: 55%; width: 170mm; transform: translate(-50%, -50%); opacity: 0.06; }
+  .fp-table th { font-weight: 400; white-space: nowrap; }
+  .fp-montants tr:first-child th { border-top: none; }
+  .fp-montants.cinq th { font-size: 10pt; }
+`;
+
+export const estDevisRc = (quote) => quote?.branche === 'RC'
+  || Number(quote?.raw?.idproduit?.id_produit ?? quote?.raw?.idproduit?.IdProduit ?? quote?.raw?.idproduit) === 8;
+
+export const buildFacturePrimeRc = (q, { contrat = true } = {}) => {
+  const e = echapperHtml;
+  const f = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR').replace(/ /g, ' ');
+  const renseigne = (v) => {
+    const t = String(v ?? '').trim();
+    return /^(-+|\.|NA|N\/A|NEANT|NÉANT|RAS)$/i.test(t) ? '' : t;
+  };
+  const bloc = (...lignes) => lignes.map(renseigne).filter(Boolean).map(e).join('<br/>');
+  const telephone = renseigne(q.TelephoneClient) || renseigne(q.MobileClient);
+  const souscripteur = bloc(q.NomClient, renseigne(q.AdresseClient) || q.AdresseGeographique, telephone);
+  const memePersonne = !renseigne(q.NomAssure) || String(q.NomAssure).trim() === String(q.NomClient || '').trim();
+  const assure = memePersonne ? souscripteur : bloc(q.NomAssure, q.AdresseAssure);
+  const produit = String(q.LibelleProduit || 'RESPONSABILITE CIVILE').toUpperCase();
+  const categorie = String(q.LibelleCategorie || '').trim().toUpperCase();
+  const objet = `ASSURANCE ${produit}${categorie && categorie !== produit ? ` - ${categorie}` : ''}`;
+  const compagnie = String(documentsCompagnie(q.RaisonSociale)?.OrdreCheque || '').trim() || q.RaisonSociale || '';
+  const acte = String(q.NumeroAvenant || '').trim().replace(/^0+(?=\d)/, '');
+  // Contrat : Id. Police en première colonne ; devis : pas d'identifiant, une colonne de moins
+  const colonnes = contrat ? 6 : 5;
+  const [pn, accessoire, taxe, frais] = [q.PrimeNetteHorsFga ?? q.PrimeNette, q.Accessoire, q.TaxeEnregistrement, q.FraisGestion]
+    .map((v) => Math.round(Number(v) || 0));
+  const ttc = Math.round(Number(q.PrimeTtc) || 0);
+  const somme = pn + accessoire + taxe + frais;
+  const alerte = ttcRetombe(ttc, somme, { idProduit: 8 }) ? '' : `
+    <div class="alerte-ecart no-print"><strong>Écart sur la prime TTC.</strong> Prime TTC enregistrée : ${f(ttc)} FCFA,
+      somme des primes imprimées : ${f(somme)} FCFA. Vérifiez la quittance avant de transmettre la facture.
+      <em>(Ce bandeau n'apparaît pas à l'impression.)</em></div>`;
+  const jour = new Date(`${String(q.DateEmission || new Date().toISOString()).slice(0, 10)}T00:00:00`);
+  const mois = jour.toLocaleDateString('fr-FR', { month: 'long' });
+  const fait = Number.isNaN(jour.getTime()) ? ''
+    : `${String(jour.getDate()).padStart(2, '0')} ${mois.charAt(0).toUpperCase()}${mois.slice(1)} ${jour.getFullYear()}`;
+  return `<style>${PIECES_DOMMAGES_STYLES}${STYLES_FACTURE_RC}</style>
+  ${alerte}
+  <div class="fp">
+    <img class="fp-filigrane" src="${e(logoCabinetPied())}" alt="" />
+    <img class="fp-logo" src="${e(logoCabinetEntete())}" alt="${e(nomCabinet())}" />
+    <div class="fp-titre">${contrat ? `FACTURE DE PRIME N° ${e(q.NumeroFacture || '')}` : e(titreDevis(q.NumeroDevis))}</div>
+    <div class="fp-objet">${e(objet)}</div>
+    <table class="fp-table">
+      ${contrat
+        ? '<colgroup><col style="width:18%"/><col style="width:20%"/><col style="width:17%"/><col style="width:11%"/><col style="width:17%"/><col style="width:17%"/></colgroup>'
+        : '<colgroup><col style="width:30%"/><col style="width:20%"/><col style="width:12%"/><col style="width:19%"/><col style="width:19%"/></colgroup>'}
+      <tr><td class="cie" colspan="${colonnes}">Compagnie : ${e(compagnie)}</td></tr>
+      <tr><th colspan="${colonnes - 3}">SOUSCRIPTEUR</th><th colspan="3">ASSURE</th></tr>
+      <tr><td class="pers" colspan="${colonnes - 3}">${souscripteur}</td><td class="pers" colspan="3">${assure}</td></tr>
+      <tr>${contrat ? '<th>Id. Police</th>' : ''}<th>${contrat ? 'N° Police' : 'N° Devis'}</th><th>Effet</th><th>N° Acte</th><th>Effet Acte</th><th>Expiration</th></tr>
+      <tr>${contrat ? `<td class="v">${e(q.IdContrat ?? '')}</td>` : ''}<td class="v">${e((contrat ? q.NumeroPolice : q.NumeroDevis) || '')}</td>
+        <td class="v">${e(dateCourte(q.DateEffet))}</td><td class="v">${e(acte)}</td><td class="v">${e(dateCourte(q.DateEffet))}</td>
+        <td class="v">${e(dateCourte(q.DateExpiration))}</td></tr>
+      <tr><td class="blanc" colspan="${colonnes}"></td></tr>
+    </table>
+    <table class="fp-table fp-montants${frais ? ' cinq' : ''}">
+      ${frais ? `
+      <colgroup><col style="width:18%"/><col style="width:18%"/><col style="width:15%"/><col style="width:26%"/><col style="width:23%"/></colgroup>
+      <tr><th>PRIME NETTE</th><th>ACCESSOIRE</th><th>TAXES</th><th>FRAIS DE GESTION</th><th>PRIME TTC</th></tr>
+      <tr><td class="v">${f(pn)}</td><td class="v">${f(accessoire)}</td><td class="v">${f(taxe)}</td><td class="v">${f(frais)}</td><td class="v">${f(ttc)}</td></tr>` : `
+      <colgroup><col style="width:21%"/><col style="width:22%"/><col style="width:25%"/><col style="width:32%"/></colgroup>
+      <tr><th>PRIME NETTE</th><th>ACCESSOIRE</th><th>TAXES</th><th>PRIME TTC</th></tr>
+      <tr><td class="v">${f(pn)}</td><td class="v">${f(accessoire)}</td><td class="v">${f(taxe)}</td><td class="v">${f(ttc)}</td></tr>`}
+    </table>
+    <div class="fp-texte">En votre aimable règlement par chèque à l'ordre de <b>${e(compagnie)}</b> ou par tout règlement la somme de <b>${e(numberToFrenchWords(ttc))} FRANCS CFA.</b></div>
+    <div class="fp-texte">Dans cette attente, nous vous prions d'agréer, nos distinguées salutations.</div>
+    <div class="fp-fait">Fait à ${e(villeSignature())}, le ${e(fait)}</div>
+    <div class="fp-signe">Pour la société</div>
+  </div>`;
+};
+
+/** Facture de prime d'un contrat RC, ou facture proforma d'un devis RC, au modèle OREOLE. */
+export const printFacturePrimeRc = async (quote) => {
+  if (!quote) return;
+  const contrat = estImpressionContrat(quote);
+  const fenetre = ouvrirApercuImpression();
+  if (fenetre) fenetre.document.write('<p style="font-family:Arial;padding:20px;">Préparation de la facture…</p>');
+  try {
+    const q = await impressionRcApi.get(contrat
+      ? { idcontrat: quote.raw?.idcontrat || quote.iddevis || quote.id }
+      : { iddevis: quote.iddevis || quote.id });
+    if (!q.IdDevis && !q.IdContrat) throw new Error('Quittance introuvable.');
+    const numero = contrat ? (q.NumeroFacture || q.NumeroPolice) : q.NumeroDevis;
+    openPrintWindow(`${contrat ? 'Facture de prime' : 'Devis'} ${numero || ''}`.trim(), buildFacturePrimeRc(q, { contrat }), fenetre);
+  } catch (err) {
+    console.error('Erreur facture RC :', err);
+    if (fenetre) {
+      fenetre.document.open();
+      fenetre.document.write('<p style="font-family:Arial;padding:20px;color:#b91c1c;">Impossible de préparer la facture. Veuillez réessayer.</p>');
       fenetre.document.close();
     }
   }
@@ -3218,7 +3530,7 @@ export const apercuAttestationVoyage = (doc) => {
   fin.setDate(fin.getDate() + 29);
   const exemple = {
     Compagnie: doc?.RaisonSociale || '', Nom: 'EXEMPLE', Prenoms: 'ASSURÉ FICTIF', DateNaissance: '1980-01-01',
-    Nationalite: 'IVOIRIENNE', NumeroPasseport: '00AA00000', NumeroCertificat: 'APERÇU — NON VALABLE',
+    Nationalite: 'IVOIRIENNE', NumeroPasseport: '00AA00000', NumeroCertificat: 'APERÇU - NON VALABLE',
     DebutValidite: iso(jour), FinValidite: iso(fin), PaysDestination: 'FRANCE', ZoneCouverture: 'SCHENGEN', DateEmission: iso(jour),
   };
   const fenetre = ouvrirApercuImpression();
@@ -3228,7 +3540,7 @@ export const apercuAttestationVoyage = (doc) => {
 };
 
 /* =========================================================================
-   ANNEXE D'UN DEVIS FLOTTE AUTO — « Liste des véhicules de la flotte »
+   ANNEXE D'UN DEVIS FLOTTE AUTO - « Liste des véhicules de la flotte »
    (gabarit URANUS AnnexeFlotteDevis : A4 paysage, primes de chaque véhicule
    par garantie, légende, réductions et décompte de prime du devis)
    ========================================================================= */
@@ -3487,11 +3799,11 @@ const buildRecuEncaissement = (info) => {
       <colgroup><col style="width:17%"><col style="width:33%"><col style="width:17%"><col style="width:33%"></colgroup>
       <tr><td>Versement en cours</td><td>${montant(info.MontantEncaissement)}</td><td>Date de paiement</td><td>${formatFrDate(info.DateEncaissement)}</td></tr>
       <tr><td>Assuré(e)</td><td>${t([info.PrenomsAssure, info.NomAssure].filter(Boolean).join(' '))}</td><td>Tel.</td><td>${t(info.TelephoneAssure)}</td></tr>
-      <tr>
-        <td>Police(s) réglée(s)</td><td>Police Assurance ${t(info.LibelleProduit)} N°-${t(info.NumeroPolice)}</td>
-        <td>1 Avt ${t(info.NumeroAvenant)} / ${t(info.NomCompagnie)}</td>
-        <td>Date effet : ${formatFrDate(info.DateEffet)} | Date expiration : ${formatFrDate(info.DateExpiration)}</td>
-      </tr>
+      ${(info.Polices || [info]).map((p, i) => `<tr>
+        <td>${i === 0 ? 'Police(s) réglée(s)' : ''}</td><td>Police Assurance ${t(p.LibelleProduit)} N°-${t(p.NumeroPolice)}${info.Polices ? ` : ${montant(p.MontantEncaissement)} F` : ''}</td>
+        <td>1 Avt ${t(p.NumeroAvenant)} / ${t(p.NomCompagnie)}</td>
+        <td>Date effet : ${formatFrDate(p.DateEffet)} | Date expiration : ${formatFrDate(p.DateExpiration)}</td>
+      </tr>`).join('')}
       <tr><td>Montant</td><td>${montant(info.MontantEncaissement)}</td><td>Montant (Lettre)</td><td>${t(info.MontantEncaissementEnLettres)}</td></tr>
       <tr><td>Mode de paiement</td><td>${t(info.LibelleModePaiement)}${cheque}</td><td>Ref</td><td>${t(info.Reference)}</td></tr>
     </table>
@@ -3538,6 +3850,40 @@ export const printRecuEncaissement = async (iddetailencaissement, fenetre = null
   }
 };
 
+// Oreole Santé : un seul reçu pour tout le règlement du package, avec le détail police par police.
+export const printRecuReglementCommun = async (idencaissement, fenetre = null) => {
+  const erreur = (message) => {
+    if (!fenetre) return;
+    fenetre.document.open();
+    fenetre.document.write(`<p style="font-family:Arial;padding:20px;color:#b91c1c;">${message}</p>`);
+    fenetre.document.close();
+  };
+  try {
+    const details = idencaissement ? await cashApi.getDetailsEncaissement(idencaissement) : [];
+    const reponses = await Promise.all(details.map((d) => cashApi.getEncaissementInfo(d.iddetailencaissement)));
+    const infos = reponses.map((r) => (r?.data || [])[0]).filter(Boolean);
+    if (!infos.length) {
+      erreur('Aucun règlement enregistré pour cette quittance.');
+      return;
+    }
+    const somme = (cle) => infos.reduce((total, info) => total + (Number(info[cle]) || 0), 0);
+    const cumul = {
+      ...infos[0],
+      Polices: infos,
+      MontantEncaissement: somme('MontantEncaissement'),
+      MontantEncaissementEnLettres: numberToFrenchWords(Math.round(somme('MontantEncaissement'))),
+      PrimeTotale: somme('PrimeTotale'),
+      VersementAnterieur: somme('VersementAnterieur'),
+      TotalVersement: somme('TotalVersement'),
+      Solde: somme('Solde'),
+    };
+    openPrintWindow(`Quittance ${cumul.NumeroRecu || ''}`.trim(), buildRecuEncaissement(cumul), fenetre);
+  } catch (err) {
+    console.error('Erreur quittance du règlement commun :', err);
+    erreur('Impossible de charger le règlement pour la quittance. Veuillez réessayer.');
+  }
+};
+
 // --- GABARIT B : IA / VOYAGE / TRANSPORT / SANTE (facture simple à blocs) ---
 const buildSimpleFacture = (quote) => {
   const branche = String(quote.branche || quote.produit || '').toLowerCase();
@@ -3552,7 +3898,7 @@ const buildSimpleFacture = (quote) => {
     <div class="bloc-titre">SOUSCRIPTEUR</div>
     <table class="bloc-cadre">
       <tr><td class="label">Nom</td><td>${(quote.souscripteur || quote.client_nom || '').toUpperCase()}</td></tr>
-      <tr><td class="label">Adresse</td><td>${quote.raw?.adresse || '—'}</td></tr>
+      <tr><td class="label">Adresse</td><td>${quote.raw?.adresse || '-'}</td></tr>
     </table>
 
     ${isIa ? `
@@ -3560,14 +3906,14 @@ const buildSimpleFacture = (quote) => {
       <table class="bloc-cadre bloc-tableau">
         <tr class="ligne-labels"><td>Nom et prénoms</td><td>Qualité</td>${aDesPartsIa(ayantsDroit) ? '<td>Part</td>' : ''}</tr>
         ${ayantsDroit.length > 0
-          ? ayantsDroit.map((a) => `<tr><td>${a.nom || a.nom_prenoms || '—'}</td><td>${a.qualite || '—'}</td>${aDesPartsIa(ayantsDroit) ? `<td>${partIa(a.part)}</td>` : ''}</tr>`).join('')
+          ? ayantsDroit.map((a) => `<tr><td>${a.nom || a.nom_prenoms || '-'}</td><td>${a.qualite || '-'}</td>${aDesPartsIa(ayantsDroit) ? `<td>${partIa(a.part)}</td>` : ''}</tr>`).join('')
           : '<tr><td colspan="3" style="text-align:center;color:#94a3b8;">Aucun ayant droit enregistré</td></tr>'}
       </table>
     ` : `
       <div class="bloc-titre">ASSURE</div>
       <table class="bloc-cadre">
         <tr><td class="label">Nom</td><td>${(quote.nomassure || quote.client_nom || '').toUpperCase()}</td></tr>
-        <tr><td class="label">Adresse</td><td>${quote.raw?.adresse_assure || '—'}</td></tr>
+        <tr><td class="label">Adresse</td><td>${quote.raw?.adresse_assure || '-'}</td></tr>
       </table>
     `}
 
@@ -3575,15 +3921,15 @@ const buildSimpleFacture = (quote) => {
     <table class="bloc-cadre">
       <tr><td class="label">Au titre de la police</td><td>${(quote.produit || '').toUpperCase()}</td></tr>
       <tr><td class="label">Numéro Devis</td><td>${numero}</td></tr>
-      ${isVoyage ? `<tr><td class="label">Numéro Attestation</td><td>${quote.raw?.numero_attestation || '—'}</td></tr>` : ''}
+      ${isVoyage ? `<tr><td class="label">Numéro Attestation</td><td>${quote.raw?.numero_attestation || '-'}</td></tr>` : ''}
       <tr><td class="label">Pour la période allant du</td><td>${formatFrDate(quote.date_effet)} Au ${formatFrDate(quote.date_expiration)}</td></tr>
     </table>
 
     <div class="bloc-titre">Détail de la facture</div>
     <table class="bloc-cadre">
       <tr><td class="label">Prime Nette</td><td>${money(quote.prime_nette)}</td></tr>
-      <tr><td class="label">Accessoire</td><td>${money(quote.accessoires)}</td></tr>
-      <tr><td class="label">Taxe d'enregistrement</td><td>${money(quote.taxes)}</td></tr>
+      <tr><td class="label">Accessoire</td><td>${money(quote.accessoires ?? quote.accessoire)}</td></tr>
+      <tr><td class="label">Taxe d'enregistrement</td><td>${money(quote.taxes ?? quote.taxe)}</td></tr>
       <tr class="ligne-total"><td class="label">PRIME TOTALE A PAYER</td><td><strong>${money(quote.prime_totale)}</strong></td></tr>
     </table>
 
@@ -3595,7 +3941,7 @@ const buildSimpleFacture = (quote) => {
     </div>
 
     <div class="bloc-signature-simple">
-      <div>Fait à ${echapperHtml(villeSignature())}, le <strong>${formatFrDate(new Date())}</strong>.</div>
+      <div>Fait à ${echapperHtml(villeSignature())}, le <strong>${formatFrDate(estAvenantIncorporation(quote) ? quote.raw?.dateeffet : (quote.raw?.dateemission || quote.date_emission || new Date()))}</strong>.</div>
       <div class="signatures-deux-colonnes">
         <div>LE SOUSCRIPTEUR</div>
         <div>LA COMPAGNIE</div>
@@ -3642,9 +3988,9 @@ const buildMrhFacture = (quote) => {
   const garanties = quote.raw?.garanties || quote.details?.garanties || [];
   // Montant, liste de montants (un par maison) ou texte de la base
   const montants = (v) => {
-    if (v == null || v === '' || (Array.isArray(v) && !v.length)) return '—';
+    if (v == null || v === '' || (Array.isArray(v) && !v.length)) return '-';
     if (Array.isArray(v)) return v.map((x) => money(x)).join(' / ');
-    return typeof v === 'number' || /^[\d.]+$/.test(String(v)) ? (Number(v) ? money(v) : '—') : String(v);
+    return typeof v === 'number' || /^[\d.]+$/.test(String(v)) ? (Number(v) ? money(v) : '-') : String(v);
   };
   const dureeJours = quote.raw?.duree_terme_jours
     ?? (quote.date_effet && quote.date_expiration
@@ -3658,26 +4004,26 @@ const buildMrhFacture = (quote) => {
       <div>Assurance MULTIRISQUES HABITATION</div>
       <div>Proposition ${(quote.compagnie || 'NSIA CI')}</div>` : `
       <div><b>${titreDevis(quote.numerodevis)}</b></div>
-      <div>Assurance MULTIRISQUES HABITATION — ${(quote.compagnie || 'NSIA CI')}</div>`}
+      <div>Assurance MULTIRISQUES HABITATION - ${(quote.compagnie || 'NSIA CI')}</div>`}
     </div>
 
     <div class="ligne-identifiants">
-      N° CLIENT : ${quote.client_id || '—'} &nbsp;|&nbsp; Id. POLICE : ${quote.iddevis} &nbsp;|&nbsp; N° DEVIS : ${numero}
+      N° CLIENT : ${quote.client_id || '-'} &nbsp;|&nbsp; Id. POLICE : ${quote.iddevis} &nbsp;|&nbsp; N° DEVIS : ${numero}
     </div>
 
     <table class="bloc-libre">
       <tr>
         <td><strong>SOUSCRIPTEUR:</strong> ${(quote.souscripteur || quote.client_nom || '').toUpperCase()}</td>
-        <td><strong>ADRESSE:</strong> ${quote.raw?.adresse || '—'}</td>
+        <td><strong>ADRESSE:</strong> ${quote.raw?.adresse || '-'}</td>
       </tr>
       <tr>
         <td><strong>ASSURE:</strong> ${(quote.nomassure || quote.client_nom || '').toUpperCase()}</td>
-        <td><strong>DATE NAISSANCE:</strong> ${quote.raw?.date_naissance_assure ? formatFrDate(quote.raw.date_naissance_assure) : '—'}</td>
+        <td><strong>DATE NAISSANCE:</strong> ${quote.raw?.date_naissance_assure ? formatFrDate(quote.raw.date_naissance_assure) : '-'}</td>
       </tr>
     </table>
 
     <div class="ligne-dates">
-      Du: ${formatFrDate(quote.date_effet)} &nbsp;&nbsp; au ${formatFrDate(quote.date_expiration)} à minuit &nbsp;&nbsp; Durée: ${dureeJours ?? '—'} Jours
+      Du: ${formatFrDate(quote.date_effet)} &nbsp;&nbsp; au ${formatFrDate(quote.date_expiration)} à minuit &nbsp;&nbsp; Durée: ${dureeJours ?? '-'} Jours
     </div>
 
     <table class="tableau-garanties">
@@ -3687,14 +4033,14 @@ const buildMrhFacture = (quote) => {
       ${garanties.length > 0
         ? garanties.map((g) => `
           <tr>
-            <td>${g.libelle || g.nom || '—'}</td>
+            <td>${g.libelle || g.nom || '-'}</td>
             <td>${montants(g.capitaux || g.capital)}</td>
             <td>${montants(g.franchise)}</td>
             <td>${montants(g.min_franchise)}</td>
             <td>${montants(g.max_franchise)}</td>
-            <td>${Array.isArray(g.taux_franchise) ? g.taux_franchise.join(' / ') : (g.taux_franchise ?? '—')}</td>
-            <td>${g.prime_annuelle ? money(g.prime_annuelle) : '—'}</td>
-            <td>${g.prime_nette ? money(g.prime_nette) : '—'}</td>
+            <td>${Array.isArray(g.taux_franchise) ? g.taux_franchise.join(' / ') : (g.taux_franchise ?? '-')}</td>
+            <td>${g.prime_annuelle ? money(g.prime_annuelle) : '-'}</td>
+            <td>${g.prime_nette ? money(g.prime_nette) : '-'}</td>
           </tr>`).join('')
         : '<tr><td colspan="8" style="text-align:center;color:#94a3b8;">Aucune garantie enregistrée pour ce devis</td></tr>'}
     </table>
@@ -3986,6 +4332,8 @@ export const printQuoteFacture = (quote) => {
   if (estDevisIa(quote)) {
     return imprimerDocumentIa(quote, `Devis ${quote.numerodevis || ''}`.trim(), buildFactureIa);
   }
+  // RC (devis et contrat) : facture de prime au modèle OREOLE
+  if (estDevisRc(quote)) return printFacturePrimeRc(quote);
   // Devis Voyage : numéro d'attestation et adresses lus sur le devis (absents de la liste des devis)
   if (estDevisVoyage(quote) && !quote.confirme && (quote.iddevis || quote.id)) {
     const fenetre = ouvrirApercuImpression();
@@ -4130,6 +4478,10 @@ export const printConditionsParticulieres = async (quote, { contrat = false } = 
     } else if (auto) {
       const cp = await conditionsParticulieresFlotteApi.get(id, { contrat });
       openPrintWindow(title, buildConditionsParticulieresFlotte(quote, cp, { contrat }), printWindow);
+    } else if (estDevisMrh(quote)) {
+      // MRH (devis et contrat) : « Liste des garanties MRH multisites », modèle NSIA
+      const donnees = await conditionsParticulieresMrhApi.get(id, { contrat });
+      openPrintWindow(title, buildConditionsParticulieresMrh(quote, donnees, { contrat }), printWindow);
     } else {
       const cp = contrat
         ? await contractApi.getConditionsParticulieres(id)

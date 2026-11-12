@@ -1001,6 +1001,9 @@ class Apporteur(models.Model):
     Nom = models.CharField(
         max_length=150, verbose_name="Nom ou raison sociale", db_column="nom"
     )
+    Prenoms = models.CharField(
+        max_length=150, blank=True, default="", verbose_name="Prénoms", db_column="prenoms"
+    )
     TypePersonne = models.CharField(
         max_length=1, choices=TYPES_PERSONNE, default="P", db_column="typepersonne"
     )
@@ -1010,20 +1013,34 @@ class Apporteur(models.Model):
     Telephone = models.CharField(
         max_length=30, blank=True, default="", db_column="telephone"
     )
+    Telephone2 = models.CharField(
+        max_length=30, blank=True, default="", verbose_name="Second téléphone", db_column="telephone2"
+    )
     Email = models.EmailField(blank=True, default="", db_column="email")
     Adresse = models.CharField(
         max_length=200, blank=True, default="", db_column="adresse"
     )
-    # Part de la commission du cabinet reversée à l'apporteur (facultatif, en %)
+    # Taux général proposé au rattachement : le taux convenu est ensuite copié sur chaque affaire (lephare_affaire_apporteur)
     TauxRetrocession = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True,
-        verbose_name="Taux de rétrocession (%)", db_column="tauxretrocession",
+        verbose_name="Taux général de commission (%)", db_column="tauxretrocession",
+    )
+    # Ou bien un montant par assuré (jamais les deux), proposé de même au rattachement
+    MontantParAssure = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        verbose_name="Montant général par assuré (F)", db_column="montantparassure",
+    )
+    CompteReglement = models.CharField(
+        max_length=100, blank=True, default="", verbose_name="Compte bancaire ou mobile money", db_column="comptereglement"
+    )
+    Observations = models.CharField(
+        max_length=300, blank=True, default="", db_column="observations"
     )
     Actif = models.BooleanField(default=True, db_column="actif")
     DateCreation = models.DateTimeField(auto_now_add=True, db_column="datecreation")
 
     def __str__(self):
-        return f"{self.Code} - {self.Nom}"
+        return f"{self.Code} - {self.Nom} {self.Prenoms}".strip()
 
     class Meta:
         db_table = "stdapporteur"
@@ -4015,6 +4032,7 @@ class ProduitParametre(models.Model):
         ("rc", "Responsabilité Civile"),
         ("mrp", "Multirisque Professionnelle"),
         ("tous-dommages", "Tous Dommages"),
+        ("afa", "Vie - AFA"),
     ]
 
     IdProduit = models.IntegerField(primary_key=True, db_column="idproduit")

@@ -11,7 +11,7 @@ import { exportToPdf } from '../../../utils/exportUtils';
 import { useNombreAnime } from '../../../utils/useNombreAnime';
 import {
   Activity, AlertCircle, ArrowDown, ArrowRight, ArrowUp, ArrowUpDown, BellRing, Building2, Car, ChevronLeft,
-  ChevronRight, Eye, FileCheck, HeartPulse, Home, Inbox, Layers, Plane, Plus, Printer, RefreshCw, Search, Shield,
+  ChevronRight, Eye, FileCheck, HeartHandshake, HeartPulse, Home, Inbox, Layers, Plane, Plus, Printer, RefreshCw, Search, Shield,
   ShieldCheck, Ship, UserPlus, X,
 } from 'lucide-react';
 
@@ -29,7 +29,8 @@ import {
 const BRANCHES = [
   { cle: 'ALL', libelle: 'Toutes les branches', icone: Layers, produits: null },
   { cle: 'AUTO', libelle: 'Automobile', icone: Car, produits: [1] },
-  { cle: 'SANTE', libelle: 'Santé & Vie', icone: HeartPulse, produits: [5, 10] },
+  { cle: 'SANTE', libelle: 'Santé', icone: HeartPulse, produits: [5] },
+  { cle: 'VIE', libelle: 'Vie', icone: HeartHandshake, produits: [10] },
   { cle: 'IA', libelle: 'Individuelle Accidents', icone: Activity, produits: [2] },
   { cle: 'VOYAGE', libelle: 'Voyage', icone: Plane, produits: [3] },
   { cle: 'TRANSPORT', libelle: 'Transport', icone: Ship, produits: [6] },
@@ -47,6 +48,7 @@ const STATUTS = {
   annule: { libelle: 'Annulé', badge: 'rose', aide: "Annulé par un avenant d'annulation" },
 };
 const ONGLETS_STATUT = ['tous', 'en_cours', 'a_renouveler', 'echu', 'renouvele', 'resilie', 'annule'];
+const LIBELLES_PERIODE = { effet: 'Effet', echeance: 'Échéance', emission: 'Émission' };
 // Onglets rarement remplis : affichés seulement s'ils comptent des contrats (ou sont sélectionnés)
 const ONGLETS_DISCRETS = ['resilie', 'annule'];
 // Statuts pour lesquels le renouvellement de la police a un sens
@@ -62,6 +64,7 @@ const MODULES_SOUSCRIPTION = [
   ['transport', Ship, 'Transport'],
   ['mrh', Home, 'Habitation (MRH)'],
   ['sante', HeartPulse, 'Santé'],
+  ['afa', HeartHandshake, 'Vie'],
   ['ia', UserPlus, 'Individuelle Accidents'],
   ['rc', Shield, 'Responsabilité Civile'],
   ['mrp', Building2, 'Multirisque Pro.'],
@@ -70,10 +73,10 @@ const MODULES_SOUSCRIPTION = [
 
 const dateFr = (valeur) => {
   const m = String(valeur || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : '—';
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
 };
 const montant = (valeur) => (valeur === null || valeur === undefined || valeur === ''
-  ? '—'
+  ? '-'
   : `${Math.round(Number(valeur)).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`);
 const nombre = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/[  ]/g, ' ');
 const joursAvant = (valeur) => {
@@ -127,7 +130,7 @@ export const ContractListPage = () => {
   const branche = BRANCHES.some((b) => b.cle === parametres.get('branche')) ? parametres.get('branche') : 'ALL';
   const statut = ONGLETS_STATUT.includes(parametres.get('statut')) ? parametres.get('statut') : 'tous';
   const recherche = parametres.get('q') || '';
-  const champPeriode = parametres.get('periode') === 'echeance' ? 'echeance' : 'effet';
+  const champPeriode = ['echeance', 'emission'].includes(parametres.get('periode')) ? parametres.get('periode') : 'effet';
   const du = parametres.get('du') || '';
   const au = parametres.get('au') || '';
   const ordre = parametres.get('ordre') || '';
@@ -250,7 +253,7 @@ export const ContractListPage = () => {
     statut !== 'tous' && { cle: 'statut', libelle: `Statut : ${STATUTS[statut].libelle}`, retirer: () => majFiltres({ statut: '' }) },
     (du || au) && {
       cle: 'periode',
-      libelle: `${champPeriode === 'echeance' ? 'Échéance' : 'Effet'} ${du ? `du ${dateFr(du)}` : ''} ${au ? `au ${dateFr(au)}` : ''}`.replace(/\s+/g, ' ').trim(),
+      libelle: `${LIBELLES_PERIODE[champPeriode]} ${du ? `du ${dateFr(du)}` : ''} ${au ? `au ${dateFr(au)}` : ''}`.replace(/\s+/g, ' ').trim(),
       retirer: () => majFiltres({ du: '', au: '', periode: '' }),
     },
   ].filter(Boolean);
@@ -302,7 +305,7 @@ export const ContractListPage = () => {
         metadata: {
           "Date d'édition": new Date().toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }),
           'Édité par': user?.nom || user?.email || '',
-          Sélection: [brancheCourante.libelle, libelleStatut, ...filtresActifs.filter((f) => f.cle === 'q' || f.cle === 'periode').map((f) => f.libelle)].join(' — '),
+          Sélection: [brancheCourante.libelle, libelleStatut, ...filtresActifs.filter((f) => f.cle === 'q' || f.cle === 'periode').map((f) => f.libelle)].join(' - '),
           Volume: total > contrats.length ? `${nombre(contrats.length)} premières lignes sur ${pluriel(total, 'contrat')}` : pluriel(total, 'contrat'),
           'Total primes TTC': montant(lignes.reduce((s, l) => s + Number(l.primeTtc || 0), 0)),
         },
@@ -322,6 +325,7 @@ export const ContractListPage = () => {
   };
 
   const peutRenouveler = peut('contrats.avenant');
+  const peutAdministrerContrats = peut('contrats.admin_update');
 
   return (
     <div className="portefeuille">
@@ -335,6 +339,17 @@ export const ContractListPage = () => {
           </div>
         </div>
         <div className="portefeuille-actions">
+          {peutAdministrerContrats && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => navigate('/admin/contracts/edit')}
+              title="Ouvrir l’administration des contrats"
+            >
+              <Shield size={16} />
+              <span>Modifier les contrats</span>
+            </button>
+          )}
           <button type="button" className="btn btn-secondary" onClick={imprimer} disabled={impression || chargement || !liste.total} title="Imprimer les contrats de la sélection en cours">
             <Printer size={16} />
             <span>{impression ? 'Préparation…' : "Imprimer l'état"}</span>
@@ -372,6 +387,7 @@ export const ContractListPage = () => {
             <select className="form-control" value={champPeriode} onChange={(e) => majFiltres({ periode: e.target.value })} aria-label="Date filtrée">
               <option value="effet">Date d'effet</option>
               <option value="echeance">Date d'échéance</option>
+              <option value="emission">Date d'émission</option>
             </select>
             <input type="date" className="form-control" value={du} max={au || undefined} onChange={(e) => majFiltres({ du: e.target.value })} aria-label="Du" title="Du" />
             <ArrowRight size={14} aria-hidden="true" className="portefeuille-fleche" />
@@ -508,20 +524,20 @@ export const ContractListPage = () => {
                       <tr key={c.id}>
                         <td data-label="Police">
                           <button type="button" className="portefeuille-police" onClick={() => navigate(`/user/contracts/${c.id}`)} title="Ouvrir la fiche du contrat">
-                            {v.police || '—'}
+                            {v.police || '-'}
                           </button>
                           {v.mouvement && <div className="portefeuille-secondaire">{v.mouvement.charAt(0) + v.mouvement.slice(1).toLowerCase()}</div>}
                         </td>
                         <td data-label="Client">
                           {v.clientId ? (
                             <button type="button" className="portefeuille-client" onClick={() => navigate(`/user/clients/${v.clientId}`)} title="Ouvrir la fiche du client">
-                              {v.client || '—'}
+                              {v.client || '-'}
                             </button>
-                          ) : <span className="portefeuille-client">{v.client || '—'}</span>}
+                          ) : <span className="portefeuille-client">{v.client || '-'}</span>}
                         </td>
                         <td data-label="Produit">
-                          <div className="portefeuille-principal">{v.produit || '—'}</div>
-                          <div className="portefeuille-secondaire">{v.compagnie || '—'}</div>
+                          <div className="portefeuille-principal">{v.produit || '-'}</div>
+                          <div className="portefeuille-secondaire">{v.compagnie || '-'}</div>
                         </td>
                         <td data-label="Période">
                           <div className="portefeuille-periode-cellule">
@@ -543,7 +559,7 @@ export const ContractListPage = () => {
                         <td data-label="Statut">
                           {statutInfo ? (
                             <span title={statutInfo.aide}><StatusBadge label={statutInfo.libelle} color={statutInfo.badge} /></span>
-                          ) : '—'}
+                          ) : '-'}
                         </td>
                         <td data-label="Actions" className="portefeuille-cellule-actions">
                           <div className="portefeuille-boutons">

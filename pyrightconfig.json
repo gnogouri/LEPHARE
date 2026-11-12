@@ -1,0 +1,12 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "off",
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "frontend",
+    "**/migrations"
+  ]
+}

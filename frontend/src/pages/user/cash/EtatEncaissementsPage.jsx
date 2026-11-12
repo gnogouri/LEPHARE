@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FileSpreadsheet, FileText, ListChecks, Loader2, Printer, RefreshCw, Search, X } from 'lucide-react';
+import { FileSpreadsheet, FileText, ListChecks, Loader2, PencilLine, Printer, RefreshCw, Search, X } from 'lucide-react';
 import { financeApi, settingsApi } from '../../../api/endpoints';
 import { StatusBadge } from '../../../components/common/StatusBadge';
+import { CorrectionEncaissement } from '../../../components/cash/CorrectionEncaissement';
+import { aLeDroit } from '../../../utils/droits';
 import { useToast } from '../../../context/ToastContext';
 import {
   aujourdhui, correspondRecherche, dateFr, exporterEtatEncaissements, fcfa, messageErreurApi, recentsDabord,
@@ -17,7 +19,7 @@ const COULEURS = { A_REVERSER: 'amber', PARTIEL: 'amber', REVERSE: 'emerald', AN
 const STATUTS = [
   ['', 'Tous les statuts'], ['A_REVERSER', 'À reverser'], ['PARTIEL', 'Partiellement reversé'], ['REVERSE', 'Reversé à la compagnie'],
   ['DECAISSEMENT', 'Décaissement'], ['DEDUIT', 'Couvert par un décaissement'],
-  ['ANNULE', 'Annulé'], ['IMPAYE', 'Chèque impayé'], ['REPRIS', "Repris d'URANUS"],
+  ['ANNULE', 'Annulé'], ['IMPAYE', 'Chèque impayé'], ['REPRIS', 'Importé'],
 ];
 
 const Carte = ({ libelle, valeur, detail, couleur = 'var(--text-primary)' }) => (
@@ -36,6 +38,10 @@ export const EtatEncaissementsPage = () => {
   const [etat, setEtat] = useState(null);
   const [chargement, setChargement] = useState(false);
   const [recherche, setRecherche] = useState('');
+  // Correction d'une pièce saisie par erreur (référence, client, doublon) ; le serveur dit ce qui est permis
+  const [aCorriger, setACorriger] = useState(null);
+  const peutCorriger = aLeDroit('encaissements.create') || aLeDroit('encaissements.cancel');
+  const corrigeable = (l) => peutCorriger && l.Montant > 0 && !['ANNULE', 'IMPAYE', 'DECAISSEMENT'].includes(l.Statut);
 
   useEffect(() => {
     settingsApi.getCompanies().then((l) => setCompagnies(Array.isArray(l) ? l : [])).catch(() => {});
@@ -74,7 +80,7 @@ export const EtatEncaissementsPage = () => {
     Lignes: lignesVisibles,
     Total: { Nombre: valides.length, Montant: somme(valides, 'Montant'), Reverse: somme(valides, 'MontantReverse'), ResteAReverser: somme(valides, 'ResteAReverser') },
     ParMode: Object.values(valides.reduce((acc, l) => {
-      const g = acc[l.Mode || '—'] || { Libelle: l.Mode || '—', Nombre: 0, Montant: 0, Reverse: 0 };
+      const g = acc[l.Mode || '-'] || { Libelle: l.Mode || '-', Nombre: 0, Montant: 0, Reverse: 0 };
       g.Nombre += 1; g.Montant += l.Montant; g.Reverse += l.MontantReverse;
       return { ...acc, [g.Libelle]: g };
     }, {})),
@@ -88,7 +94,7 @@ export const EtatEncaissementsPage = () => {
     filtres.mode && `Mode : ${modes.find((m) => String(m.idmodeencaissement) === String(filtres.mode))?.libellemodepaiement || ''}`,
     filtres.statut && `Statut : ${STATUTS.find(([v]) => v === filtres.statut)?.[1] || ''}`,
     filtre && `Recherche : « ${recherche.trim()} »`,
-  ].filter(Boolean).join(' — ');
+  ].filter(Boolean).join(' - ');
   const imprimerRecapitulatif = () => etatAffiche && imprimerRecapitulatifEncaissements(etatAffiche, { compagnie: libelleCompagnie, filtres: libelleFiltres() });
   const telechargerRecapitulatif = async () => {
     setTelechargement(true);
@@ -154,7 +160,7 @@ export const EtatEncaissementsPage = () => {
         </div>
         <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', borderTop: '1px dashed var(--border-subtle)', paddingTop: '0.75rem' }}>
           <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginRight: 'auto' }}>
-            Bordereau récapitulatif des encaissements du {dateFr(filtres.du)} au {dateFr(filtres.au)}{libelleCompagnie ? ` — ${libelleCompagnie}` : ''}
+            Bordereau récapitulatif des encaissements du {dateFr(filtres.du)} au {dateFr(filtres.au)}{libelleCompagnie ? ` - ${libelleCompagnie}` : ''}
           </span>
           <button type="button" className="btn btn-primary" onClick={imprimerRecapitulatif} disabled={!etat || chargement}
             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -213,7 +219,7 @@ export const EtatEncaissementsPage = () => {
                 )}
               </div>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                {filtre ? `${lignesVisibles.length} ligne(s) sur ${etat.Lignes.length} — encaissé net ${fcfa(etatAffiche.Total.Montant)} F` : `${etat.Lignes.length} ligne(s)`} — du plus récent au plus ancien
+                {filtre ? `${lignesVisibles.length} ligne(s) sur ${etat.Lignes.length} - encaissé net ${fcfa(etatAffiche.Total.Montant)} F` : `${etat.Lignes.length} ligne(s)`} - du plus récent au plus ancien
               </span>
             </div>
             <div className="table-wrapper">
@@ -222,6 +228,7 @@ export const EtatEncaissementsPage = () => {
                   <tr>
                     <th>Date de saisie</th><th>N° pièce</th><th>Compagnie</th><th>Client</th><th>Branche</th><th>Quittance</th>
                     <th>Mode</th><th>Référence</th><th style={{ textAlign: 'right' }}>Montant</th><th>Statut</th>
+                    {peutCorriger && <th aria-label="Corriger" />}
                   </tr>
                 </thead>
                 <tbody>
@@ -235,19 +242,29 @@ export const EtatEncaissementsPage = () => {
                       <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>{l.NumeroQuittance}</td>
                       <td>{l.Mode}</td>
                       <td>
-                        {[l.Reference, l.Banque].filter(Boolean).join(' — ') || '—'}
+                        {[l.Reference, l.Banque].filter(Boolean).join(' - ') || '-'}
                         {(l.DateCheque || l.DateReceptionCheque) && (
                           <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                            {[l.DateCheque && `émis le ${dateFr(l.DateCheque)}`, l.DateReceptionCheque && `reçu le ${dateFr(l.DateReceptionCheque)}`].filter(Boolean).join(' — ')}
+                            {[l.DateCheque && `émis le ${dateFr(l.DateCheque)}`, l.DateReceptionCheque && `reçu le ${dateFr(l.DateReceptionCheque)}`].filter(Boolean).join(' - ')}
                           </div>
                         )}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: l.Montant < 0 ? 'var(--accent-rose)' : undefined }}>{fcfa(l.Montant)}</td>
                       <td title={l.MotifAnnulation || undefined} style={{ whiteSpace: 'nowrap' }}><StatusBadge label={l.LibelleStatut} color={COULEURS[l.Statut]} /></td>
+                      {peutCorriger && (
+                        <td>
+                          {corrigeable(l) && (
+                            <button type="button" className="admin-bouton-icone" onClick={() => setACorriger(l.IdEncaissement)}
+                              title={`Corriger la pièce ${l.NumeroPiece} : référence, client, quittance ou doublon`} aria-label={`Corriger la pièce ${l.NumeroPiece}`}>
+                              <PencilLine size={15} />
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                   {!lignesVisibles.length && (
-                    <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>
+                    <tr><td colSpan={peutCorriger ? 11 : 10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>
                       {etat.Lignes.length ? 'Aucun encaissement ne correspond à la recherche.' : 'Aucun encaissement pour ces critères.'}
                     </td></tr>
                   )}
@@ -257,6 +274,7 @@ export const EtatEncaissementsPage = () => {
           </div>
         </>
       )}
+      {aCorriger && <CorrectionEncaissement idEncaissement={aCorriger} onClose={() => setACorriger(null)} onCorrige={charger} />}
     </div>
   );
 };

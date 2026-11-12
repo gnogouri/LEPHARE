@@ -9,10 +9,18 @@ const SIZE_WIDTHS = { small: '480px', medium: '720px', large: '960px' };
 // Durée de l'animation de fermeture (index.css : .modal-sortie)
 const DUREE_FERMETURE = 150;
 
+// Fenêtres ouvertes, de la plus ancienne à la plus récente. Une fenêtre peut en ouvrir une autre (création d'une
+// banque depuis l'encaissement) : Échap ne ferme que la dernière ouverte, et la page ne redevient défilante qu'à la
+// fermeture de la dernière.
+const pileFenetres = [];
+
 export const Modal = ({ isOpen, onClose, title, subtitle, children, size, maxWidth }) => {
   const width = maxWidth || SIZE_WIDTHS[size] || '620px';
   const idTitre = useId();
   const contenuRef = useRef(null);
+  // Dernière fonction de fermeture reçue : la fenêtre garde sa place dans la pile quand l'écran se redessine
+  const fermerRef = useRef(onClose);
+  fermerRef.current = onClose;
 
   // Fermeture animée : la fenêtre reste affichée DUREE_FERMETURE ms avec le dernier contenu affiché
   // ouvert (les écrans vident souvent leurs données à la fermeture : le contenu figé évite de
@@ -44,20 +52,25 @@ export const Modal = ({ isOpen, onClose, title, subtitle, children, size, maxWid
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return undefined;
+    const place = {};
+    pileFenetres.push(place);
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && pileFenetres[pileFenetres.length - 1] === place) fermerRef.current?.();
     };
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      document.body.classList.add('modal-open');
-      window.addEventListener('keydown', handleKeyDown);
-    }
+    document.body.style.overflow = 'hidden';
+    document.body.classList.add('modal-open');
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
-      document.body.style.overflow = 'unset';
-      document.body.classList.remove('modal-open');
+      const rang = pileFenetres.indexOf(place);
+      if (rang >= 0) pileFenetres.splice(rang, 1);
+      if (!pileFenetres.length) {
+        document.body.style.overflow = 'unset';
+        document.body.classList.remove('modal-open');
+      }
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen && !fermeture) return null;
 

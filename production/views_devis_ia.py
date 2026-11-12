@@ -29,8 +29,11 @@ from rest_framework.decorators import (
 )
 from rest_framework.response import Response
 
+from .ia_montants_imposes import appliquer as appliquer_montants_ia, oublier_si_change, ttc_par_ligne
+
 from institutionnel.authentication import KnoxOrDemoTokenAuthentication
 
+from .incorporation import _verifier_periode_devis, controler_assure_incorpore
 from .database import enregistrer_terme_devis, id_duree_pour_procedure
 from .import_assures import insert_new_assure
 from .models import Devis, DevisDetail, DevisDetGarantie
@@ -58,9 +61,12 @@ def _date(valeur, champ):
 
 def _montant(valeur):
     try:
-        return Decimal(str(valeur if valeur not in (None, "") else 0))
+        montant = Decimal(str(valeur if valeur not in (None, "") else 0))
     except InvalidOperation:
         raise ErreurDevisIa(f"Montant invalide : {valeur!r}.")
+    if not montant.is_finite():
+        raise ErreurDevisIa(f"Montant invalide : {valeur!r}.")
+    return montant
 
 
 def _code_activite(id_profession):
@@ -171,10 +177,14 @@ def completer_assures_devis_ia(iddevis, lignes):
             [list(TARIFS_ACCESSOIRE_PAR_ASSURE), id_compagnie, date_effet, iddevis],
         )
         frais_lignes = {r[0]: (r[1], r[2]) for r in cursor.fetchall()}
+        # Montants gardés du fichier ou du contrat renouvelé : la TTC de chaque assuré est exactement la sienne
+        ttc_gardees = ttc_par_ligne(cursor, iddevis, lignes)
 
     primes_nettes = [_montant(l.get("prime_nette")) for l in lignes]
     ttc = None
-    if all(frais_lignes.get(l.get("id_devis_detail"), (0, None))[0] in TARIFS_ACCESSOIRE_PAR_ASSURE for l in lignes):
+    if ttc_gardees:
+        ttc = [ttc_gardees[l["id_devis_detail"]].quantize(Decimal("0.01"), ROUND_HALF_UP) for l in lignes]
+    elif all(frais_lignes.get(l.get("id_devis_detail"), (0, None))[0] in TARIFS_ACCESSOIRE_PAR_ASSURE for l in lignes):
         ttc = [
             (prime_nette + _montant(ligne.get("taxe")) + Decimal(str(frais_lignes[ligne["id_devis_detail"]][1] or 0)))
             .quantize(Decimal("1"), ROUND_HALF_UP)
@@ -191,19 +201,47 @@ def completer_assures_devis_ia(iddevis, lignes):
     return lignes
 
 
+def _client_existant(cursor, nom, prenoms, date_naissance):
+    """Fiche client aux mêmes nom, prénoms et date de naissance (clé unique posée par le déclencheur de stdclient,
+    trg_clients_cle_unique) : reprise plutôt que recréée. Sans cela une personne déjà connue (assuré Santé MINENE
+    incorporé en IA, ancien assuré, fiche archivée) faisait échouer l'enregistrement sur stdclient_cle_unique_key.
+    Les fiches portant une CNI ont une autre clé : une nouvelle fiche reste possible pour elles."""
+    cursor.execute(
+        "SELECT idclient FROM stdclient WHERE cle_unique = 'COMP-' || LOWER(TRIM(%s)) || '|' || LOWER(TRIM(%s)) || '|' || %s::date::text "
+        "ORDER BY idclient LIMIT 1",
+        [nom, prenoms, date_naissance],
+    )
+    ligne = cursor.fetchone()
+    return ligne[0] if ligne else 0
+
+
 def _enregistrer(data):
     assures = data.get("Assures") or []
     if not assures:
         raise ErreurDevisIa("Ajoutez au moins un assuré.")
 
     flotte = bool(data.get("Flotte"))
+    id_devis = int(data.get("IdDevis") or 0)
+    incorporation = False
+    if id_devis:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT a.codeavenant, b.dateeffet::date, d.dateexpiration::date FROM stddevis d
+                   JOIN stdavenant a ON a.idavenant = d.idavenant LEFT JOIN stddevis b ON b.iddevis = d.idoldhist
+                   WHERE d.iddevis = %s""",
+                [id_devis],
+            )
+            mouvement = cursor.fetchone()
+        incorporation = bool(mouvement) and mouvement[0] == "INC"
+    # Incorporation : toujours en groupe, seule l'échéance du contrat est figée
+    if incorporation:
+        flotte = True
     if not flotte and len(assures) > 1:
         raise ErreurDevisIa(
             "Cette catégorie est individuelle : un seul assuré par devis. "
             "Choisissez une catégorie « groupe » pour assurer plusieurs personnes."
         )
 
-    id_devis = int(data.get("IdDevis") or 0)
     id_client = int(data.get("IdClient") or 0)
     if not id_client:
         raise ErreurDevisIa("Choisissez le souscripteur.")
@@ -211,9 +249,15 @@ def _enregistrer(data):
     id_compagnie = int(data["IdCompagnie"])
     id_offre = int(data["IdOffre"])
     id_tarif = int(data["IdTarif"])
-    id_duree = id_duree_pour_procedure(data.get("IdDuree"))
+    # Incorporation : durée déduite des dates, la date d'incorporation étant au choix
+    id_duree = 0 if incorporation else id_duree_pour_procedure(data.get("IdDuree"))
     date_effet = _date(data.get("DateEffet"), "Date d'effet")
     date_expiration = _date(data.get("DateExpiration"), "Date d'expiration")
+    if incorporation:
+        try:
+            _verifier_periode_devis("INC", mouvement[1], mouvement[2], date_effet, date_expiration)
+        except ValueError as erreur:
+            raise ErreurDevisIa(str(erreur))
     date_emission = _date(data.get("DateEmission"), "Date d'émission")
     taux_reduction = _montant(data.get("TauxReduction"))
     numero_police_compagnie = str(data.get("NumeroPoliceCompagnie") or "")
@@ -257,26 +301,34 @@ def _enregistrer(data):
             id_profession = int(assure.get("IdProfession") or 0)
             date_naissance = _date(assure.get("DateNaissance"), f"{libelle} : date de naissance")
 
-            # Assuré saisi par son nom : fiche client créée comme à l'import URANUS
+            # Assuré saisi par son nom : fiche existante reprise, sinon fiche client créée comme à l'import URANUS
             id_assure = int(assure.get("IdAssure") or 0)
             if not id_assure:
                 nom = str(assure.get("Nom") or "").strip().upper()
                 if not nom:
                     raise ErreurDevisIa(f"{libelle} : le nom est obligatoire.")
-                client = insert_new_assure(
-                    {
-                        "Nom": nom,
-                        "Prenoms": str(assure.get("Prenoms") or "").strip().upper(),
-                        "DateNaissance": date_naissance,
-                        "LieuNaissance": str(assure.get("LieuNaissance") or ""),
-                        "AdresseGeographique": str(assure.get("AdresseGeographique") or ""),
-                        "NumeroMobile": str(assure.get("Telephone") or ""),
-                        "Fonction": _libelle_profession(id_profession),
-                        "Sexe": str(assure.get("Sexe") or ""),
-                    }
-                )
-                id_assure = client.IdClient
+                prenoms = str(assure.get("Prenoms") or "").strip().upper()
+                id_assure = _client_existant(cursor, nom, prenoms, date_naissance)
+                if not id_assure:
+                    client = insert_new_assure(
+                        {
+                            "Nom": nom,
+                            "Prenoms": prenoms,
+                            "DateNaissance": date_naissance,
+                            "LieuNaissance": str(assure.get("LieuNaissance") or ""),
+                            "AdresseGeographique": str(assure.get("AdresseGeographique") or ""),
+                            "NumeroMobile": str(assure.get("Telephone") or ""),
+                            "Fonction": _libelle_profession(id_profession),
+                            "Sexe": str(assure.get("Sexe") or ""),
+                        }
+                    )
+                    id_assure = client.IdClient
             libelle = f"{libelle} ({assure.get('Nom') or id_assure})"
+            if incorporation and not int(assure.get("IdDevisDetail") or 0):
+                try:
+                    controler_assure_incorpore(cursor, id_devis, id_assure, str(assure.get("Nom") or id_assure).strip())
+                except ValueError as erreur:
+                    raise ErreurDevisIa(str(erreur))
 
             # Ayants droit : la liste saisie remplace celle de l'assuré
             ayants = assure.get("AyantsDroit")
@@ -305,6 +357,13 @@ def _enregistrer(data):
             id_devis_detail = int(assure.get("IdDevisDetail") or 0)
             if id_devis and id_devis_detail and not assure.get("Recalculer", True):
                 continue  # ligne inchangée : primes conservées
+            # Montant gardé (fichier, renouvellement) : il tombe si les capitaux, l'offre changent ou si une autre prime est saisie
+            if id_devis and id_devis_detail:
+                cursor.execute("SELECT TRIM(matricule) FROM stddevisdetail WHERE iddevisdetail = %s", [id_devis_detail])
+                ligne_matricule = cursor.fetchone()
+                if ligne_matricule:
+                    oublier_si_change(cursor, id_devis, ligne_matricule[0], _montant(assure.get("CapitalDeces")), _montant(assure.get("CapitalIpp")),
+                                      id_offre, _montant(assure.get("PrimeNette")))
 
             # Tarif personnalisé : primes de l'assuré saisies (0 = primes du barème)
             prime_nette = _montant(assure.get("PrimeNette"))
@@ -368,6 +427,9 @@ def _enregistrer(data):
                 "CALL sp_finalisation_devis(%s, %s, %s, %s, %s);",
                 [id_devis, id_client, id_client, True, ""],
             )
+        # Montants exacts gardés (fichier importé, contrat renouvelé) réappliqués après le calcul
+        if lignes_calculees or lignes_retirees:
+            appliquer_montants_ia(cursor, id_devis)
 
     # sp_creation_devis_ia n'a pas de paramètre terme : posé sur le devis après création
     enregistrer_terme_devis(id_devis, data.get("IdTerme"))

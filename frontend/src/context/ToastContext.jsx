@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { useAuth } from './AuthContext';
+import { estErreurTechnique, messageErreurLisible } from '../utils/messageUtilisateur';
 
 /* =========================================================================
    NOTIFICATIONS DE LE PHARE
@@ -11,8 +12,9 @@ import { useAuth } from './AuthContext';
    - 4 notifications au plus, les plus anciennes se retirent ;
    - un message technique (code HTTP, trace, erreur JavaScript) n'est jamais montré tel quel : il est
      remplacé par une phrase claire et gardé dans la console pour le diagnostic.
-   - chaque message est aussi consigné dans le journal de la cloche (useJournalMessages) : le badge
-     compte les messages non lus de la session, un message répété augmente le compte de son entrée.
+   - la cloche est réservée aux alertes à suivre (devis à échéance, chèques à déposer : ClocheNotifications) :
+     un message n'y est consigné que sur demande, option { cloche: true } (consigne du 2026-10-26 : enregistrer
+     un devis, un contrat… affiche seulement le message, sans incrémenter la cloche).
    Apparence et animations : section « MOTION DESIGN » de index.css.
    ========================================================================= */
 
@@ -26,25 +28,11 @@ const MAX_VISIBLES = 4;
 const DUREE_MAX = 16000;
 const DUREE_SORTIE = 180;
 
-// Messages techniques à ne pas montrer aux utilisateurs (erreurs et avertissements seulement)
-const TECHNIQUE = /request failed with status code|network error|timeout of \d+ms|\beconn\w*|\berr_\w+|unexpected token|is not a function|cannot read propert|is not defined|undefined is not|null is not|syntaxerror|typeerror|referenceerror|traceback|<!doctype|<html|psycopg|errno|internal server error|\[object object\]/i;
-
 const messageLisible = (message, type) => {
   if (React.isValidElement(message)) return message;
-  let texte = message instanceof Error ? message.message : message;
-  texte = texte === null || texte === undefined ? '' : String(texte).trim();
-  if (type !== 'error' && type !== 'warning') return texte;
-  if (!texte) return 'Une erreur est survenue. Veuillez réessayer.';
-  if (!TECHNIQUE.test(texte)) return texte;
-  console.warn('[notification] message technique remplacé pour l’utilisateur :', texte);
-  if (/status code 5\d\d|network error|timeout of|econn|internal server error/i.test(texte)) {
-    return 'Le serveur ne répond pas pour le moment. Vérifiez la connexion puis réessayez.';
-  }
-  if (/status code 401/i.test(texte)) return 'Votre session a expiré : reconnectez-vous.';
-  if (/status code 403/i.test(texte)) return "Vous n'avez pas les droits nécessaires pour cette opération.";
-  if (/status code 404/i.test(texte)) return "L'élément demandé est introuvable : il a peut-être été retiré entre-temps.";
-  if (/status code 4\d\d/i.test(texte)) return "La demande n'a pas été acceptée. Vérifiez les informations saisies.";
-  return 'Une erreur inattendue est survenue. Veuillez réessayer ; si le problème persiste, contactez le support.';
+  const texte = message instanceof Error ? message.message : message;
+  if (type === 'error' || type === 'warning') return messageErreurLisible(texte);
+  return estErreurTechnique(texte) ? messageErreurLisible(texte) : texte;
 };
 
 // Temps de lecture : au moins la durée du type, plus ~1/4 s par mot
@@ -56,10 +44,11 @@ const dureeDeLecture = (type, message) => {
 const ToastContext = createContext(null);
 let compteurId = 0;
 
-// Journal de la cloche : messages de la session de l'utilisateur connecté (onglet en cours)
+// Journal de la cloche : messages consignés sur demande ({ cloche: true }) de la session de l'utilisateur connecté.
+// Nouvelle clé : les journaux de l'ancienne règle (tous les messages consignés) sont ignorés
 const JOURNAL_MAX = 50;
 const JournalContext = createContext({ messages: [], nonLus: 0, marquerLus: () => {}, effacer: () => {} });
-const cleJournal = (idUtilisateur) => `lephare_messages_${idUtilisateur}`;
+const cleJournal = (idUtilisateur) => `lephare_cloche_${idUtilisateur}`;
 const lireJournal = (idUtilisateur) => {
   if (!idUtilisateur) return [];
   try {
@@ -74,8 +63,12 @@ export const ToastProvider = ({ children }) => {
   const { user } = useAuth();
   const idUtilisateur = user?.id || null;
   const [journal, setJournal] = useState(() => lireJournal(idUtilisateur));
-  // Autre utilisateur ou déconnexion : journal de cet utilisateur (vide sans session)
-  useEffect(() => { setJournal(lireJournal(idUtilisateur)); }, [idUtilisateur]);
+  // Autre utilisateur ou déconnexion : journal de cet utilisateur (vide sans session) ; l'ancien journal de tous les
+  // messages (clé lephare_messages_<id>) est retiré
+  useEffect(() => {
+    setJournal(lireJournal(idUtilisateur));
+    if (idUtilisateur) { try { sessionStorage.removeItem(`lephare_messages_${idUtilisateur}`); } catch { /* stockage indisponible */ } }
+  }, [idUtilisateur]);
   useEffect(() => {
     if (!idUtilisateur) return;
     try { sessionStorage.setItem(cleJournal(idUtilisateur), JSON.stringify(journal)); } catch { /* stockage indisponible */ }
@@ -158,7 +151,7 @@ export const ToastProvider = ({ children }) => {
     if (texte === '' || texte === null) return null;
     const duree = opts.duree !== undefined ? opts.duree : dureeDeLecture(genre, texte);
     const titre = opts.titre || TYPES[genre].titre;
-    consigner(genre, titre, texte);
+    if (opts.cloche) consigner(genre, titre, texte);
 
     // Même message déjà à l'écran : rappel plutôt qu'une seconde notification
     const existant = typeof texte === 'string'

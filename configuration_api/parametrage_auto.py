@@ -22,11 +22,11 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.response import Response
 
 from .models import (
-    AutoRegleGarantie, AutoRegleInteraction, DepreciationClasse, DepreciationRegle, ParametreGeneral, PoolTpvTranche,
+    AutoRegleGarantie, AutoRegleInteraction, Compagnie, DepreciationClasse, DepreciationRegle, ParametreGeneral, PoolTpvTranche,
     TarifAutoGrille, TarifAutoGrilleLigne,
 )
 from .serializers import DemandeGarantieSerializer
-from .utils import parametres_garantie_offre
+from .utils import parametres_garantie_offre, tarification_demandee
 from .parametrage import ErreurParametrage, _auteur, _cache, _journal, _parametre_json, _reponse_erreur, _texte, _valider_parametre
 from .views_grilles_voyage import AUTHENTIFICATION, EstAdministrateur
 
@@ -627,7 +627,8 @@ def prime_garantie(request):
     for offre in offres:
         parametres[1] = offre["idoffre"]
         try:
-            with transaction.atomic(), connection.cursor() as cursor:
+            # Devis d'incorporation : prorata des jours restants, ou prime entière (affaire forfaitaire)
+            with tarification_demandee(donnees), transaction.atomic(), connection.cursor() as cursor:
                 cursor.callproc("fn_garantie_offre", parametres)
                 colonnes = [c[0] for c in cursor.description]
                 lignes = [dict(zip(colonnes, ligne)) for ligne in cursor.fetchall()]
@@ -964,3 +965,59 @@ def tarif_direct(request):
         **{m: float(getattr(ligne, m)) for m in MONTANTS_TARIF},
         "Message": f"Tarif {nom_compagnie} à lecture directe : {grille.Libelle}, {ligne.Libelle}, {resultat['duree']} mois",
     })
+
+
+# ------------------------------------------------------------------ Montants du moteur (fn_lephare_auto_constante)
+# Montants et taux écrits jusqu'ici dans les fonctions du moteur (fn_garantie_offre_cat*_nsia/amsa/sunu) :
+# réglages auto.moteur.<compagnie>.<groupe>.<code>, valeur d'origine = montant de la fonction (production 0176).
+PREFIXE_MOTEUR = "auto.moteur."
+GROUPES_MOTEUR = [
+    ("cat1", "Promenade et affaires, engins de chantier", "201, 212"),
+    ("cat2", "Transport pour propre compte", "202"),
+    ("cat3", "Transport public de marchandises", "203, 209"),
+    ("cat5", "Deux et trois roues", "205"),
+]
+
+
+def _moteur_json(p):
+    _, _, compagnie, groupe, code = p.Cle.split(".", 4)
+    return {**_parametre_json(p), "IdCompagnie": int(compagnie), "GroupeMoteur": groupe, "Code": code}
+
+
+@api_view(["GET"])
+@authentication_classes(AUTHENTIFICATION)
+@permission_classes([permissions.IsAuthenticated])
+def moteur(request):
+    """GET /api/parametrage/auto/moteur/ : montants et taux du moteur, par compagnie et groupe de catégories."""
+    parametres = [_moteur_json(p) for p in ParametreGeneral.objects.filter(Cle__startswith=PREFIXE_MOTEUR).order_by("Ordre", "Cle")]
+    ids = sorted({p["IdCompagnie"] for p in parametres})
+    noms = dict(Compagnie.objects.filter(IdCompagnie__in=ids).values_list("IdCompagnie", "RaisonSociale"))
+    return Response({
+        "Compagnies": [{"IdCompagnie": i, "Nom": noms.get(i, f"Compagnie {i}")} for i in ids],
+        "Groupes": [{"Code": c, "Libelle": l, "Categories": cat} for c, l, cat in GROUPES_MOTEUR],
+        "Parametres": parametres,
+    })
+
+
+@api_view(["PATCH"])
+@authentication_classes(AUTHENTIFICATION)
+@permission_classes([permissions.IsAuthenticated, EstAdministrateur])
+def moteur_parametre(request, cle):
+    """PATCH /api/parametrage/auto/moteur/<cle>/ {Valeur} ou {Retablir: true}."""
+    parametre_ = ParametreGeneral.objects.filter(Cle=cle, Cle__startswith=PREFIXE_MOTEUR).first()
+    if not parametre_:
+        return Response({"error": f"Réglage {cle} inconnu."}, status=status.HTTP_404_NOT_FOUND)
+    avant = parametre_.Valeur
+    try:
+        parametre_.Valeur = parametre_.ValeurOrigine if request.data.get("Retablir") else _valider_parametre(parametre_, request.data.get("Valeur"))
+    except ErreurParametrage as erreur:
+        return _reponse_erreur(erreur)
+    parametre_.ModifiePar = _auteur(request)
+    parametre_.save()
+    _cache.pop(cle, None)
+    _, _, compagnie, groupe, _ = cle.split(".", 4)
+    nom = Compagnie.objects.filter(IdCompagnie=int(compagnie)).values_list("RaisonSociale", flat=True).first() or compagnie
+    categories = dict((c, cat) for c, _, cat in GROUPES_MOTEUR).get(groupe, groupe)
+    _journal(request, f"Moteur Automobile {nom} ({categories}) : « {parametre_.Libelle} » modifié",
+             {"cle": cle, "avant": avant, "apres": parametre_.Valeur})
+    return Response(_moteur_json(parametre_))

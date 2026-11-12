@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
 import {
   Ship, Plane, Truck, TrainFront, Sailboat, Route, CalendarRange, Repeat, FileSignature, Package, ShieldCheck,
   ClipboardCheck, ChevronLeft, ChevronRight, CheckCircle2, Loader2, Info, AlertTriangle, UserPlus, Plus, Trash2,
@@ -104,7 +105,7 @@ const ListeOuAutre = ({ options, valeur, onChange, placeholder }) => {
 };
 
 const LigneRecap = ({ libelle, valeur, fort }) => (
-  <div className={`trp-recap-ligne${fort ? ' fort' : ''}`}><span>{libelle}</span><span>{valeur || '—'}</span></div>
+  <div className={`trp-recap-ligne${fort ? ' fort' : ''}`}><span>{libelle}</span><span>{valeur || '-'}</span></div>
 );
 
 export const NewTransportHorsGucePage = () => {
@@ -506,7 +507,7 @@ export const NewTransportHorsGucePage = () => {
   ) : (
     <div className="trp-ttc" aria-live="polite">
       <div className="trp-ttc-libelle">Prime TTC</div>
-      <div key={ttc ?? 'vide'} className="trp-ttc-montant maj">{ttc !== null ? `${fcfa(ttc)} F` : '—'}</div>
+      <div key={ttc ?? 'vide'} className="trp-ttc-montant maj">{ttc !== null ? `${fcfa(ttc)} F` : '-'}</div>
       {ttc > 0 && <div className="trp-ttc-lettres">{numberToFrenchWords(Math.round(ttc))} FRANCS CFA</div>}
     </div>
   );
@@ -930,7 +931,7 @@ export const NewTransportHorsGucePage = () => {
       <div className="trp-barre-mobile" aria-hidden={etapeCourante.id === 'recap'}>
         <div>
           <span>{typePolice === 'ABONNEMENT' ? 'Un voyage au plein' : 'Prime TTC'}</span>
-          <b>{typePolice === 'ABONNEMENT' ? (voyageType ? `${fcfa(voyageType.PrimeTtc)} F` : '—') : (ttc !== null ? `${fcfa(ttc)} F` : '—')}</b>
+          <b>{typePolice === 'ABONNEMENT' ? (voyageType ? `${fcfa(voyageType.PrimeTtc)} F` : '-') : (ttc !== null ? `${fcfa(ttc)} F` : '-')}</b>
         </div>
         {calculEnCours && <Loader2 size={16} className="spin" />}
       </div>

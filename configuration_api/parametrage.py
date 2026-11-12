@@ -409,14 +409,14 @@ def _valider_attestation(donnees):
         raise ErreurParametrage("Attestation voyage : données attendues sous forme de fiche.")
     attestation = {"Actif": bool(donnees.get("Actif"))}
     for cle in CHAMPS_ATTESTATION_TEXTE:
-        attestation[cle] = _texte(donnees.get(cle), 120, f"Attestation voyage — {cle}")
+        attestation[cle] = _texte(donnees.get(cle), 120, f"Attestation voyage - {cle}")
     for cle in CHAMPS_ATTESTATION_URL:
-        adresse = _texte(donnees.get(cle), 250, f"Attestation voyage — {cle}")
+        adresse = _texte(donnees.get(cle), 250, f"Attestation voyage - {cle}")
         if adresse and not adresse.lower().startswith(("https://", "http://")):
             raise ErreurParametrage(f"Attestation voyage : l'adresse {cle} doit commencer par https://.")
         attestation[cle] = adresse
     for cle, maximum in (("Garanties", 12), ("Exemplaires", 5)):
-        liste = [_texte(x, 250, f"Attestation voyage — {cle}") for x in (donnees.get(cle) or []) if str(x or "").strip()]
+        liste = [_texte(x, 250, f"Attestation voyage - {cle}") for x in (donnees.get(cle) or []) if str(x or "").strip()]
         if len(liste) > maximum:
             raise ErreurParametrage(f"Attestation voyage : {maximum} {cle.lower()} au plus.")
         attestation[cle] = liste
@@ -438,7 +438,7 @@ def _valider_reversement(donnees):
     accessoires du cabinet) et destinataire des courriers (production/views_bordereaux.py)."""
     if not isinstance(donnees, dict):
         raise ErreurParametrage("Reversements : données attendues sous forme de fiche.")
-    reglages = {cle: _texte(donnees.get(cle), 120, f"Reversements — {cle}") for cle in CHAMPS_REVERSEMENT}
+    reglages = {cle: _texte(donnees.get(cle), 120, f"Reversements - {cle}") for cle in CHAMPS_REVERSEMENT}
     part = donnees.get("PartAccessoiresCourtier")
     if part in (None, ""):
         reglages["PartAccessoiresCourtier"] = None

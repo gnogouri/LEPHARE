@@ -202,7 +202,9 @@ export const DecisionalStatesPage = () => {
       exportToPdf({ filename, title, subtitle, metadata, headers, rows });
     }
 
-    success(`États décisionnels (${exportFormat}) téléchargés avec succès.`);
+    success(exportFormat === 'PDF'
+      ? 'Aperçu PDF des états décisionnels ouvert. Utilisez « Imprimer / PDF » pour l’enregistrer.'
+      : `États décisionnels (${exportFormat}) téléchargés avec succès.`);
     setIsExportOpen(false);
   };
 
@@ -424,7 +426,9 @@ export const DecisionalStatesPage = () => {
       exportToPdf({ filename, title, subtitle, metadata, headers, rows, totals: totalsRow });
     }
 
-    success(`Document (${contenuFormat}) téléchargé avec succès.`);
+    success(contenuFormat === 'PDF'
+      ? 'Aperçu PDF ouvert. Utilisez « Imprimer / PDF » pour l’enregistrer.'
+      : `Document (${contenuFormat}) téléchargé avec succès.`);
   };
 
   const columns = [
@@ -699,13 +703,13 @@ export const DecisionalStatesPage = () => {
                 {totals.taxe.toLocaleString('fr-FR')} F
               </div>
             </div>
-            <div style={{ background: 'var(--bg-surface)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: '8px', padding: '0.75rem 1rem', background: 'rgba(52,211,153,0.05)' }}>
+            <div style={{ background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: '8px', padding: '0.75rem 1rem' }}>
               <div style={{ fontSize: '0.7rem', color: '#34d399', fontWeight: 700, textTransform: 'uppercase' }}>Total Prime TTC</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 900, color: '#34d399', marginTop: '0.15rem' }}>
                 {totals.primeTtc.toLocaleString('fr-FR')} F
               </div>
             </div>
-            <div style={{ background: 'var(--bg-surface)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: '8px', padding: '0.75rem 1rem', background: 'rgba(167,139,250,0.05)' }}>
+            <div style={{ background: 'rgba(167,139,250,0.05)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: '8px', padding: '0.75rem 1rem' }}>
               <div style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase' }}>Comm. Intermédiaire</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 900, color: '#a78bfa', marginTop: '0.15rem' }}>
                 {totals.commission.toLocaleString('fr-FR')} F
@@ -939,7 +943,7 @@ export const DecisionalStatesPage = () => {
               </div>
             </div>
             <div style={{ padding: '0.75rem', background: 'var(--bg-muted)', borderRadius: '8px', marginBottom: '1.25rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-              Vous êtes sur le point de supprimer <strong>« {deleteTarget.code_etat} — {deleteTarget.libelle_etat} »</strong>.
+              Vous êtes sur le point de supprimer <strong>« {deleteTarget.code_etat} - {deleteTarget.libelle_etat} »</strong>.
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
               <button className="btn btn-secondary" onClick={() => setIsDeleteOpen(false)} disabled={isDeleting}>Annuler</button>

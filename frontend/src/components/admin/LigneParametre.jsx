@@ -82,7 +82,7 @@ export const LigneParametre = ({
         {parametre.Aide && <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>{parametre.Aide}</div>}
         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
           Valeur d'origine : <strong>{affichage(parametre, parametre.ValeurOrigine)}</strong>
-          {parametre.ModifiePar && different ? ` — modifiée le ${formatDateHeure(parametre.DateModification)} par ${parametre.ModifiePar}` : ''}
+          {parametre.ModifiePar && different ? ` - modifiée le ${formatDateHeure(parametre.DateModification)} par ${parametre.ModifiePar}` : ''}
         </div>
       </div>
       <div>{saisie}</div>

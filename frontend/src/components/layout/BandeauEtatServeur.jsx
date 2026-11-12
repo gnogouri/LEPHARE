@@ -80,7 +80,7 @@ export const BandeauEtatServeur = () => {
         : <CheckCircle2 size={18} color={couleur} style={{ flexShrink: 0 }} />}
       <div style={{ flex: 1, minWidth: 0 }}>
         <strong style={{ color: couleur }}>{message.titre}</strong>
-        <span style={{ color: 'var(--text-secondary)' }}> — {message.texte}</span>
+        <span style={{ color: 'var(--text-secondary)' }}> - {message.texte}</span>
       </div>
       <button
         type="button"

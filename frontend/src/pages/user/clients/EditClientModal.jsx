@@ -567,7 +567,7 @@ export const EditClientModal = ({ isOpen, onClose, client, onSave }) => {
                     <option value="">-- Sélectionner une profession --</option>
                     {trierParLibelle(refData.professions, (p) => `${p.Libelle} ${p.CodeProfession ? `(${p.CodeProfession})` : ''}`).map((p) => (
                       <option key={p.IdProfession} value={p.IdProfession}>
-                        {p.Libelle}{p.CodeProfession ? ` — ${p.CodeProfession}` : ''}
+                        {p.Libelle}{p.CodeProfession ? ` - ${p.CodeProfession}` : ''}
                       </option>
                     ))}
                   </select>
@@ -672,7 +672,7 @@ export const EditClientModal = ({ isOpen, onClose, client, onSave }) => {
         </div>
       </form>
 
-      {/* MODAL AJOUT RAPIDE — Profession */}
+      {/* MODAL AJOUT RAPIDE - Profession */}
       {isAddProfessionOpen && (
         <div
           style={{

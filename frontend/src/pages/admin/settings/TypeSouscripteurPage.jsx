@@ -221,7 +221,7 @@ export const TypeSouscripteurPage = () => {
       </Modal>
 
       {/* Modal Édition */}
-      <Modal isOpen={isEditOpen} onClose={() => setIsEditOpen(false)} title={`Modifier — ${editTarget?.libelle_type || ''}`} size="small">
+      <Modal isOpen={isEditOpen} onClose={() => setIsEditOpen(false)} title={`Modifier - ${editTarget?.libelle_type || ''}`} size="small">
         <form onSubmit={handleEdit}>
           <div style={{ marginBottom: '1rem' }}>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>Code *</label>

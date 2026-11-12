@@ -451,8 +451,8 @@ def role(request, pk):
     retires = sorted(set(avant["droits"]) - set(apres["droits"]))
     completer_audit(
         request, description=f"Modification du rôle {objet.libelle}"
-        + (f" — droits ajoutés : {', '.join(ajoutes)}" if ajoutes else "")
-        + (f" — droits retirés : {', '.join(retires)}" if retires else ""),
+        + (f" - droits ajoutés : {', '.join(ajoutes)}" if ajoutes else "")
+        + (f" - droits retirés : {', '.join(retires)}" if retires else ""),
         objet_type="role", objet_id=objet.pk, avant=avant, apres=apres,
     )
     return Response(apres)

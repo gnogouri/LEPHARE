@@ -29,7 +29,7 @@ from institutionnel.authentication import KnoxOrDemoTokenAuthentication
 AUTHENTIFICATION = [KnoxOrDemoTokenAuthentication, BasicAuthentication]
 CODES_BASE = ("AFN", "REN", "RPP", "TRP")
 # Écran de saisie qui rouvre le devis, par produit
-MODULES = {1: "auto", 2: "ia", 3: "voyage", 4: "mrh", 5: "sante", 7: "mrp", 8: "rc", 9: "tous-dommages"}
+MODULES = {1: "auto", 2: "ia", 3: "voyage", 4: "mrh", 5: "sante", 7: "mrp", 8: "rc", 9: "tous-dommages", 10: "afa"}
 ID_PRODUIT_SANTE = 5
 PREFIXE_FAMILLE = "ADH-"
 
@@ -113,6 +113,21 @@ def _periode(cursor, base, date_effet=None, date_expiration=None):
     return base["dateexpiration"] + timedelta(days=1), base["dateexpiration"] + (base["dateexpiration"] - base["dateeffet"]) + timedelta(days=1)
 
 
+def _devis_familles(cursor, base):
+    """Devis dont les familles sont reconduites (sp_avenant_creation_devis_initial v7) : dernier contrat émis de la période
+    qui en porte (affaire nouvelle ou renouvellement, puis avenants de modification : changement de formule, incorporation)."""
+    cursor.execute(
+        """SELECT c.iddevis FROM stdcontrat c JOIN stdavenant a ON a.idavenant = c.idavenant
+           WHERE c.numeropolice = %s AND a.codeavenant IN ('AFN', 'REN', 'RPP', 'TRP', 'MOD')
+             AND COALESCE(c.idcontratannulation, 0) = 0 AND c.dateeffet >= %s
+             AND EXISTS (SELECT 1 FROM stdadherent ad WHERE ad.iddevis = c.iddevis)
+           ORDER BY c.idcontrat DESC LIMIT 1""",
+        [base["numeropolice"], base["dateeffet"]],
+    )
+    ligne = cursor.fetchone()
+    return ligne[0] if ligne else base["iddevis"]
+
+
 def _familles_sante(cursor, iddevis, date_effet):
     """Familles Santé d'un devis reconduites au renouvellement (même filtre que sp_avenant_creation_devis_initial v5 :
     adhérents actifs, non sortis avant la nouvelle date d'effet), dans l'ordre de leur recopie."""
@@ -131,7 +146,7 @@ def _familles_sante(cursor, iddevis, date_effet):
 def _objets(cursor, base, date_effet):
     """Objets assurés de la période (véhicules, assurés) avec, en Automobile, la valeur vénale du tableau."""
     if base["idproduit"] == ID_PRODUIT_SANTE:
-        familles = _familles_sante(cursor, base["iddevis"], date_effet)
+        familles = _familles_sante(cursor, _devis_familles(cursor, base), date_effet)
         if familles:
             return [{
                 "Matricule": f"{PREFIXE_FAMILLE}{f['idadherent']}", "Famille": True, "NumeroAdherent": f["matricule"],
@@ -205,11 +220,55 @@ def _devis_en_cours(cursor, base):
     """, [base["iddevis"]])
 
 
+def _etat_mensuel(cursor, base):
+    """Retraite complémentaire (Vie, état mensuel des cotisations) : le mois suivant se crée dans l'écran Vie avec le fichier du
+    souscripteur, pas en recopiant le total du mois précédent (production/vie_retraite.py). None pour les autres polices."""
+    if base["idproduit"] != 10:
+        return None
+    from .vie_retraite import etat_mensuel_de_police
+
+    return etat_mensuel_de_police(cursor, base)
+
+
+def _reconduire_montants_ia(cursor, base, id_devis):
+    from .ia_montants_imposes import OFFRES_HORS_MONTANTS_GARDES, appliquer, enregistrer, montants_du_contrat
+
+    objets = [{"Matricule": l["matricule"], "IdContrat": l["idcontrat"]} for l in _lignes(cursor, "SELECT matricule, idcontrat FROM fn_liste_objets_assures(%s)",
+                                                                                         [base["numeropolice"]])]
+    montants = montants_du_contrat(cursor, objets)
+    # Capitaux lus là où l'écran les lit (fn_assure_ia_info : valeur vénale = décès, valeur à neuf = infirmité). Le capital des garanties 19 et 17
+    # vaut 0 pour les tarifs CGA : l'enregistrement de l'écran y voyait des capitaux changés et effaçait les montants reconduits (devis à l'accessoire seul)
+    lignes = _lignes(cursor, """
+        SELECT TRIM(dd.matricule) AS matricule, dd.idoffre,
+               COALESCE(NULLIF(dd.valeurvenale, 0),
+                        (SELECT g.capital FROM stddevisdetgarantie g WHERE g.iddevisdet = dd.iddevisdetail AND g.idgarantie = 19 LIMIT 1)) AS deces,
+               COALESCE(NULLIF(dd.valeurneuve, 0),
+                        (SELECT g.capital FROM stddevisdetgarantie g WHERE g.iddevisdet = dd.iddevisdetail AND g.idgarantie = 17 LIMIT 1)) AS infirmite
+        FROM stddevisdetail dd WHERE dd.iddevis = %s""", [id_devis])
+    a_garder = [{"Matricule": l["matricule"], "PrimeNette": montants[l["matricule"]][0], "Accessoire": montants[l["matricule"]][1],
+                 "PrimeTtc": montants[l["matricule"]][2], "CapitalDeces": l["deces"], "CapitalInfirmite": l["infirmite"], "IdOffre": l["idoffre"]}
+                for l in lignes if l["matricule"] in montants and l["idoffre"] not in OFFRES_HORS_MONTANTS_GARDES]
+    # Sans la migration 0214 : renouvellement comme avant (devis recalculé par l'écran)
+    if not a_garder or not enregistrer(cursor, id_devis, a_garder, "RENOUVELLEMENT"):
+        return
+    cursor.execute("SELECT idclient, COALESCE(idassure, idclient), COALESCE(flotte, FALSE) FROM stddevis WHERE iddevis = %s", [id_devis])
+    id_client, id_assure, flotte = cursor.fetchone()
+    cursor.execute("CALL sp_finalisation_devis(%s, %s, %s, %s, %s)", [id_devis, id_client, id_assure, flotte, ""])
+    cursor.fetchone()
+    appliquer(cursor, id_devis)
+
+
 @api_view(["GET", "POST"])
 @authentication_classes(AUTHENTIFICATION)
 @permission_classes([permissions.IsAuthenticated])
 def renouvellement(request, pk):
     try:
+        with connection.cursor() as curseur_oreole:
+            curseur_oreole.execute(
+                """SELECT 1 FROM stdcontrat c JOIN lephare_oreole_package p ON c.iddevis IN (p.iddevis_sante, p.iddevis_ia, p.iddevis_afa)
+                   WHERE c.idcontrat = %s""", [pk])
+            if curseur_oreole.fetchone():
+                raise ErreurRenouvellement("Police Oreole Santé : le renouvellement des polices liées se fait depuis le bloc Oreole Santé de la fiche du contrat.")
         if request.method == "GET":
             with connection.cursor() as cursor:
                 base = _contrat_base(cursor, pk)
@@ -229,6 +288,7 @@ def renouvellement(request, pk):
                     "Objets": _objets(cursor, base, effet),
                     "Retraits": _retraits(cursor, base),
                     "DevisEnCours": encours,
+                    "EtatMensuel": _etat_mensuel(cursor, base),
                 })
 
         donnees = request.data
@@ -236,6 +296,11 @@ def renouvellement(request, pk):
         valeurs = {str(k).strip(): v for k, v in (donnees.get("ValeursVenales") or {}).items()}
         with transaction.atomic(), connection.cursor() as cursor:
             base = _contrat_base(cursor, pk)
+            etat = _etat_mensuel(cursor, base)
+            if etat:
+                from .vie_retraite import message_renouvellement
+
+                raise ErreurRenouvellement(message_renouvellement(etat))
             effet, expiration = _periode(cursor, base, donnees.get("DateEffet"), donnees.get("DateExpiration"))
             if effet <= base["dateexpiration"]:
                 raise ErreurRenouvellement("La nouvelle période doit commencer après l'échéance du contrat.")
@@ -258,7 +323,7 @@ def renouvellement(request, pk):
             # Santé : familles décochées retirées (adhérent et affiliés) ; les familles sont recopiées dans l'ordre
             familles_exclues = {m for m in exclure if m.startswith(PREFIXE_FAMILLE)}
             if base["idproduit"] == ID_PRODUIT_SANTE and familles_exclues:
-                anciennes = [f["idadherent"] for f in _familles_sante(cursor, base["iddevis"], effet)]
+                anciennes = [f["idadherent"] for f in _familles_sante(cursor, _devis_familles(cursor, base), effet)]
                 cursor.execute("SELECT idadherent FROM stdadherent WHERE iddevis = %s ORDER BY idadherent", [id_devis])
                 nouvelles = [l[0] for l in cursor.fetchall()]
                 if len(anciennes) != len(nouvelles):
@@ -313,6 +378,18 @@ def renouvellement(request, pk):
             if base["idproduit"] == 1:
                 cursor.execute("UPDATE stddevis SET primeimposee = FALSE WHERE iddevis = %s", [id_devis])
                 cursor.execute("UPDATE stddevisdetail SET primeimposee = FALSE WHERE iddevis = %s", [id_devis])
+            # Police connexe (IA et RC MINENE : police Santé liée) reprise du contrat : sp_avenant_initiation ne la recopie pas, et sans elle
+            # le recalcul d'une IA MINENE est refusé (« Le numéro de police MINENE n'a pas été renseigné »)
+            cursor.execute(
+                """UPDATE stddevis d SET numeropoliceconnexe = c.numeropoliceconnexe FROM stdcontrat c
+                   WHERE d.iddevis = %s AND c.idcontrat = %s AND COALESCE(TRIM(d.numeropoliceconnexe), '') = ''
+                     AND COALESCE(TRIM(c.numeropoliceconnexe), '') <> ''""",
+                [id_devis, base["idcontrat"]],
+            )
+            # Individuelle Accidents : chaque assuré garde ses montants du contrat renouvelé (ceux du fichier importé s'ils sont connus),
+            # sans nouveau calcul au tarif ; une ligne dont les capitaux ou l'offre changent repart au tarif (production/ia_montants_imposes.py)
+            if base["idproduit"] == 2:
+                _reconduire_montants_ia(cursor, base, id_devis)
             cursor.execute("SELECT numerodevis FROM stddevis WHERE iddevis = %s", [id_devis])
             numero = cursor.fetchone()[0]
         return Response({

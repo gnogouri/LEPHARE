@@ -2,11 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { confirmer } from '../../../utils/dialogue';
 import { useNavigate } from 'react-router-dom';
 import { DataTable } from '../../../components/common/DataTable';
-import { isRegistryQuote } from '../../../utils/quoteRegistry';
-import { moduleActif, TITRE_MODULE_INACTIF } from '../../../utils/modulesActifs';
+import { BoutonsNouveauDevis, OngletsBranches, iconeOnglet } from '../../../components/common/BranchesDevis';
+import { isExpiredQuote, isUnconfirmedQuote, MODULES_EDITION_COMPLETE } from '../../../utils/quoteRegistry';
+import { TITRE_MODULE_INACTIF } from '../../../utils/modulesActifs';
 import { moduleDuProduit, moduleOuvert, ongletDuProduit, ongletsRegistre, parametre, produitsParametres } from '../../../utils/parametrage';
 import { LoadingSpinner } from '../../../components/common/LoadingSpinner';
 import { RowActions } from '../../../components/common/RowActions';
+import { SuppressionModal } from '../../../components/common/SuppressionModal';
+import { aLeDroit } from '../../../utils/droits';
 import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
 import { DeleteConfirmModal } from '../../../components/common/DeleteConfirmModal';
@@ -20,25 +23,24 @@ import { useAuth } from '../../../context/AuthContext';
 import { canUser, validateBusinessRule } from '../../../utils/rbac';
 import { estDevisDommages, exportToPdf } from '../../../utils/exportUtils';
 import {
+  messageErreurDemandeEditionAttestation,
+  telechargerDemandeEditionAttestationAuto,
+} from '../../../utils/attestationAuto';
+import {
   FileText,
+  HeartPulse,
+  HeartHandshake,
   Plus,
   CheckCircle,
-  Car,
-  Home,
-  HeartPulse,
   Edit2,
   Trash2,
   Archive,
-  Plane,
-  Ship,
-  UserPlus,
   Eye,
   TrendingUp,
   Layers,
   Printer,
   RefreshCw,
-  Shield,
-  Building2,
+  CalendarX,
 } from 'lucide-react';
 
 const formatDateTime = (value) => {
@@ -59,49 +61,46 @@ const isWithinLastThreeYears = (q) => {
   return d >= limit;
 };
 
-// Formulaires qui savent rouvrir un devis enregistré (?edit=<iddevis>) ; le formulaire d'un produit
-// est réglé dans Administration > Produits. Transport : la cotation hors GUCE rouvre ses devis (ceux des
-// bordereaux GUCE sont confirmés dès l'import).
-const MODULES_EDITION_COMPLETE = ['auto', 'ia', 'voyage', 'mrh', 'sante', 'rc', 'mrp', 'tous-dommages', 'transport'];
-
-// Icône de l'onglet du registre selon son code (onglets réglés dans Administration > Produits)
-const ICONES_ONGLET = {
-  AUTO: <Car size={13} />,
-  VOYAGE: <Plane size={13} color="#60a5fa" />,
-  TRANSPORT: <Ship size={13} color="#38bdf8" />,
-  MRH: <Home size={13} />,
-  SANTE: <HeartPulse size={13} />,
-  IA: <UserPlus size={13} />,
-  RC: <Shield size={13} />,
-  MRP: <Building2 size={13} />,
-  DOMMAGES: <Layers size={13} />,
+// Devis expirés : affichés s'ils ont été émis depuis le 1er janvier de l'année N - k (Administration > Le cabinet,
+// règle « Devis expirés affichés au registre », k = 1 : année en cours et année précédente)
+const isExpiredShown = (q) => {
+  const d = new Date(q.date_emission || q.dateemission);
+  if (isNaN(d.getTime())) return true;
+  return d >= new Date(new Date().getFullYear() - parametre('devis.registre_expires_annees', 1), 0, 1);
 };
+
+
 
 export const QuoteListPage = () => {
   const { user } = useAuth();
   const [quotes, setQuotes] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedBranchFilter, setSelectedBranchFilter] = useState('ALL');
+  // Onglet demandé dans l'adresse (?onglet=EXPIRED depuis le Cockpit opérationnel)
+  const [selectedBranchFilter, setSelectedBranchFilter] = useState(() => new URLSearchParams(window.location.search).get('onglet') || 'ALL');
   // Décompte du registre par branche, calculé sur les devis à confirmer réellement chargés
   const [stats, setStats] = useState({ ALL: 0, CONSOLIDATED: 0 });
   // Onglets du registre : un par « Onglet du registre » des produits, « Autres » pour un produit non réglé
   const onglets = ongletsRegistre();
   const [selectedQuote, setSelectedQuote] = useState(null);
+  const [downloadingAttestationId, setDownloadingAttestationId] = useState(null);
   const [viewingQuote, setViewingQuote] = useState(null);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState(null);
   const [deletingQuote, setDeletingQuote] = useState(null);
+  const [devisASupprimer, setDevisASupprimer] = useState(null);
   const [deleteValidation, setDeleteValidation] = useState({ allowed: true });
   const [selectedForConsolidation, setSelectedForConsolidation] = useState([]);
   const [consolidating, setConsolidating] = useState(false);
   const navigate = useNavigate();
   const { success, error: toastError } = useToast();
 
-  // Devis auto non terminés, enregistrés en brouillon (table lephare_brouillon)
+  // Devis Auto et IA non terminés, enregistrés en brouillon (table lephare_brouillon)
   const [brouillons, setBrouillons] = useState([]);
   useEffect(() => {
-    brouillonApi.list({ type_brouillon: 'DEVIS_AUTO' })
-      .then((liste) => setBrouillons(Array.isArray(liste) ? liste : []))
+    brouillonApi.list()
+      .then((liste) => setBrouillons(Array.isArray(liste)
+        ? liste.filter((b) => ['DEVIS_AUTO', 'DEVIS_IA'].includes(b.type_brouillon))
+        : []))
       .catch((e) => console.warn('Chargement des brouillons impossible', e));
   }, []);
   const supprimerBrouillon = async (brouillon) => {
@@ -119,7 +118,10 @@ export const QuoteListPage = () => {
       toastError("Le brouillon n'a pas pu être supprimé.");
     }
   };
-  const ETAPES_DEVIS_AUTO = { 1: '1. Contrat', 2: '2. Véhicule', 3: '3. Offre & décompte', 4: '4. Client / conducteur' };
+  const ETAPES_BROUILLON = {
+    DEVIS_AUTO: { 1: '1. Contrat', 2: '2. Véhicule', 3: '3. Offre & décompte', 4: '4. Client / conducteur' },
+    DEVIS_IA: { 1: '1. Contrat', 2: '2. Souscripteur & assurés', 3: '3. Récapitulatif' },
+  };
 
   const isEligibleForConsolidation = (q) =>
     !q.flotte && !q.confirme && !q.archive && !q.devis_consolide;
@@ -186,7 +188,8 @@ export const QuoteListPage = () => {
     setLoading(true);
     try {
       const all = await quoteApi.getAllQuotes({ archive: 'false', confirme: 'false' });
-      setRegistry(sortRecent(all.filter(isRegistryQuote).filter(isWithinLastThreeYears)));
+      setRegistry(sortRecent(all.filter(isUnconfirmedQuote)
+        .filter((q) => (isExpiredQuote(q) ? isExpiredShown(q) : isWithinLastThreeYears(q)))));
     } catch (err) {
       console.error('Erreur chargement devis Django:', err);
       setRegistry([]);
@@ -205,16 +208,18 @@ export const QuoteListPage = () => {
   // Liste affichée + compteurs, tous dérivés du même registre
   useEffect(() => {
     if (!registry) return;
-    const counts = { ALL: registry.length, CONSOLIDATED: 0 };
+    const counts = { ALL: registry.length, CONSOLIDATED: 0, EXPIRED: 0 };
     registry.forEach((q) => {
       const onglet = getBranchOf(q);
       counts[onglet] = (counts[onglet] || 0) + 1;
       if (q.devis_consolide) counts.CONSOLIDATED += 1;
+      if (isExpiredQuote(q)) counts.EXPIRED += 1;
     });
     setStats(counts);
     setQuotes(
       selectedBranchFilter === 'ALL' ? registry
         : selectedBranchFilter === 'CONSOLIDATED' ? registry.filter((q) => q.devis_consolide)
+        : selectedBranchFilter === 'EXPIRED' ? registry.filter(isExpiredQuote)
         : registry.filter((q) => getBranchOf(q) === selectedBranchFilter)
     );
   }, [registry, selectedBranchFilter]);
@@ -229,6 +234,14 @@ export const QuoteListPage = () => {
     try {
       const res = await contractApi.createContractFromQuote(selectedQuote.id);
       success(`Devis ${selectedQuote.numerodevis} confirmé : le contrat a bien été créé.`);
+      if (getBranchOf(selectedQuote) === 'AUTO') {
+        try {
+          await telechargerDemandeEditionAttestationAuto(selectedQuote.id);
+        } catch (downloadError) {
+          console.error('Téléchargement de la demande d’édition d’attestation impossible', downloadError);
+          toastError(`Contrat créé, mais le modèle de demande d’attestation n’a pas pu être généré : ${await messageErreurDemandeEditionAttestation(downloadError)}.`);
+        }
+      }
       setIsConfirmModalOpen(false);
       // Dommages : fiche du contrat avec son relevé de compte (quittance remise au client)
       const idContrat = Number(res?.data?.[0]?.ObjectId);
@@ -240,6 +253,20 @@ export const QuoteListPage = () => {
     }
   };
 
+  const telechargerAttestation = async (quote) => {
+    const idDevis = quote.iddevis || quote.id;
+    setDownloadingAttestationId(idDevis);
+    try {
+      await telechargerDemandeEditionAttestationAuto(idDevis);
+      success('Le fichier Excel de demande d’attestation a été téléchargé.');
+    } catch (downloadError) {
+      console.error('Téléchargement de la demande d’édition d’attestation impossible', downloadError);
+      toastError(`Le fichier Excel n’a pas pu être téléchargé : ${await messageErreurDemandeEditionAttestation(downloadError)}.`);
+    } finally {
+      setDownloadingAttestationId(null);
+    }
+  };
+
   // Dynamic KPI Metrics
   const totalDevis = quotes.length;
   const totalPrimesCotees = quotes.reduce((acc, q) => acc + Number(q.prime_totale || 0), 0);
@@ -248,6 +275,7 @@ export const QuoteListPage = () => {
 
   const getTabLabel = (filter) => {
     if (filter === 'CONSOLIDATED') return 'Consolidés';
+    if (filter === 'EXPIRED') return 'Expirés';
     if (filter === 'ARCHIVED') return 'Archivés';
     if (filter === 'AUTRES') return 'Autres';
     return onglets.find((o) => o.id === filter)?.label || 'Tous';
@@ -293,13 +321,13 @@ export const QuoteListPage = () => {
         q.client_nom || q.nomcomplet || 'Client Particulier',
         branchProd,
         q.compagnie || 'LE PHARE',
-        q.avenant || '—',
+        q.avenant || '-',
         q.flotte ? 'Flotte' : 'Mono',
         formatDateTime(q.date_emission),
         formatDateTime(q.date_expiration),
         primeNette,
         prime,
-        q.statut || 'En cours',
+        isExpiredQuote(q) ? 'Expiré' : (q.statut || 'En cours'),
       ];
     });
 
@@ -309,7 +337,7 @@ export const QuoteListPage = () => {
     exportToPdf({
       filename: `Registre_Devis_${tabName}_LE_PHARE_${new Date().toISOString().slice(0, 10)}.pdf`,
       title: `REGISTRE OFFICIEL DES DEVIS [${tabName.toUpperCase()}]`,
-      subtitle: branchToUse !== 'ALL' ? `Branche / Catégorie : ${tabName} — Conforme aux normes d'audit CIMA` : 'État global de souscription conforme aux normes CIMA',
+      subtitle: branchToUse !== 'ALL' ? `Branche / Catégorie : ${tabName} - Conforme aux normes d'audit CIMA` : 'État global de souscription conforme aux normes CIMA',
       metadata: {
         'Date d\'édition': today,
         'Édité par': user?.nom ? `${user.nom} (${user.email || ''})` : (user?.email || 'Gestionnaire'),
@@ -403,7 +431,7 @@ export const QuoteListPage = () => {
       render: (row) => (
         row.categorie
           ? <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{row.categorie}</span>
-          : <span style={{ color: 'var(--text-muted)' }}>—</span>
+          : <span style={{ color: 'var(--text-muted)' }}>-</span>
       ),
     },
     {
@@ -416,7 +444,7 @@ export const QuoteListPage = () => {
       header: 'Avenant',
       accessor: 'avenant',
       sortable: true,
-      render: (row) => <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{row.avenant || '—'}</div>,
+      render: (row) => <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{row.avenant || '-'}</div>,
     },
     {
       header: 'Type',
@@ -487,8 +515,8 @@ export const QuoteListPage = () => {
         if (row.archive) color = 'slate';
         else if (s.includes('confirm') || s.includes('contrat') || row.confirme) color = 'emerald';
         else if (s.includes('consolid')) color = 'blue';
-        else if (s.includes('expir')) color = 'red';
-        const label = color === 'emerald' ? 'Confirmé' : (color === 'blue' ? (row.statut || 'Consolidé') : (color === 'red' ? (row.statut || 'Expiré') : 'Attente'));
+        else if (s.includes('expir') || isExpiredQuote(row)) color = 'red';
+        const label = color === 'emerald' ? 'Confirmé' : (color === 'blue' ? (row.statut || 'Consolidé') : (color === 'red' ? 'Expiré' : 'Attente'));
         return <StatusBadge label={label} color={color} />;
       },
     },
@@ -515,11 +543,11 @@ export const QuoteListPage = () => {
             onView={() => setViewingQuote(row)}
             viewTitle="Consulter l'intégralité du devis et l'imprimer"
             showConfirm={!isConsolidated && canConvert}
-            confirmLabel={isExpired ? 'Expiré' : isPendingApproval ? 'En Visa' : 'Confirmer'}
-            confirmDisabled={isExpired || isPendingApproval}
+            confirmLabel={isPendingApproval ? 'En Visa' : 'Confirmer'}
+            confirmDisabled={isPendingApproval}
             confirmTitle={
               isExpired
-                ? 'Devis expiré : conversion bloquée (CA-07.3)'
+                ? `Devis expiré (période échue le ${formatDateTime(row.date_expiration)}) : le contrat sera émis avec les dates du devis`
                 : isPendingApproval
                 ? 'Visa Direction Requis avant confirmation (CA-07.4)'
                 : 'Confirmer le devis et générer le contrat (E08)'
@@ -547,6 +575,9 @@ export const QuoteListPage = () => {
             }}
             archiveDisabled={!canDelete}
             archiveTitle={canDelete ? 'Archiver le devis (Conformité CIMA)' : "Non habilité pour l'archivage"}
+            showDelete={aLeDroit('devis.delete')}
+            deleteTitle="Supprimer définitivement le devis"
+            onDelete={() => setDevisASupprimer(row)}
           />
         );
       },
@@ -563,7 +594,7 @@ export const QuoteListPage = () => {
             Gestion des Devis
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-            Centralisation, consultation et transformation des devis toutes branches (Auto, Voyage, Transport, MRH, Santé, IA, Dommages).
+            Centralisation, consultation et transformation des devis toutes branches (Auto, Voyage, Transport, MRH, Santé, Oreole Santé, IA, Dommages).
           </p>
         </div>
 
@@ -580,29 +611,28 @@ export const QuoteListPage = () => {
             <Printer size={16} />
             <span>Imprimer la Liste</span>
           </button>
-          {[
-            ['auto', Car, 'Devis Auto'],
-            ['voyage', Plane, 'Devis Voyage'],
-            ['transport', Ship, 'Devis Transport'],
-            ['mrh', Home, 'Devis MRH'],
-            ['sante', HeartPulse, 'Devis Santé'],
-            ['ia', UserPlus, 'Devis IA'],
-            ['rc', Shield, 'Devis RC'],
-            ['mrp', Building2, 'Devis MRP'],
-            ['tous-dommages', Layers, 'Devis Dommages'],
-          ].map(([module, Icone, libelle]) => (
+          <BoutonsNouveauDevis />
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => navigate('/user/quotes/oreole-sante')}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
+          >
+            <HeartPulse size={16} />
+            <span>Devis Oreole Santé</span>
+          </button>
+          {aLeDroit('rafas.view') && (
             <button
-              key={module}
               type="button"
-              className={`btn btn-secondary${moduleActif(module) ? '' : ' module-ferme'}`}
-              onClick={() => navigate(`/user/quotes/${module}`)}
-              disabled={!moduleActif(module)}
-              title={moduleActif(module) ? undefined : TITRE_MODULE_INACTIF}
+              className="btn btn-secondary"
+              onClick={() => navigate('/user/rafas')}
+              title="Régimes autofinancés d'assurance santé : conventions, fonds et dépenses du gestionnaire"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
             >
-              <Icone size={16} />
-              <span>{libelle}</span>
+              <HeartHandshake size={16} />
+              <span>RAFAS</span>
             </button>
-          ))}
+          )}
         </div>
       </div>
 
@@ -614,7 +644,10 @@ export const QuoteListPage = () => {
           </div>
           <div>
             <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600 }}>Total Devis Actifs</div>
-            <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', fontFamily: 'var(--font-mono)' }}>{countByBranch.ALL.toLocaleString('fr-FR')}</div>
+            <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', fontFamily: 'var(--font-mono)' }}>{(countByBranch.ALL - (countByBranch.EXPIRED || 0)).toLocaleString('fr-FR')}</div>
+            {countByBranch.EXPIRED > 0 && (
+              <div style={{ fontSize: '0.72rem', color: '#f87171' }}>+ {countByBranch.EXPIRED.toLocaleString('fr-FR')} expirés</div>
+            )}
           </div>
         </div>
 
@@ -641,7 +674,7 @@ export const QuoteListPage = () => {
             data={brouillons}
             columns={[
               { header: 'Brouillon', accessor: 'libelle', render: (b) => <strong>{b.libelle || `Brouillon n°${b.id}`}</strong> },
-              { header: 'Étape atteinte', accessor: 'etape', render: (b) => ETAPES_DEVIS_AUTO[b.etape] || b.etape },
+              { header: 'Étape atteinte', accessor: 'etape', render: (b) => ETAPES_BROUILLON[b.type_brouillon]?.[b.etape] || b.etape },
               { header: 'Devis modifié', accessor: 'iddevis', render: (b) => (b.iddevis ? `Devis n°${b.iddevis}` : 'Nouveau devis') },
               { header: 'Par', accessor: 'utilisateur_nom' },
               { header: 'Dernière modification', accessor: 'date_modification', render: (b) => new Date(b.date_modification).toLocaleString('fr-FR') },
@@ -649,7 +682,7 @@ export const QuoteListPage = () => {
                 header: 'Actions',
                 render: (b) => (
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button type="button" className="btn btn-primary" style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem' }} onClick={() => navigate(`/user/quotes/auto?brouillon=${b.id}`)}>
+                    <button type="button" className="btn btn-primary" style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem' }} onClick={() => navigate(`/user/quotes/${b.type_brouillon === 'DEVIS_IA' ? 'ia' : 'auto'}?brouillon=${b.id}`)}>
                       Reprendre
                     </button>
                     <button type="button" className="btn btn-secondary" style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem', color: '#ef4444' }} onClick={() => supprimerBrouillon(b)}>
@@ -663,86 +696,19 @@ export const QuoteListPage = () => {
         </div>
       )}
 
-      {/* Branch Filter Tabs with Direct Print Button on Each Tab */}
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        {[
+      {/* Onglets de branches (composant commun avec les Affaires antérieures), impression directe de chaque liste */}
+      <OngletsBranches
+        onglets={[
           { id: 'ALL', label: 'Tous', count: countByBranch.ALL, icon: null },
-          ...onglets.map((o) => ({ id: o.id, label: o.label, count: countByBranch[o.id] || 0, icon: ICONES_ONGLET[o.id] || <FileText size={13} /> })),
-          ...(countByBranch.AUTRES ? [{ id: 'AUTRES', label: 'Autres', count: countByBranch.AUTRES, icon: <FileText size={13} /> }] : []),
-        ].map((tab) => {
-          const isActive = selectedBranchFilter === tab.id;
-          return (
-            <div
-              key={tab.id}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                borderRadius: 'var(--radius-md)',
-                overflow: 'hidden',
-                border: isActive ? '1px solid #3b82f6' : '1px solid var(--border-subtle)',
-                background: isActive ? 'var(--primary)' : 'var(--surface-sunken)',
-                boxShadow: isActive ? '0 0 12px rgba(59, 130, 246, 0.3)' : 'none',
-                transition: 'all 0.2s ease',
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setSelectedBranchFilter(tab.id)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.4rem 0.65rem',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  border: 'none',
-                  background: 'transparent',
-                  color: isActive ? '#fff' : 'var(--text-secondary)',
-                  cursor: 'pointer',
-                }}
-                title={`Afficher les devis : ${tab.label}`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    padding: '0.1rem 0.35rem',
-                    borderRadius: '999px',
-                    background: isActive ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.08)',
-                    color: isActive ? '#fff' : 'var(--text-muted)',
-                    marginLeft: '0.2rem',
-                  }}
-                >
-                  {Number(tab.count || 0).toLocaleString('fr-FR')}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePrintQuotes(tab.id);
-                }}
-                title={`Imprimer directement la liste : ${tab.label}`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '0.4rem 0.45rem',
-                  border: 'none',
-                  borderLeft: isActive ? '1px solid rgba(255,255,255,0.2)' : '1px solid var(--border-subtle)',
-                  background: 'transparent',
-                  color: isActive ? '#fff' : 'var(--text-muted)',
-                  cursor: 'pointer',
-                }}
-              >
-                <Printer size={12} />
-              </button>
-            </div>
-          );
-        })}
-      </div>
+          ...onglets.map((o) => ({ id: o.id, label: o.label, count: countByBranch[o.id] || 0, icon: iconeOnglet(o.id) })),
+          ...(countByBranch.AUTRES ? [{ id: 'AUTRES', label: 'Autres', count: countByBranch.AUTRES, icon: iconeOnglet('AUTRES') }] : []),
+          { id: 'EXPIRED', label: 'Expirés', count: countByBranch.EXPIRED || 0, icon: <CalendarX size={13} color="#f87171" /> },
+        ]}
+        actif={selectedBranchFilter}
+        onChoisir={setSelectedBranchFilter}
+        onImprimer={handlePrintQuotes}
+        libelle={(tab) => `Afficher les devis : ${tab.label}`}
+      />
 
       {/* Consolidation Action Bar (si des devis sont sélectionnés) */}
       {selectedForConsolidation.length > 0 && (
@@ -797,8 +763,13 @@ export const QuoteListPage = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             {quotes.length === 0
-              ? 'Aucun devis en attente de confirmation'
-              : <><strong>{quotes.length.toLocaleString('fr-FR')}</strong> devis en attente de confirmation{selectedBranchFilter !== 'ALL' ? ` (${getTabLabel(selectedBranchFilter)})` : ''}</>}
+              ? (selectedBranchFilter === 'EXPIRED' ? 'Aucun devis expiré' : 'Aucun devis en attente de confirmation')
+              : selectedBranchFilter === 'EXPIRED'
+                ? <><strong>{quotes.length.toLocaleString('fr-FR')}</strong> devis expirés depuis le 1er janvier {new Date().getFullYear() - parametre('devis.registre_expires_annees', 1)} : confirmables avec leurs dates, ou à modifier avant pour une nouvelle période</>
+                : <><strong>{quotes.length.toLocaleString('fr-FR')}</strong> devis non confirmés{selectedBranchFilter !== 'ALL' ? ` (${getTabLabel(selectedBranchFilter)})` : ''}{(() => {
+                  const expires = quotes.filter(isExpiredQuote).length;
+                  return expires ? `, dont ${expires.toLocaleString('fr-FR')} expirés` : '';
+                })()}</>}
           </div>
           <button
             type="button"
@@ -832,6 +803,9 @@ export const QuoteListPage = () => {
           isOpen={!!viewingQuote}
           onClose={() => setViewingQuote(null)}
           quote={viewingQuote}
+          showDownloadAttestation={getBranchOf(viewingQuote) === 'AUTO'}
+          downloadingAttestation={downloadingAttestationId === (viewingQuote.iddevis || viewingQuote.id)}
+          onDownloadAttestation={() => telechargerAttestation(viewingQuote)}
           onQuoteUpdated={(devisAJour) => setRegistry((prec) => (prec || []).map((q) => (
             String(q.iddevis) === String(devisAJour.iddevis) ? devisAJour : q
           )))}
@@ -860,8 +834,15 @@ export const QuoteListPage = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
             Êtes-vous sûr de vouloir valider et transformer le devis{' '}
-            <strong style={{ color: '#fff' }}>{selectedQuote?.numerodevis}</strong> ({selectedQuote?.client_nom}) en contrat d'assurance définitif ?
+            <strong style={{ color: 'var(--text-primary)' }}>{selectedQuote?.numerodevis}</strong> ({selectedQuote?.client_nom}) en contrat d'assurance définitif ?
           </p>
+          {/* Devis expiré : confirmable (demande du 2026-10-28), le contrat reprend la période du devis */}
+          {selectedQuote && isExpiredQuote(selectedQuote) && (
+            <div role="alert" style={{ padding: '0.75rem 0.9rem', borderRadius: 8, border: '1px solid rgba(245, 158, 11, 0.45)', background: 'rgba(245, 158, 11, 0.1)', color: 'var(--text-primary)', fontSize: '0.85rem', lineHeight: 1.5 }}>
+              <strong>Devis expiré.</strong> Sa période, du {formatDateTime(selectedQuote.date_effet)} au {formatDateTime(selectedQuote.date_expiration)}, est échue :
+              le contrat sera émis avec ces dates. Pour couvrir une nouvelle période, annulez et modifiez d'abord les dates du devis.
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
             <button type="button" className="btn btn-secondary" onClick={() => setIsConfirmModalOpen(false)}>
               Annuler
@@ -894,6 +875,14 @@ export const QuoteListPage = () => {
             }
           }
         }}
+      />
+
+      <SuppressionModal
+        isOpen={!!devisASupprimer}
+        onClose={() => setDevisASupprimer(null)}
+        type="devis"
+        id={devisASupprimer?.iddevis || devisASupprimer?.id}
+        onSupprime={() => { loadQuotes(); loadStats(); }}
       />
     </div>
   );

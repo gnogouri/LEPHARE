@@ -25,8 +25,11 @@ Ajouts LE PHARE (la route d'URANUS importationfichierguce reste disponible et in
   map » précède la liste), colonnes de codes, valeur CAF, taux de taxe et colonnes vides d'espacement
   ignorées, « Accessoires AFS-CI » absente recalculée (−500 F par certificat, comme la ressortie),
   période lue dans « Date certificat entre … et … » ;
-- nombre de certificats et ligne des totaux du fichier comparés aux lignes lues : un écart bloque
-  l'import (une période convertie en contrat ne peut plus être réimportée) ;
+- même liste reprise à la main (« Réf precedente », cellule « Code Intermediaire » absente d'une partie
+  des lignes, le reste de la ligne étant décalé d'une colonne) : lignes réalignées d'après leurs montants ;
+- nombre de certificats et ligne des totaux du fichier comparés aux lignes lues, prime totale de chaque
+  certificat contrôlée : un écart bloque l'import (une période convertie en contrat ne peut plus être
+  réimportée) ;
 - police GUCE dont les contrats sont au nom d'un autre client que celui du souscripteur signalée,
   avec le choix du client (sinon une nouvelle police est ouverte).
 """
@@ -97,6 +100,8 @@ MOTIFS_PERIODE = [
     r"P[ée]riode du (\d{2}/\d{2}/\d{4}) au (\d{2}/\d{2}/\d{4})",  # ressortie OREOLE
     r"entre (\d{2}/\d{2}/\d{4}) et (\d{2}/\d{2}/\d{4})",  # extraction GUCE : « Date certificat entre … et … »
 ]
+# Prime nette + accessoires + taxe = prime totale d'un certificat, à 1 F près (comme le contrôle des totaux)
+ECART_MONTANTS = 1
 
 
 class ErreurBordereau(Exception):
@@ -156,6 +161,11 @@ def _texte(valeur):
 
 def _premiere_ligne(valeur):
     return _texte(valeur).split("\n")[0].split(" / ")[0].strip()
+
+
+def _forme(libelle):
+    """Intitulé sans accent, casse, point ni espace en trop : « Réf precedente » = « Réf. Précédente »."""
+    return " ".join(normalize_text(libelle).replace(".", " ").split())
 
 
 def part_afs_ci():
@@ -263,12 +273,12 @@ def _entete_du_fichier(classeur, feuille, ligne_entete):
 
 def _colonnes_absentes(classeur, colonnes):
     """Colonnes attendues absentes de la ligne qui en contient le plus, toutes feuilles confondues."""
-    attendues = {normalize_text(c): c for c in colonnes}
+    attendues = {_forme(c): c for c in colonnes}
     meilleure = set(attendues)
     for feuille in classeur.sheet_names:
         brut = pd.read_excel(classeur, sheet_name=feuille, header=None, dtype=str)
         for ligne in brut.values:
-            absentes = set(attendues) - {normalize_text(v) for v in ligne}
+            absentes = set(attendues) - {_forme(v) for v in ligne}
             if len(absentes) < len(meilleure):
                 meilleure = absentes
     return [libelle for forme, libelle in attendues.items() if forme in meilleure]
@@ -286,10 +296,41 @@ def _ligne_des_totaux(df):
     return {colonne: _nombre(totaux.iloc[0][colonne]) for colonne, _ in TOTAUX_CONTROLES}
 
 
+def _montants_justes(prime_nette, accessoire, taxe, prime_totale):
+    return _nombre(prime_totale) > 0 and (
+        abs(_nombre(prime_nette) + _nombre(accessoire) + _nombre(taxe) - _nombre(prime_totale)) <= ECART_MONTANTS
+    )
+
+
+def _realigner_lignes(df):
+    """
+    Liste GUCE reprise à la main : la cellule « Code Intermediaire » manque sur une partie des lignes,
+    où tout ce qui la suit est décalé d'une colonne vers la gauche. Une telle ligne se reconnaît à ses
+    montants, justes une colonne plus à gauche seulement. Les autres fichiers ressortent inchangés.
+    """
+    formes = [_forme(c) for c in df.columns]
+    requises = ["code intermediaire", "prime nette", "accessories", "montant taxe", "prime totale"]
+    if any(forme not in formes for forme in requises):
+        return df
+    pivot, *montants = [formes.index(forme) for forme in requises]
+    valeurs = df.to_numpy(dtype=object, copy=True)
+    decalees = [
+        ligne for ligne in valeurs
+        if not _montants_justes(*(ligne[m] for m in montants)) and _montants_justes(*(ligne[m - 1] for m in montants))
+    ]
+    if not decalees:
+        return df
+    for ligne in decalees:
+        ligne[pivot + 1:] = ligne[pivot:-1].copy()
+        ligne[pivot] = None
+    return pd.DataFrame(valeurs, index=df.index, columns=df.columns).infer_objects()
+
+
 def lire_bordereau(fichier):
     """
-    Ressortie OREOLE (29 colonnes) ou extraction brute du GUCE : feuille de l'en-tête, colonnes
-    sans usage écartées, « Accessoires AFS-CI » recalculée si absente.
+    Ressortie OREOLE (29 colonnes) ou extraction brute du GUCE, telle quelle ou reprise à la main :
+    feuille de l'en-tête, lignes décalées réalignées, colonnes sans usage écartées, « Accessoires
+    AFS-CI » recalculée si absente.
     """
     if fichier.size > max_file_size:
         raise ErreurBordereau(f"La taille du fichier excède {max_file_size / (1024 * 1024):.2f} Mo.")
@@ -319,14 +360,15 @@ def lire_bordereau(fichier):
     finally:
         fichier.seek(0)
 
-    # Intitulés à l'accent ou à la casse près ramenés au libellé attendu
-    par_forme = {normalize_text(c): c for c in excel_expected_columns}
-    df = df.rename(columns=lambda c: par_forme.get(normalize_text(c), c))
+    # Intitulés à l'accent, à la casse ou au point près ramenés au libellé attendu
+    par_forme = {_forme(c): c for c in excel_expected_columns}
+    df = df.rename(columns=lambda c: par_forme.get(_forme(c), c))
+    df = _realigner_lignes(df)
     sans_titre = [c for c in df.columns if str(c).startswith("Unnamed:")]
-    sans_usage = {normalize_text(c) for c in COLONNES_GUCE_SANS_USAGE}
+    sans_usage = {_forme(c) for c in COLONNES_GUCE_SANS_USAGE}
     df = df.drop(columns=[
         c for c in df.columns
-        if normalize_text(c) in sans_usage or (c in sans_titre and df[c].isna().all())
+        if _forme(c) in sans_usage or (c in sans_titre and df[c].isna().all())
     ])
 
     reelles = {str(c).strip().lower() for c in df.columns}
@@ -556,6 +598,11 @@ def analyser(fichier, debut=None, fin=None, correspondances=None):
                 erreurs.append(f"{libelle} invalide ou absente.")
             elif not debut <= valeur.date() <= fin:
                 erreurs.append(f"{libelle} {valeur:%d/%m/%Y} hors de la période.")
+        # Obligatoires en base : signalés ici plutôt que par un refus de l'import
+        if pd.isna(r["datedebutvoyage"]):
+            erreurs.append("Date début voyage invalide ou absente.")
+        if pd.isna(r["valeurassurance"]):
+            erreurs.append("Valeur assurance absente.")
         id_client = clients.get(r["nomsouscripteur"], 0) if not pd.isna(r["nomsouscripteur"]) else 0
         souscripteur = _premiere_ligne(r["nomsouscripteur"])
         if id_client == 0:
@@ -579,6 +626,11 @@ def analyser(fichier, debut=None, fin=None, correspondances=None):
             avertissements.append("Assureur non reconnu parmi les compagnies.")
         elif len(compagnies_trouvees) > 1:
             avertissements.append("Assureur rapproché de plusieurs compagnies.")
+        if not _montants_justes(r["primenette"], r["accessoire"], r["taxe"], r["primettc"]):
+            erreurs.append(
+                "Montants incohérents : prime nette + accessoires + taxe différents de la prime totale "
+                "(cellules décalées ou manquantes sur cette ligne du fichier ?)."
+            )
 
         accessoire = _nombre(r["accessoire"])
         ligne = {
@@ -725,13 +777,19 @@ def _valeur_sql(colonne, valeur):
 def _enregistrer_certificats(cursor, df, debut, fin, clients):
     """
     Même enregistrement qu'upsert_data_psycopg3 (par n° de requête), sans validation ligne à ligne.
-    Champs texte : une cellule vide reste vide et un numéro lu comme nombre n'a pas de « .0 »
-    (la troncature d'URANUS, faite après astype(str), écrivait « nan » et « 260018578.0 »).
+    Champs texte : une cellule vide reste vide (texte vide sur une colonne obligatoire, comme l'adresse de
+    l'assuré ou l'intermédiaire que la liste reprise à la main laisse souvent en blanc) et un numéro lu comme
+    nombre n'a pas de « .0 » (la troncature d'URANUS, faite après astype(str), écrivait « nan » et « 260018578.0 »).
     """
     longueurs = {
         champ.db_column: champ.max_length
         for champ in CertificatTransport._meta.fields
         if isinstance(champ, models.CharField)
+    }
+    obligatoires = {
+        champ.db_column
+        for champ in CertificatTransport._meta.fields
+        if isinstance(champ, (models.CharField, models.TextField)) and not champ.null
     }
     colonnes = list(excel_column_mapping.values())
     for _, r in df.iterrows():
@@ -742,6 +800,8 @@ def _enregistrer_certificats(cursor, df, debut, fin, clients):
                 if isinstance(valeur, float) and valeur.is_integer():
                     valeur = int(valeur)
                 valeur = str(valeur)[: longueurs[colonne]]
+            if valeur is None and colonne in obligatoires:
+                valeur = ""
             ligne[colonne] = valeur
         ligne["idclienturanus"] = clients[r["nomsouscripteur"]]
         cursor.execute(f"SELECT 1 FROM {TABLE_CERTIFICATS} WHERE numerorequete = %s", [ligne["numerorequete"]])

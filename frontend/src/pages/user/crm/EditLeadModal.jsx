@@ -140,7 +140,7 @@ export const EditLeadModal = ({ isOpen, onClose, lead, onSave, commerciaux = [],
           <div>
             <Libelle htmlFor="prospect-commercial_attribue">Commercial</Libelle>
             <select className="form-control" {...champ('commercial_attribue')}>
-              <option value="">— À attribuer —</option>
+              <option value="">À attribuer</option>
               {listeCommerciaux.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>

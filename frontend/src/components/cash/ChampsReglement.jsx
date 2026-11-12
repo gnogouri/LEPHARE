@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { RotateCcw } from 'lucide-react';
 import { cashApi } from '../../api/endpoints';
+import { ChoixBanque } from './BanqueModal';
 import { aujourdhui, dateFr } from '../../utils/financeUtils';
 import { nomCabinet } from '../../utils/parametrage';
 
@@ -37,6 +39,9 @@ export const natureMode = (mode) => {
     libelleNumero: abrege === 'VIR' ? 'Numéro de virement' : abrege === 'TRT' ? 'Numéro de traite' : 'Numéro du chèque',
   };
 };
+
+// Modes qui contre-passent ou sortent de l'argent : pas de plafond au reste dû (même règle que save_premium_collection)
+export const modeSansPlafond = (mode) => ['DMA', 'ANL', 'CPA'].includes(String(mode?.abregereglement || '').trim().toUpperCase());
 
 // Libellés de l'opération selon le mode choisi (titre du formulaire, bouton de validation) :
 // décaissement / réencaissement de prime mal affectée, annulation, compensation (CMP…),
@@ -102,8 +107,9 @@ export const champsReglementApi = (valeurs, mode) => {
 
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
 
-// montantAEncaisser (facultatif) : total réglé par ce chèque, comparé à son solde disponible
-export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEncaisser }) => {
+// montantAEncaisser (facultatif) : total réglé par ce chèque, comparé à son solde disponible ;
+// onBanqueCreee (facultatif) : banque créée par le bouton « + », pour compléter la liste de l'écran
+export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEncaisser, onBanqueCreee }) => {
   const mode = modes.find((m) => String(m.idmodeencaissement) === String(valeurs.idMode));
   const nature = natureMode(mode);
   const saisie = (champ, filtre = (v) => v) => (e) => onChange(champ, filtre(e.target.value));
@@ -135,7 +141,12 @@ export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEnc
     return () => { actif = false; clearTimeout(minuterie); };
   }, [nature.cheque, valeurs.idBanque, valeurs.numero]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const plafondCheque = chequeConnu?.existe ? Number(chequeConnu.solde_disponible) : Number(valeurs.montantInitialCheque) || null;
+  // Chèque annulé : réutilisé par cet encaissement (demande du 2026-11-12), avec le montant initial saisi, moins ce que des
+  // pièces en cours en utilisent encore
+  const chequeAnnule = Boolean(chequeConnu?.existe && chequeConnu.annule);
+  const plafondCheque = chequeAnnule
+    ? (Number(valeurs.montantInitialCheque) || Number(chequeConnu.montant_initial) || 0) - (Number(chequeConnu.montant_utilise) || 0)
+    : (chequeConnu?.existe ? Number(chequeConnu.solde_disponible) : Number(valeurs.montantInitialCheque) || null);
   const depassementCheque = nature.cheque && plafondCheque !== null && Number(montantAEncaisser) > plafondCheque;
 
   return (
@@ -143,7 +154,7 @@ export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEnc
       <div className="form-group">
         <label className="form-label">Mode de paiement</label>
         <select className="form-control" required value={valeurs.idMode} onChange={saisie('idMode')}>
-          <option value="">— Choisir —</option>
+          <option value="">Choisir</option>
           {modes.map((m) => (
             <option key={m.idmodeencaissement} value={m.idmodeencaissement}>{m.libellemodepaiement}</option>
           ))}
@@ -166,13 +177,10 @@ export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEnc
       {nature.bancaire && (
         <div className="responsive-form-row">
           <div className="form-group">
-            <label className="form-label">Banque émettrice</label>
-            <select className="form-control" required value={valeurs.idBanque} onChange={saisie('idBanque')}>
-              <option value="">— Choisir —</option>
-              {banques.map((b) => (
-                <option key={b.idbanque} value={b.idbanque}>{b.libelle}</option>
-              ))}
-            </select>
+            <label className="form-label" htmlFor="reglement-banque">Banque émettrice</label>
+            {/* « + » : banque absente de la liste créée sans quitter l'encaissement */}
+            <ChoixBanque id="reglement-banque" banques={banques} value={valeurs.idBanque} required
+              onChange={(idBanque) => onChange('idBanque', idBanque)} onBanqueCreee={onBanqueCreee} />
           </div>
           <div className="form-group">
             <label className="form-label">{nature.libelleNumero}</label>
@@ -194,8 +202,8 @@ export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEnc
                 placeholder="Au 1er usage, sauf chèque de l'échéancier"
                 value={valeurs.montantInitialCheque}
                 onChange={saisie('montantInitialCheque')}
-                readOnly={Boolean(chequeConnu?.existe)}
-                title={chequeConnu?.existe ? 'Montant fixé au premier usage du chèque' : undefined}
+                readOnly={Boolean(chequeConnu?.existe && !chequeConnu.montant_modifiable)}
+                title={chequeConnu?.existe && !chequeConnu.montant_modifiable ? 'Montant fixé au premier usage du chèque' : undefined}
               />
             </div>
           )}
@@ -249,7 +257,18 @@ export const ChampsReglement = ({ modes, banques, valeurs, onChange, montantAEnc
       </div>
 
 
-      {nature.cheque && chequeConnu && (
+      {nature.cheque && chequeAnnule && (
+        <div className="cheque-reutilise compact" role="status">
+          <RotateCcw size={16} aria-hidden="true" />
+          <span>
+            <strong>Chèque annulé{chequeConnu.date_annulation ? ` le ${dateFr(chequeConnu.date_annulation)}` : ''}</strong>
+            {chequeConnu.motif_annulation ? ` (« ${chequeConnu.motif_annulation} »)` : ''} : il sera réutilisé pour cet encaissement.
+            {' '}Montant disponible : {fcfa(plafondCheque)} F ; le montant initial reste corrigeable.
+          </span>
+          {depassementCheque && <span className="depasse"> Le montant à encaisser ({fcfa(montantAEncaisser)} F) dépasse ce disponible.</span>}
+        </div>
+      )}
+      {nature.cheque && chequeConnu && !chequeAnnule && (
         <div style={{ fontSize: '0.8rem', marginTop: '-0.3rem', color: depassementCheque ? 'var(--accent-rose)' : 'var(--text-secondary)' }}>
           {chequeConnu.existe
             ? `Chèque déjà enregistré : montant initial ${fcfa(chequeConnu.montant_initial)} F, solde disponible ${fcfa(chequeConnu.solde_disponible)} F.`

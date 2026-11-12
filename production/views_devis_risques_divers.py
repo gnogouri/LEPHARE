@@ -13,6 +13,8 @@ et le capital cautionnement n'est gardé que sur la garantie « CAUTION ».
 Aucune API ne les renvoyait ensemble.
 """
 
+from datetime import date
+
 from django.db import connection
 from rest_framework import permissions, status
 from rest_framework.authentication import BasicAuthentication
@@ -85,3 +87,120 @@ def lire_devis_risques_divers(request, iddevis):
             "CapitalCautionnement": _nombre(ligne[17]),
         }
     )
+
+
+# Valeurs habituelles d'un champ : les plus fréquentes parmi les devis du produit (montant ou taux > 0)
+NOMBRE_VALEURS_USUELLES = 6
+
+CHAMPS_USUELS = {
+    "Accessoire": "d.accessoire",
+    "TauxReduction": "dd.tauxreduction",
+    "TauxPrime": "rc.tauxprime",
+    "CapitalDommageCorporel": "dd.valeurneuve",
+    "CapitalIntoxicationAlimentaire": "dd.valeurvenale",
+    "CapitalDommageMateriel": "dd.valeuraccessoire",
+}
+
+CHAMPS_USUELS_GARANTIE = {
+    "Capital": "g.capital",
+    "FranchiseMinimum": "g.minfranchise",
+    "FranchiseMaximum": "g.maxfranchise",
+    "TauxFranchise": "g.tauxfranchise",
+}
+
+
+@api_view(["GET"])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
+@permission_classes([permissions.IsAuthenticated])
+def valeurs_usuelles(request):
+    """GET /api/valeursusuelles/?produit=<id> : valeurs proposées dans les listes déroulantes des montants et taux
+    saisis à la main (RC et MRH sans barème, décision du 2026-10-28), lues dans les devis déjà enregistrés du
+    produit : accessoire, réduction, taux de prime et capitaux du risque, et par sous-garantie capital, franchises
+    et taux de franchise. Chaque liste : [{"Valeur", "Nombre"}] du plus fréquent au moins fréquent."""
+    try:
+        produit = int(request.query_params.get("produit") or 0)
+    except ValueError:
+        produit = 0
+    if not produit:
+        return Response({"error": "Produit attendu (?produit=)."}, status=status.HTTP_400_BAD_REQUEST)
+
+    def liste(lignes):
+        return [{"Valeur": _nombre(v), "Nombre": n} for v, n in lignes]
+
+    reponse = {}
+    garanties = {}
+    with connection.cursor() as cursor:
+        for cle, colonne in CHAMPS_USUELS.items():
+            cursor.execute(
+                f"""
+                SELECT {colonne}, COUNT(DISTINCT d.iddevis)
+                FROM stddevis d
+                JOIN stddevisdetail dd ON dd.iddevis = d.iddevis
+                LEFT JOIN stdcomplementdevisdetailrc rc ON rc.iddevisdetail = dd.iddevisdetail
+                WHERE d.idproduit = %s AND {colonne} > 0
+                GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT %s
+                """,
+                [produit, NOMBRE_VALEURS_USUELLES],
+            )
+            reponse[cle] = liste(cursor.fetchall())
+        for cle, colonne in CHAMPS_USUELS_GARANTIE.items():
+            cursor.execute(
+                f"""
+                SELECT idgarantie, valeur, nombre FROM (
+                    SELECT g.idgarantie, {colonne} AS valeur, COUNT(*) AS nombre,
+                           ROW_NUMBER() OVER (PARTITION BY g.idgarantie ORDER BY COUNT(*) DESC, {colonne}) AS rang
+                    FROM stddevisdetgarantie g
+                    JOIN stddevisdetail dd ON dd.iddevisdetail = g.iddevisdet
+                    JOIN stddevis d ON d.iddevis = dd.iddevis
+                    WHERE d.idproduit = %s AND {colonne} > 0
+                    GROUP BY g.idgarantie, {colonne}
+                ) t WHERE rang <= %s ORDER BY idgarantie, rang
+                """,
+                [produit, NOMBRE_VALEURS_USUELLES],
+            )
+            for idgarantie, valeur, nombre in cursor.fetchall():
+                garanties.setdefault(str(idgarantie), {}).setdefault(cle, []).append(
+                    {"Valeur": _nombre(valeur), "Nombre": nombre}
+                )
+    reponse["Garanties"] = garanties
+    return Response(reponse)
+
+
+@api_view(["GET"])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
+@permission_classes([permissions.IsAuthenticated])
+def garanties_ajoutables(request, idproduit):
+    """GET /api/devisrisquesdivers/garanties/<idproduit>/?date=AAAA-MM-JJ : garanties que l'écran propose d'ajouter au
+    devis (« Ajouter une garantie », comme l'Automobile) : le catalogue des garanties « risques divers » d'URANUS
+    (stdsousgarantie.saisierd) et celles dont la taxe est réglée pour le produit. TauxTaxe : taux réglé pour le produit à
+    la date d'effet, sinon vide (sp_calcul_devis_prime_imposee v2 applique alors le taux habituel du produit)."""
+    try:
+        jour = date.fromisoformat(str(request.query_params.get("date") or "")[:10])
+    except ValueError:
+        jour = date.today()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT sg.idsousgarantie, TRIM(sg.libellesousgarantie), TRIM(COALESCE(sg.codesousgarantie, '')),
+                   (SELECT tt.tauxtaxe FROM stdtauxtaxegarantieproduit tt
+                     WHERE tt.idproduit = %s AND tt.idgarantie = sg.idsousgarantie AND %s BETWEEN tt.debutvalidite AND tt.finvalidite
+                     ORDER BY tt.debutvalidite DESC LIMIT 1)
+            FROM stdsousgarantie sg
+            WHERE COALESCE(sg.active, TRUE)
+              AND (COALESCE(sg.saisierd, FALSE)
+                   OR EXISTS (SELECT 1 FROM stdtauxtaxegarantieproduit tt WHERE tt.idproduit = %s AND tt.idgarantie = sg.idsousgarantie))
+            """,
+            [idproduit, jour, idproduit],
+        )
+        lignes = cursor.fetchall()
+    # Libellés en double (ex. DOMMAGES ÉLECTRIQUES) : le code de la garantie après un tiret les distingue
+    occurrences = {}
+    for _, libelle, _, _ in lignes:
+        occurrences[(libelle or "").upper()] = occurrences.get((libelle or "").upper(), 0) + 1
+    garanties = []
+    for i, libelle, code, taux in lignes:
+        libelle = libelle or f"Garantie {i}"
+        if occurrences[libelle.upper()] > 1 and code:
+            libelle = f"{libelle} - {code}"
+        garanties.append({"IdSousGarantie": i, "LibelleSousGarantie": libelle, "TauxTaxe": _nombre(taux) if taux is not None else None})
+    return Response(sorted(garanties, key=lambda g: g["LibelleSousGarantie"]))

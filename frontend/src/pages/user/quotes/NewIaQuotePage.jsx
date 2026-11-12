@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { redirigerSiOreole } from './oreole/oreoleCommun';
+import { useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
 import { dataStore } from '../../../api/dataStore';
-import { quoteApi, customerApi, settingsApi, contractApi, iaApi } from '../../../api/endpoints';
+import { joursInclusifs } from '../../../utils/dateUtils';
+import { quoteApi, customerApi, settingsApi, contractApi, iaApi, brouillonApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import {
   UserPlus,
@@ -16,6 +19,7 @@ import {
   Upload,
   ChevronDown,
   ChevronRight,
+  Save,
 } from 'lucide-react';
 import { ViewQuoteModal } from './ViewQuoteModal';
 import PoliceMineneConnexe from './PoliceMineneConnexe';
@@ -142,6 +146,8 @@ const ayantsDepuisApi = (liste) => (liste || []).map((d) => ({
   Part: Number(d.part) || 0,
 }));
 
+const dateFr = (valeur) => (valeur ? String(valeur).slice(0, 10).split('-').reverse().join('/') : '');
+
 export const NewIaQuotePage = () => {
   const navigate = useNavigate();
   const { success, error: toastError, info } = useToast();
@@ -149,10 +155,24 @@ export const NewIaQuotePage = () => {
   // « Modifier » depuis le registre des devis : /user/quotes/ia?edit=<iddevis>
   const [searchParams] = useSearchParams();
   const editIddevisParam = searchParams.get('edit');
-  // Devis de renouvellement (page Renouvellement) : tous les assurés sont retarifés à l'enregistrement
+  const brouillonParam = searchParams.get('brouillon');
+  const [brouillonId, setBrouillonId] = useState(null);
+  const [enregistrementBrouillon, setEnregistrementBrouillon] = useState(false);
+  const [chargementBrouillon, setChargementBrouillon] = useState(Boolean(brouillonParam));
+  // Devis lié au package Oreole Santé : il s'ouvre dans la branche, qui garde les trois polices ensemble
+  useEffect(() => redirigerSiOreole(editIddevisParam, navigate), [editIddevisParam]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Devis de renouvellement (page Renouvellement) : les assurés sont renvoyés à l'enregistrement, puis le serveur leur rend les montants du
+  // contrat renouvelé (production/ia_montants_imposes.py) ; seul un assuré dont les capitaux ou l'offre changent repart au tarif
   const renouvellementParam = searchParams.get('renouvellement') === '1';
+  // Devis d'incorporation dans un contrat à plusieurs personnes (page Incorporation, ou devis rouvert du registre) : police
+  // reprise d'office, date d'incorporation au choix, échéance du contrat figée
+  const incorporationParam = searchParams.get('incorporation') === '1';
+  const [incorporation, setIncorporation] = useState(null);
+  const enIncorporation = incorporationParam || Boolean(incorporation);
   const [isLoadingEdit, setIsLoadingEdit] = useState(Boolean(editIddevisParam));
   const [idDevisEdite, setIdDevisEdite] = useState(null);
+  // Avenant du devis rouvert (REN, INC...) : renvoyé tel quel à l'import, sinon le renouvellement redevenait une affaire nouvelle
+  const [idAvenantDevis, setIdAvenantDevis] = useState(null);
   const [numeroDevisEdite, setNumeroDevisEdite] = useState('');
   const [primeImposee, setPrimeImposee] = useState(false);
   const [enteteOrigine, setEnteteOrigine] = useState(null);
@@ -182,7 +202,8 @@ export const NewIaQuotePage = () => {
   const [compagnieId, setCompagnieId] = useState(() => compagnieParDefaut(2));
   const [idTarif, setIdTarif] = useState(77);
   const [idOffre, setIdOffre] = useState(0);
-  const [flotte, setFlotte] = useState(false);
+  const [tarifGroupe, setTarifGroupe] = useState(false);
+  const flotte = tarifGroupe || enIncorporation;
   // Catégorie à tarif personnalisé (offres « SPECIFIQUE ») : primes saisies par assuré
   const [personnalise, setPersonnalise] = useState(false);
   const [tauxTaxe, setTauxTaxe] = useState(0);
@@ -216,9 +237,10 @@ export const NewIaQuotePage = () => {
   // Récapitulatif d'une création MINENE : adhérents de la police Santé et primes calculées par la base
   const [apercuMinene, setApercuMinene] = useState(null);
   const dateExpiration = useMemo(
-    () => expirationPour(dateEffet, dureeId, expirationPersonnalisee, estMinene),
-    [dateEffet, dureeId, expirationPersonnalisee, estMinene]
+    () => incorporation?.DateExpiration || expirationPour(dateEffet, dureeId, expirationPersonnalisee, estMinene),
+    [incorporation, dateEffet, dureeId, expirationPersonnalisee, estMinene]
   );
+  const joursCouverts = joursInclusifs(dateEffet, dateExpiration);
   // Rechargement du devis ouvert (après un import d'assurés dans ce même devis)
   const [versionChargement, setVersionChargement] = useState(0);
   const [fichierImport, setFichierImport] = useState(null);
@@ -245,6 +267,79 @@ export const NewIaQuotePage = () => {
   const [rechercheAssure, setRechercheAssure] = useState('');
   const [listeAssureOuverte, setListeAssureOuverte] = useState(false);
   const [ayantEnCours, setAyantEnCours] = useState({ IdQualiteAyantDroit: 1, Nom: '', Prenoms: '', Part: '' });
+
+  const champsBrouillon = {
+    compagnieId: [compagnieId, setCompagnieId],
+    idTarif: [idTarif, setIdTarif],
+    idOffre: [idOffre, setIdOffre],
+    tarifGroupe: [tarifGroupe, setTarifGroupe],
+    personnalise: [personnalise, setPersonnalise],
+    tauxTaxe: [tauxTaxe, setTauxTaxe],
+    dureeId: [dureeId, setDureeId],
+    termeId: [termeId, setTermeId],
+    termeOrigine: [termeOrigine, setTermeOrigine],
+    dateEffet: [dateEffet, setDateEffet],
+    expirationPersonnalisee: [expirationPersonnalisee, setExpirationPersonnalisee],
+    reduction: [reduction, setReduction],
+    numeroPoliceCompagnie: [numeroPoliceCompagnie, setNumeroPoliceCompagnie],
+    numeroPoliceConnexe: [numeroPoliceConnexe, setNumeroPoliceConnexe],
+    souscripteurId: [souscripteurId, setSouscripteurId],
+    rechercheSouscripteur: [rechercheSouscripteur, setRechercheSouscripteur],
+    assures: [assures, setAssures],
+    assureEnCours: [assureEnCours, setAssureEnCours],
+    cleEnEdition: [cleEnEdition, setCleEnEdition],
+    modeAssure: [modeAssure, setModeAssure],
+    ayantEnCours: [ayantEnCours, setAyantEnCours],
+    idDevisEdite: [idDevisEdite, setIdDevisEdite],
+    numeroDevisEdite: [numeroDevisEdite, setNumeroDevisEdite],
+    primeImposee: [primeImposee, setPrimeImposee],
+    enteteOrigine: [enteteOrigine, setEnteteOrigine],
+    totauxEnregistres: [totauxEnregistres, setTotauxEnregistres],
+  };
+
+  const enregistrerBrouillon = async () => {
+    setEnregistrementBrouillon(true);
+    const donnees = Object.fromEntries(Object.entries(champsBrouillon).map(([cle, [valeur]]) => [cle, valeur]));
+    const client = clients.find((c) => String(c.id) === String(souscripteurId));
+    const libelle = [client?.nomcomplet || rechercheSouscripteur, `${assures.length} assuré${assures.length > 1 ? 's' : ''}`]
+      .filter(Boolean)
+      .join(' - ') || 'Devis IA sans souscripteur';
+    const charge = { type_brouillon: 'DEVIS_IA', libelle, etape: step, donnees, iddevis: idDevisEdite || null };
+    try {
+      const res = brouillonId ? await brouillonApi.update(brouillonId, charge) : await brouillonApi.create(charge);
+      setBrouillonId(res.data.id);
+      success('Brouillon IA enregistré : vous pourrez le reprendre depuis le registre des devis.');
+    } catch (err) {
+      console.error("Enregistrement du brouillon IA impossible", err);
+      toastError(`Le brouillon n'a pas été enregistré : ${err?.response?.data?.detail || err.message}.`);
+    } finally {
+      setEnregistrementBrouillon(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!brouillonParam) return undefined;
+    let actif = true;
+    brouillonApi.get(brouillonParam)
+      .then((brouillon) => {
+        if (!actif || !brouillon) return;
+        Object.entries(champsBrouillon).forEach(([cle, [, setter]]) => {
+          if (Object.prototype.hasOwnProperty.call(brouillon.donnees || {}, cle)) setter(brouillon.donnees[cle]);
+        });
+        setBrouillonId(brouillon.id);
+        setStep(Number(brouillon.etape) || 1);
+        info(`Brouillon « ${brouillon.libelle || brouillon.id} » repris.`);
+      })
+      .catch((err) => {
+        if (actif) {
+          console.error('Reprise du brouillon IA impossible', err);
+          toastError('Impossible de reprendre le brouillon IA.');
+        }
+      })
+      .finally(() => { if (actif) setChargementBrouillon(false); });
+    return () => { actif = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brouillonParam]);
 
   const professionsTriees = useMemo(() => trierParLibelle(professions, (p) => p.libelle_profession), [professions]);
   const qualitesTriees = useMemo(() => trierParLibelle(qualites, (q) => q.libelle_qualite_ayant_droit), [qualites]);
@@ -290,7 +385,7 @@ export const NewIaQuotePage = () => {
   // Offres et nature (individuelle / groupe, tarif personnalisé) de la catégorie choisie
   useEffect(() => {
     let actif = true;
-    if (!idTarif) return undefined;
+    if (!idTarif || chargementBrouillon) return undefined;
     Promise.all([
       iaApi.getOffres(idTarif).catch(() => []),
       iaApi.estTarifGroupe(idTarif).catch(() => false),
@@ -298,14 +393,14 @@ export const NewIaQuotePage = () => {
     ]).then(([liste, groupe, perso]) => {
       if (!actif) return;
       setOffres(liste || []);
-      setFlotte(Boolean(groupe));
+      setTarifGroupe(Boolean(groupe));
       setPersonnalise(Boolean(perso));
       setIdOffre((courant) => ((liste || []).some((o) => Number(o.IdOffre) === Number(courant))
         ? courant
         : Number(liste?.[0]?.IdOffre) || 0));
     });
     return () => { actif = false; };
-  }, [idTarif]);
+  }, [idTarif, chargementBrouillon]);
 
   // Création depuis le contrat Santé MINENE (?minene=<police>&effet=&expiration=) : catégorie MINENE, police
   // connexe et période de la police Santé, sans ressaisie
@@ -382,11 +477,12 @@ export const NewIaQuotePage = () => {
     (async () => {
       setIsLoadingEdit(true);
       try {
-        const [devis, lignes, details, garanties] = await Promise.all([
+        const [devis, lignes, details, garanties, lectureIncorporation] = await Promise.all([
           quoteApi.getQuote(editIddevisParam),
           iaApi.getAssuresDevis(editIddevisParam),
           iaApi.getDetailsDevis(editIddevisParam).catch(() => []),
           iaApi.getGarantiesDevis(editIddevisParam).catch(() => []),
+          contractApi.lireDevisIncorporation(editIddevisParam).catch(() => null),
         ]);
         if (!actif) return;
         const raw = devis?.raw || {};
@@ -396,21 +492,25 @@ export const NewIaQuotePage = () => {
           return;
         }
         const detail = (details || [])[0] || {};
+        // Incorporation encore sans personne : catégorie, offre et réduction reprises de la police
+        const devisIncorporation = lectureIncorporation?.Incorporation ? lectureIncorporation : null;
+        setIncorporation(devisIncorporation);
         // Durée libre et terme « Autre » vont ensemble (anciens devis « Divers » compris)
         const charge = termeEtDureeEnregistres(raw.idterme, raw.idduree);
         const entete = {
           compagnieId: Number(raw.compagnie?.IdCompagnie ?? raw.compagnie) || 1,
-          idTarif: Number(detail.idtarif?.IdTarif ?? detail.idtarif) || 77,
-          idOffre: Number(detail.idoffre?.IdOffre ?? detail.idoffre) || 0,
+          idTarif: Number(detail.idtarif?.IdTarif ?? detail.idtarif) || devisIncorporation?.IdTarif || 77,
+          idOffre: Number(detail.idoffre?.IdOffre ?? detail.idoffre) || devisIncorporation?.IdOffre || 0,
           dureeId: charge.dureeId,
           dateEffet: jour(raw.dateeffet) || aujourdhui(),
           dateExpiration: jour(raw.dateexpiration),
-          reduction: Number(detail.taux_reduction) || 0,
+          reduction: Number(detail.taux_reduction) || devisIncorporation?.TauxReduction || 0,
           numeroPoliceCompagnie: raw.numero_police_compagnie || '',
           numeroPoliceConnexe: raw.numero_police_connexe || raw.numeropoliceconnexe || '',
           souscripteurId: Number(raw.client?.IdClient ?? raw.client) || 0,
         };
         setIdDevisEdite(Number(editIddevisParam));
+        setIdAvenantDevis(Number(raw.avenant?.IdAvenant ?? raw.avenant) || null);
         setNumeroDevisEdite(raw.numerodevis || '');
         setPrimeImposee(Boolean(raw.prime_imposee));
         setTotauxEnregistres({
@@ -433,7 +533,7 @@ export const NewIaQuotePage = () => {
         setNumeroPoliceCompagnie(entete.numeroPoliceCompagnie);
         setNumeroPoliceConnexe(entete.numeroPoliceConnexe);
         setSouscripteurId(entete.souscripteurId);
-        const expirationChargee = expirationPour(entete.dateEffet, entete.dureeId, entete.dateExpiration);
+        const expirationChargee = devisIncorporation ? entete.dateExpiration : expirationPour(entete.dateEffet, entete.dureeId, entete.dateExpiration);
         setEnteteOrigine(JSON.stringify([
           entete.compagnieId, entete.idTarif, entete.idOffre, entete.dureeId, entete.dateEffet,
           expirationChargee, entete.reduction, entete.numeroPoliceCompagnie, entete.numeroPoliceConnexe, entete.souscripteurId,
@@ -487,8 +587,10 @@ export const NewIaQuotePage = () => {
         }));
         if (!actif) return;
         setAssures(chargees);
+        // Rien à ressaisir : directement aux personnes à incorporer
+        if (devisIncorporation) setStep(2);
         setAvertissementReprise(chargees.length === 0 && Number(raw.primettc) > 0
-          ? 'Ce devis repris d\'URANUS n\'a aucun assuré en base : seuls l\'en-tête et les montants ont été repris. '
+          ? 'Aucun assuré n\'est enregistré pour ce devis : seuls l\'en-tête et les montants sont disponibles. '
             + 'Ajoutez les assurés avant d\'enregistrer.'
           : '');
       } catch (err) {
@@ -859,6 +961,15 @@ export const NewIaQuotePage = () => {
           ? `Devis Individuelle Accidents N° ${res.numero_devis} modifié.`
           : `Devis Individuelle Accidents N° ${res.numero_devis} enregistré.`
       );
+      if (brouillonId) {
+        try {
+          await brouillonApi.remove(brouillonId);
+          setBrouillonId(null);
+        } catch (err) {
+          console.error('Suppression du brouillon IA après enregistrement impossible', err);
+          toastError('Le devis est enregistré, mais le brouillon n’a pas pu être supprimé.');
+        }
+      }
       setCreatedQuote(devisEnregistre || saved);
     } catch (err) {
       toastError(`Erreur lors de l'enregistrement du devis IA : ${messageErreurApi(err)}`);
@@ -867,8 +978,8 @@ export const NewIaQuotePage = () => {
     }
   };
 
-  // Création MINENE (comme URANUS) : le serveur reprend le contrat Santé connexe — client du
-  // contrat = souscripteur, adhérents = assurés, affiliés = ayants droit — aux capitaux fixes
+  // Création MINENE (comme URANUS) : le serveur reprend le contrat Santé connexe - client du
+  // contrat = souscripteur, adhérents = assurés, affiliés = ayants droit - aux capitaux fixes
   const handleSaveMinene = async () => {
     if (!numeroPoliceConnexe.trim()) { toastError('Saisissez le numéro de police Santé connexe.'); setStep(2); return; }
     if (!dateExpiration) { toastError('Saisissez la date d\'expiration.'); setStep(1); return; }
@@ -944,16 +1055,18 @@ export const NewIaQuotePage = () => {
     donnees.append('IdCompagnie', Number(compagnieId));
     donnees.append('IdIntermediaire', 1);
     donnees.append('IdOffre', Number(idOffre));
-    donnees.append('IdAvenant', 1);
+    donnees.append('IdAvenant', incorporation?.IdAvenant || (idDevisEdite && idAvenantDevis) || 1);
     donnees.append('IdClient', Number(souscripteurId));
     donnees.append('DateEffet', dateTiret(dateEffet));
     donnees.append('DateExpiration', dateTiret(dateExpiration));
     donnees.append('DateEmission', dateTiret(dateEmission));
     donnees.append('IdTarif', Number(idTarif));
     donnees.append('TauxReduction', Number(reduction) || 0);
-    donnees.append('IdDuree', Number(dureeId));
+    // Incorporation : durée déduite des dates par la base
+    donnees.append('IdDuree', incorporation ? 0 : Number(dureeId));
     donnees.append('IdDevis', idDevisEdite || 0);
-    donnees.append('NumeroPoliceConnexe', '');
+    // Police Santé connexe (IA MINENE) : sans elle la base refuse l'import, et un devis rouvert la perdait
+    donnees.append('NumeroPoliceConnexe', numeroPoliceConnexe || '');
     donnees.append('NumeroPoliceCompagnie', numeroPoliceCompagnie || '');
     // Assuré déjà connu (renouvellement) : repris dans le devis, fonction et ayants droit du fichier
     donnees.append('ModeImport', 'mettre_a_jour');
@@ -1034,7 +1147,9 @@ export const NewIaQuotePage = () => {
           </button>
           <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
             <UserPlus size={26} color="#8b5cf6" />
-            {editIddevisParam
+            {enIncorporation
+              ? `Incorporation${numeroDevisEdite ? ` [${numeroDevisEdite}]` : ''}`
+              : editIddevisParam || idDevisEdite
               ? `Modifier le Devis Individuelle Accident${numeroDevisEdite ? ` [${numeroDevisEdite}]` : ''}`
               : 'Nouveau Devis Individuelle Accident (IA)'}
           </h1>
@@ -1042,7 +1157,14 @@ export const NewIaQuotePage = () => {
             <p style={{ color: 'var(--accent-purple)', fontSize: '0.875rem', fontWeight: 600 }}>Chargement du devis à modifier…</p>
           ) : (
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-              Garanties Décès accidentel, Infirmité permanente et Frais de traitement — {flotte ? 'contrat groupe (plusieurs assurés)' : 'contrat individuel (un assuré)'}.
+              Garanties Décès accidentel, Infirmité permanente et Frais de traitement - {flotte ? 'contrat groupe (plusieurs assurés)' : 'contrat individuel (un assuré)'}.
+            </p>
+          )}
+          {incorporation && (
+            <p role="note" style={{ marginTop: '0.5rem', padding: '0.6rem 0.75rem', borderRadius: '8px', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.35)', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              <strong>Incorporation dans la police {incorporation.NumeroPolice}</strong>
+              {`, qui compte ${incorporation.Personnes} personne${incorporation.Personnes > 1 ? 's' : ''} : du ${dateFr(dateEffet)} à l'échéance inchangée du ${dateFr(dateExpiration)} (${joursCouverts} jours).`}
+              {' '}Ajoutez ici seulement les personnes à incorporer : la prime de chacune est le tarif de l'offre. La date d'émission n'est pas imprimée sur les documents.
             </p>
           )}
           {avertissementReprise && (
@@ -1071,6 +1193,19 @@ export const NewIaQuotePage = () => {
               {e.label}
             </button>
           ))}
+          {!creationMinene && !estMinene && !enIncorporation && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={enregistrerBrouillon}
+              disabled={enregistrementBrouillon || chargementBrouillon || isLoadingEdit}
+              title="Enregistrer la saisie en cours pour la reprendre depuis le registre des devis"
+              style={{ padding: '0.5rem 0.95rem', borderRadius: '6px', fontSize: '0.8rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+            >
+              <Save size={14} />
+              {enregistrementBrouillon ? 'Enregistrement…' : (brouillonId ? 'Mettre à jour le brouillon' : 'Enregistrer le brouillon')}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1131,8 +1266,8 @@ export const NewIaQuotePage = () => {
                 className="form-control"
                 value={compagnieId}
                 onChange={(e) => setCompagnieId(Number(e.target.value))}
-                disabled={estMinene}
-                title={estMinene ? 'Catégorie MINENE : compagnie NSIA imposée' : undefined}
+                disabled={estMinene || enIncorporation}
+                title={enIncorporation ? 'Compagnie de la police' : (estMinene ? 'Catégorie MINENE : compagnie NSIA imposée' : undefined)}
               >
                 {sortUniqueBy(companies, (c) => c.nom).map((c) => (
                   <option key={c.id} value={c.id}>{c.nom}</option>
@@ -1169,19 +1304,24 @@ export const NewIaQuotePage = () => {
             </div>
             <div className="form-group">
               <label className="form-label">Durée du contrat</label>
-              <DureeContratSelect value={dureeId} onChange={setDureeId} idsAutorises={estMinene ? DUREES_MINENE : null} />
+              {enIncorporation ? (
+                <div className="form-control" aria-readonly="true">{joursCouverts} jours jusqu'à l'échéance</div>
+              ) : (
+                <DureeContratSelect value={dureeId} onChange={setDureeId} idsAutorises={estMinene ? DUREES_MINENE : null} />
+              )}
             </div>
             <div className="form-group">
               <label className="form-label">Date d'émission</label>
               <input type="date" className="form-control" value={dateEmission} readOnly disabled title="Date du jour, non modifiable" />
             </div>
             <div className="form-group">
-              <label className="form-label">Date d'effet (* requis)</label>
-              <input type="date" className="form-control" value={dateEffet} onChange={(e) => setDateEffet(e.target.value)} />
+              <label className="form-label">{enIncorporation ? "Date d'incorporation (* requis)" : "Date d'effet (* requis)"}</label>
+              <input type="date" className="form-control" value={dateEffet} onChange={(e) => setDateEffet(e.target.value)}
+                min={incorporation?.DateEffetContrat} max={incorporation?.DateExpiration} />
             </div>
             <div className="form-group">
-              <label className="form-label">Date d'expiration (* requis)</label>
-              {Number(dureeId) === 5 && !estMinene ? (
+              <label className="form-label">{enIncorporation ? "Date d'échéance du contrat (non modifiable)" : "Date d'expiration (* requis)"}</label>
+              {Number(dureeId) === 5 && !estMinene && !enIncorporation ? (
                 <input type="date" className="form-control" value={expirationPersonnalisee} onChange={(e) => setExpirationPersonnalisee(e.target.value)} />
               ) : (
                 <input
@@ -1254,9 +1394,11 @@ export const NewIaQuotePage = () => {
             <div className="form-group" style={{ position: 'relative', maxWidth: '560px' }}>
               <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>Nom du souscripteur (* requis)</span>
+                {!enIncorporation && (
                 <button type="button" onClick={() => setIsQuickAddClientOpen(true)} style={{ background: 'transparent', border: 'none', color: 'var(--accent-purple)', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
                   <Plus size={14} /> Nouveau client
                 </button>
+                )}
               </label>
               <input
                 type="text"
@@ -1265,8 +1407,11 @@ export const NewIaQuotePage = () => {
                 value={rechercheSouscripteur}
                 onChange={(e) => { setRechercheSouscripteur(e.target.value); setListeSouscripteurOuverte(true); }}
                 onFocus={() => setListeSouscripteurOuverte(true)}
+                // Incorporation : souscripteur de la police, la finalisation le réécrit sur le devis
+                disabled={enIncorporation}
+                title={enIncorporation ? 'Souscripteur de la police' : undefined}
               />
-              {listeSouscripteurOuverte && (
+              {listeSouscripteurOuverte && !enIncorporation && (
                 <div style={listeDeroulante}>
                   {clientsFiltres(rechercheSouscripteur).map((c) => (
                     <div
@@ -1362,7 +1507,7 @@ export const NewIaQuotePage = () => {
                 {/* Liste de la base seule : elle contient déjà « AUTRE » (id 0, classe 01) */}
                 <select className="form-control" value={assureEnCours.IdProfession} onChange={(e) => setAssureEnCours((p) => ({ ...p, IdProfession: Number(e.target.value) }))}>
                   {professionsTriees.map((p) => (
-                    <option key={p.id} value={p.id}>{p.libelle_profession} — classe {p.code_classe_assure}</option>
+                    <option key={p.id} value={p.id}>{p.libelle_profession} - classe {p.code_classe_assure}</option>
                   ))}
                 </select>
               </div>
@@ -1436,7 +1581,7 @@ export const NewIaQuotePage = () => {
             {/* Ayants droit de l'assuré */}
             <div style={{ marginTop: '1.5rem', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)' }}>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-primary)', fontWeight: 700, margin: '0 0 0.75rem' }}>
-                Ayants droit (bénéficiaires en cas de décès){totalParts > 0 ? ` — total des parts ${totalParts} %` : ''}
+                Ayants droit (bénéficiaires en cas de décès){totalParts > 0 ? ` - total des parts ${totalParts} %` : ''}
               </h4>
               {assureEnCours.AyantsDroit.length > 0 && (
                 <table className="table" style={{ width: '100%', marginBottom: '0.75rem', fontSize: '0.85rem' }}>
@@ -1455,7 +1600,7 @@ export const NewIaQuotePage = () => {
                         <td style={{ padding: '0.4rem' }}>{libelleQualite(d.IdQualiteAyantDroit)}</td>
                         <td style={{ padding: '0.4rem' }}>{d.Nom}</td>
                         <td style={{ padding: '0.4rem' }}>{d.Prenoms}</td>
-                        <td style={{ padding: '0.4rem', textAlign: 'right' }}>{Number(d.Part) > 0 ? `${d.Part} %` : '—'}</td>
+                        <td style={{ padding: '0.4rem', textAlign: 'right' }}>{Number(d.Part) > 0 ? `${d.Part} %` : '-'}</td>
                         <td style={{ padding: '0.4rem', textAlign: 'right' }}>
                           <button type="button" className="btn btn-secondary" title="Retirer" style={{ padding: '0.25rem 0.45rem', color: '#ef4444' }}
                             onClick={() => setAssureEnCours((p) => ({ ...p, AyantsDroit: p.AyantsDroit.filter((_, j) => j !== i) }))}
@@ -1484,7 +1629,7 @@ export const NewIaQuotePage = () => {
                   <input type="text" className="form-control" value={ayantEnCours.Prenoms} onChange={(e) => setAyantEnCours((p) => ({ ...p, Prenoms: e.target.value }))} />
                 </div>
                 <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Part (%) — facultative</label>
+                  <label className="form-label">Part (%) - facultative</label>
                   <input type="number" min="0" max="100" className="form-control" value={ayantEnCours.Part} onChange={(e) => setAyantEnCours((p) => ({ ...p, Part: e.target.value }))} />
                 </div>
                 <button type="button" className="btn btn-secondary" onClick={ajouterAyant} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
@@ -1543,7 +1688,7 @@ export const NewIaQuotePage = () => {
                       <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fcfa(a.FraisTraitement)}</td>
                       <td style={{ padding: '0.6rem', textAlign: 'center' }}>{a.AyantsDroit.length}</td>
                       <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--accent-purple)', fontWeight: 700 }}>
-                        {a.prime ? `${fcfa(a.prime.primeNette)} FCFA` : '—'}
+                        {a.prime ? `${fcfa(a.prime.primeNette)} FCFA` : '-'}
                       </td>
                       <td style={{ padding: '0.6rem', textAlign: 'center' }}>
                         <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
@@ -1627,7 +1772,7 @@ export const NewIaQuotePage = () => {
                   <td style={{ padding: '0.6rem', fontWeight: 600 }}>
                     {a.Nom}
                     <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                      {' '}— {a.AyantsDroit ? `${a.AyantsDroit} ayant${a.AyantsDroit > 1 ? 's' : ''} droit` : 'sans ayant droit'}
+                      {' '}- {a.AyantsDroit ? `${a.AyantsDroit} ayant${a.AyantsDroit > 1 ? 's' : ''} droit` : 'sans ayant droit'}
                     </span>
                   </td>
                   <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fcfa(apercuMinene.Unitaire.PrimeNette)}</td>
@@ -1657,8 +1802,8 @@ export const NewIaQuotePage = () => {
                         </button>
                         {a.Nom} {a.Prenoms}
                       </td>
-                      <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{a.prime ? fcfa(a.prime.primeNette) : '—'}</td>
-                      <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{a.prime ? fcfa(a.prime.taxe) : '—'}</td>
+                      <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{a.prime ? fcfa(a.prime.primeNette) : '-'}</td>
+                      <td style={{ padding: '0.6rem', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{a.prime ? fcfa(a.prime.taxe) : '-'}</td>
                       <td style={{ padding: '0.6rem', color: 'var(--text-muted)' }}>
                         {!idDevisEdite ? 'Nouveau' : !a.IdDevisDetail ? 'Ajouté' : ligneAChanger(a) ? 'Recalculé' : 'Inchangé (prime enregistrée)'}
                       </td>

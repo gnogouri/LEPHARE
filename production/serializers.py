@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from dateutil.relativedelta import relativedelta
-from django.db.models import F
+from django.db.models import F, Manager
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -265,8 +265,10 @@ class DevisDetailSerializer(serializers.ModelSerializer):
         # Détail des garanties réellement enregistrées pour ce devis (stddevisdetgarantie) :
         # sans ça, rouvrir un devis en édition n'a aucun moyen de retrouver les garanties/primes
         # telles qu'elles ont été acquises/imposées à l'origine, et ne peut que recalculer à neuf.
+        # Dans l'ordre du calcul (fn_garantie_offre : garantie puis sous-garantie, RC en tête) : sans tri, la base
+        # rendait les lignes dans leur ordre de stockage, inversé après une correction des primes.
         representation["garanties_enregistrees"] = DevisDetailGarantieSerializer(
-            instance.garanties.all(), many=True
+            instance.garanties.order_by("IdGarantie__IdGarantie", "IdGarantie"), many=True
         ).data
         devis = instance.iddevis
         if devis:
@@ -560,6 +562,9 @@ class DevisSerializer(serializers.ModelSerializer):
         return row[0] if row else None
 
     def get_offreboisee(self, obj):
+        # Valeur déjà calculée par DevisViewSet.get_queryset (annotation) : pas de requête par devis
+        if "offreboisee" in obj.__dict__:
+            return obj.offreboisee
         try:
             if hasattr(obj, "iddevis"):
                 devis = Devis.objects.annotate(
@@ -665,6 +670,61 @@ class ContratSerializer(serializers.ModelSerializer):
             print(error)
         finally:
             return representation
+
+
+class ContratAdministrationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Contrat
+        fields = [
+            field.name
+            for field in Contrat._meta.concrete_fields
+            if field.name
+            not in {
+                "iddevis",
+                "idproduit",
+                "idintermediaire",
+                "idavenant",
+                "idquittance",
+                "piece_jointe",
+                "idcontratannulation",
+                "idoperateur",
+                "auteur",
+                "idoldhist",
+                "oldnumerodevis",
+            }
+        ]
+        read_only_fields = ["idcontrat"]
+
+    def validate(self, attrs):
+        date_effet = attrs.get("dateeffet", getattr(self.instance, "dateeffet", None))
+        date_expiration = attrs.get(
+            "dateexpiration", getattr(self.instance, "dateexpiration", None)
+        )
+        if date_effet and date_expiration and date_expiration < date_effet:
+            raise serializers.ValidationError(
+                {"dateexpiration": "La date d’échéance doit être postérieure à la date d’effet."}
+            )
+        return attrs
+
+
+class ContratDetailAdministrationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContratDetail
+        fields = [
+            field.name
+            for field in ContratDetail._meta.concrete_fields
+            if field.name not in {"idcontratdetail", "idcontrat"}
+        ]
+
+
+class ContratGarantieAdministrationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContratDetGarantie
+        fields = [
+            field.name
+            for field in ContratDetGarantie._meta.concrete_fields
+            if field.name not in {"idcontratdetgarantie", "idcontratdetail"}
+        ]
 
 
 class ContratDetailSerializer(serializers.ModelSerializer):
@@ -1165,6 +1225,14 @@ class DetailEncaissementShortSerializer(serializers.ModelSerializer):
         )
 
 
+class ListeEncaissementsSerializer(serializers.ListSerializer):
+    """Liste d'encaissements : demandes d'annulation de toutes les lignes lues en une requête."""
+
+    def to_representation(self, data):
+        lignes = data.all() if isinstance(data, Manager) else data
+        return super().to_representation(Encaissement.precharger_demandes_annulation(lignes))
+
+
 class EncaissementSerializer(serializers.ModelSerializer):
     details = DetailEncaissementShortSerializer(many=True, read_only=True)
     modepaiement = serializers.CharField(
@@ -1179,6 +1247,7 @@ class EncaissementSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Encaissement
+        list_serializer_class = ListeEncaissementsSerializer
         fields = (
             "idencaissement",
             "numeropiece",
@@ -2834,6 +2903,8 @@ class EncaissementResponseSerializer(serializers.Serializer):
     solde_restant_cheque = serializers.DecimalField(
         max_digits=19, decimal_places=4, required=False
     )
+    # Chèque annulé remis en service par cet encaissement : trace écrite sur le chèque (database.reutiliser_cheque_annule)
+    cheque_reutilise = serializers.CharField(required=False)
 
 
 class ReversementGroupePrimeSerializer(DynamicFieldsSerializer):

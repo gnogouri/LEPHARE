@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '../../../components/common/Modal';
-import { configRefApi, customerApi } from '../../../api/endpoints';
-import { dataStore } from '../../../api/dataStore';
+import { configRefApi, customerApi, normalizeClient } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import {
   User,
@@ -20,7 +19,54 @@ import {
   Layers,
 } from 'lucide-react';
 import { trierParLibelle } from '../../../utils/sortUtils';
-import { qualitesSelonPersonne } from '../../../utils/clientUtils';
+import { messageErreurClient, qualitesSelonPersonne, ribIncomplet } from '../../../utils/clientUtils';
+
+// Fiche vierge : uniquement des champs enregistrés dans stdclient (commune et quartier complètent
+// l'adresse) ; CniPat porte aussi le RCCM d'une entreprise
+const FICHE_VIDE = {
+  // Étape 1 : Identité
+  typeclient: 'Particulier',
+  Particulier: 'V',
+  IdQualite: 1,
+  IdStatutJuridique: '',
+  nom: '',
+  prenom: '',
+  DateNaissance: '',
+  LieuNaissance: '',
+  CniPat: '',
+
+  // Étape 2 : Coordonnées
+  telephone: '',
+  Mobile: '',
+  email: '',
+  adresse: '',
+  CodePostal: '',
+  IdVille: 1,
+  ville: 'Abidjan',
+  Commune: '',
+  Quartier: '',
+
+  // Étape 3 : Domaine d'activité
+  IdProfession: '',
+  profession: '',
+  IdSecteurActivite: '',
+  secteur_activite: '',
+  Responsable: '',
+  Fonction: '',
+
+  // Types souscripteur / assuré (1 = personne physique, 2 = personne morale) déduits du type
+  // de personne choisi à l'étape 1 ; VIP et statut par défaut
+  idtypeclient: 1,
+  idtypeassure: 1,
+  Vip: 'N',
+  Statut: 'V',
+
+  // Étape 4 : Banque & Fiscalité
+  Rib: '',
+  NumeroCompte: '',
+  ExonereDeTaxes: false,
+  ExonereDeAccess: false,
+};
 
 // valeursInitiales : fiche pré-remplie (souscripteur lu dans un questionnaire prospect : type, nom, téléphone…)
 export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursInitiales = null }) => {
@@ -68,59 +114,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
     }
   }, [isOpen]);
 
-  // Formulaire complet exhaustif (standards stdclient)
-  const [formData, setFormData] = useState({
-    // Étape 1 : Identité
-    typeclient: 'Particulier',
-    Particulier: 'V',
-    IdQualite: 1,
-    IdStatutJuridique: '',
-    nom: '',
-    prenom: '',
-    DateNaissance: '',
-    LieuNaissance: '',
-    CniPat: '',
-    DateDelivrancePiece: '',
-    LieuDelivrancePiece: '',
-    Nationalite: 'Ivoirienne',
-    SituationMatrimoniale: 'Célibataire',
-
-    // Étape 2 : Coordonnées
-    telephone: '',
-    Mobile: '',
-    email: '',
-    adresse: '',
-    BoitePostale: '',
-    IdVille: 1,
-    ville: 'Abidjan',
-    Commune: '',
-    Quartier: '',
-
-    // Étape 3 : Domaine d'activité
-    IdProfession: '',
-    profession: '',
-    IdSecteurActivite: '',
-    secteur_activite: '',
-    Employeur: '',
-    RegistreCommerce: '',
-    CompteContribuable: '',
-    NomContact: '',
-    Fonction: '',
-
-    // Types souscripteur / assuré (1 = personne physique, 2 = personne morale) déduits du type
-    // de personne choisi à l'étape 1 ; VIP et statut par défaut
-    idtypeclient: 1,
-    idtypeassure: 1,
-    Vip: 'N',
-    Statut: 'V',
-
-    // Étape 4 : Banque & Fiscalité
-    Rib: '',
-    NumeroCompte: '',
-    ExonereDeTaxes: false,
-    ExonereDeAccess: false,
-  });
-
+  const [formData, setFormData] = useState(FICHE_VIDE);
   const isEntreprise = formData.typeclient === 'Entreprise';
 
   const steps = [
@@ -165,6 +159,11 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
       setStep(2);
       return;
     }
+    if (ribIncomplet(formData.Rib)) {
+      toastError('Le RIB doit compter 24 caractères : code banque, code guichet, numéro de compte et clé.');
+      setStep(4);
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -174,6 +173,9 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
       const selectedSecteur = refData.secteurs.find((s) => s.IdSecteurActivite === Number(formData.IdSecteurActivite));
 
       const nomComplet = isEntreprise ? formData.nom.trim() : `${formData.nom.trim()} ${formData.prenom.trim()}`.trim();
+      // Rien d'inventé : une adresse non saisie reste vide en base
+      const adresse = [formData.adresse, formData.Quartier, formData.Commune]
+        .map((partie) => (partie || '').trim()).filter(Boolean).join(', ');
 
       const newClientPayload = {
         ...formData,
@@ -193,45 +195,35 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
         Telephone: formData.telephone.trim(),
         Mobile: formData.Mobile.trim() || formData.telephone.trim(),
         Email: formData.email.trim(),
-        adresse: formData.adresse.trim() || 'Abidjan, Côte d’Ivoire',
-        Adresse: formData.adresse.trim() || 'Abidjan, Côte d’Ivoire',
+        adresse,
+        Adresse: adresse,
         contrats_actifs: 0,
         devis_en_cours: 0,
         total_primes: '0 FCFA',
       };
 
-      let createdClient = null;
+      // Enregistrement en base uniquement : un refus (doublon, champ invalide) est expliqué et la
+      // fenêtre reste ouverte, jamais de client local que le devis ne retrouverait pas en base
+      const res = await customerApi.createClient(newClientPayload);
+      const createdClient = {
+        id: res.data.IdClient || res.data.id,
+        ...res.data,
+        ...newClientPayload,
+        // Même code que la liste des clients (aucun matricule n'est attribué à la création)
+        codeclient: normalizeClient(res.data).codeclient,
+      };
 
-      // 1. Sauvegarde dans Django API
-      try {
-        const res = await customerApi.createClient(newClientPayload);
-        if (res && res.data) {
-          createdClient = {
-            id: res.data.IdClient || res.data.id,
-            ...res.data,
-            ...newClientPayload,
-            codeclient: res.data.Matricule || res.data.codeclient || `CLI-2024-${String(res.data.IdClient || Date.now()).slice(-4)}`,
-          };
-        }
-      } catch (err) {
-        console.warn('API creation fallback to local dataStore:', err);
-      }
-
-      // 2. Fallback / Synchronisation locale dataStore
-      if (!createdClient) {
-        createdClient = dataStore.createClient(newClientPayload);
-      }
-
-      success(`Client ${createdClient.nomcomplet} (${createdClient.codeclient || 'Nouveau'}) enregistré avec succès !`);
+      success(`Client ${createdClient.nomcomplet} (${createdClient.codeclient}) enregistré avec succès !`);
 
       if (onClientCreated) {
         onClientCreated(createdClient);
       }
 
+      // La fenêtre rouverte (autre souscripteur, autre assuré) repart d'une fiche vierge
+      setFormData(FICHE_VIDE);
       onClose();
     } catch (err) {
-      console.error(err);
-      toastError("Erreur lors de l'enregistrement du client");
+      toastError(messageErreurClient(err, "Erreur lors de l'enregistrement du client"));
     } finally {
       setIsSubmitting(false);
     }
@@ -410,18 +402,8 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
               </div>
             </div>
 
-            <div className="responsive-form-row">
-              <div className="form-group">
-                <label className="form-label">Nationalité</label>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={formData.Nationalite}
-                  onChange={(e) => setFormData({ ...formData, Nationalite: e.target.value })}
-                />
-              </div>
-
-              {isEntreprise && (
+            {isEntreprise && (
+              <div className="responsive-form-row">
                 <div className="form-group">
                   <label className="form-label">Statut juridique</label>
                   <select
@@ -437,24 +419,8 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
                     ))}
                   </select>
                 </div>
-              )}
-
-              {!isEntreprise && (
-                <div className="form-group">
-                  <label className="form-label">Situation Matrimoniale</label>
-                  <select
-                    className="form-control"
-                    value={formData.SituationMatrimoniale}
-                    onChange={(e) => setFormData({ ...formData, SituationMatrimoniale: e.target.value })}
-                  >
-                    <option value="Célibataire">Célibataire</option>
-                    <option value="Divorcé(e)">Divorcé(e)</option>
-                    <option value="Marié(e)">Marié(e)</option>
-                    <option value="Veuf/Veuve">Veuf / Veuve</option>
-                  </select>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -574,9 +540,10 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
                 <input
                   type="text"
                   className="form-control"
-                  value={formData.BoitePostale}
-                  onChange={(e) => setFormData({ ...formData, BoitePostale: e.target.value })}
-                  placeholder="Ex: 01 BP 4512 Abidjan 01"
+                  maxLength={15}
+                  value={formData.CodePostal}
+                  onChange={(e) => setFormData({ ...formData, CodePostal: e.target.value })}
+                  placeholder="Ex: 01 BP 4512"
                 />
               </div>
             </div>
@@ -601,7 +568,7 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
                   <option value="">-- Sélectionner une profession --</option>
                   {trierParLibelle(refData.professions, (p) => `${p.Libelle} ${p.CodeProfession ? `(${p.CodeProfession})` : ''}`).map((p) => (
                     <option key={p.IdProfession} value={p.IdProfession}>
-                      {p.Libelle}{p.CodeProfession ? ` — ${p.CodeProfession}` : ''}
+                      {p.Libelle}{p.CodeProfession ? ` - ${p.CodeProfession}` : ''}
                     </option>
                   ))}
                 </select>
@@ -627,23 +594,13 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
             {isEntreprise ? (
               <div className="responsive-form-row">
                 <div className="form-group">
-                  <label className="form-label">Compte Contribuable (N° CC)</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={formData.CompteContribuable}
-                    onChange={(e) => setFormData({ ...formData, CompteContribuable: e.target.value })}
-                    placeholder="Ex: 0102938 A"
-                  />
-                </div>
-
-                <div className="form-group">
                   <label className="form-label">Contact Principal</label>
                   <input
                     type="text"
                     className="form-control"
-                    value={formData.NomContact}
-                    onChange={(e) => setFormData({ ...formData, NomContact: e.target.value })}
+                    maxLength={120}
+                    value={formData.Responsable}
+                    onChange={(e) => setFormData({ ...formData, Responsable: e.target.value })}
                     placeholder="Ex: M. Bamba Karim"
                   />
                 </div>
@@ -661,17 +618,6 @@ export const QuickAddClientModal = ({ isOpen, onClose, onClientCreated, valeursI
               </div>
             ) : (
               <div className="responsive-form-row">
-                <div className="form-group">
-                  <label className="form-label">Employeur</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={formData.Employeur}
-                    onChange={(e) => setFormData({ ...formData, Employeur: e.target.value })}
-                    placeholder="Ex: Port Autonome d'Abidjan"
-                  />
-                </div>
-
                 <div className="form-group">
                   <label className="form-label">Poste Occupé</label>
                   <input

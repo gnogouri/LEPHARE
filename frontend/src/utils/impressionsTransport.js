@@ -57,7 +57,7 @@ export const imprimerRessortie = (police, ressortie, voyages) => {
   const corps = `<div class="rs">
     <div class="rs-haut">
       <img class="rs-logo" src="${e(logoCabinetEntete())}" alt="${e(nomCabinet())}" />
-      <div class="rs-titre">RESSORTIE MENSUELLE — FACTURE DE PRIME<small>Police d'abonnement Transport, ${e(moisEnLettres(ressortie.Mois))}</small></div><div></div>
+      <div class="rs-titre">RESSORTIE MENSUELLE - FACTURE DE PRIME<small>Police d'abonnement Transport, ${e(moisEnLettres(ressortie.Mois))}</small></div><div></div>
     </div>
     <div class="rs-infos">
       <div><span>Souscripteur</span><b>${e(police.Client)}</b></div>
@@ -65,9 +65,9 @@ export const imprimerRessortie = (police, ressortie, voyages) => {
       <div><span>Compagnie</span><b>${e(police.Compagnie)}</b></div>
       <div><span>Mode de transport</span><b>${e(police.LibelleMode)}</b></div>
       <div><span>Période facturée</span><b>du ${jma(ressortie.DateEffet)} au ${jma(ressortie.DateExpiration)}</b></div>
-      <div><span>Quittance</span><b>${e(ressortie.NumeroQuittance || '—')}</b></div>
+      <div><span>Quittance</span><b>${e(ressortie.NumeroQuittance || '-')}</b></div>
     </div>
-    <div class="rs-conditions">Conditions de la police : ${garanties || '—'}${police.ExonereTaxe ? ' — affaire exonérée de taxe' : ''}.</div>
+    <div class="rs-conditions">Conditions de la police : ${garanties || '-'}${police.ExonereTaxe ? ' - affaire exonérée de taxe' : ''}.</div>
     <table class="rs-table">
       <colgroup><col style="width:5%"><col style="width:8%"><col style="width:17%"><col style="width:17%"><col style="width:14%">
         <col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:8%"></colgroup>

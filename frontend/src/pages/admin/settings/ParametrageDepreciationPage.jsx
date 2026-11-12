@@ -140,7 +140,7 @@ export const ParametrageDepreciationPage = () => {
   const choixListe = (liste, valeur, onChange, vide = 'Tous') => (
     <select className="form-control" value={valeur ?? ''} onChange={(e) => onChange(e.target.value)} style={{ fontSize: '0.8rem', padding: '0.3rem', minWidth: 130 }}>
       <option value="">{vide}</option>
-      {(liste || []).map((x) => <option key={x.id ?? x.code} value={x.id ?? x.code}>{x.code ? `${x.code} — ${x.libelle}` : x.libelle}</option>)}
+      {(liste || []).map((x) => <option key={x.id ?? x.code} value={x.id ?? x.code}>{x.code ? `${x.code} - ${x.libelle}` : x.libelle}</option>)}
     </select>
   );
 
@@ -202,7 +202,7 @@ export const ParametrageDepreciationPage = () => {
           </SectionParametrage>
 
           <SectionParametrage icone={ListOrdered} titre="Ligne du tableau retenue pour un véhicule"
-            description="Règles examinées dans l'ordre : la première dont tous les critères renseignés correspondent au véhicule donne la ligne du tableau. La catégorie sert aux véhicules repris d'URANUS, sans genre."
+            description="Règles examinées dans l'ordre : la première dont tous les critères renseignés correspondent au véhicule donne la ligne du tableau. La catégorie sert aux véhicules importés sans genre."
             actions={(
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setRegles((l) => [...l, { Classe: donnees.Classes[0]?.Code, IdGenre: null, IdTypeVehicule: null, IdCarrosserie: null, CodeCategorie: '', ChargeUtileSuperieureA: null }])}
@@ -274,8 +274,8 @@ export const ParametrageDepreciationPage = () => {
                   )}
                   {reglesAge.map((r, i) => (
                     <tr key={`${r.Id || 'n'}-${i}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      <td style={cellule}>{choixListe(donnees.Compagnies, r.IdCompagnie, (v) => changerAge(i, 'IdCompagnie', v === '' ? null : Number(v)), '— Choisir —')}</td>
-                      <td style={cellule}>{choixListe(donnees.SousGaranties, r.IdSousGarantie, (v) => changerAge(i, 'IdSousGarantie', v === '' ? null : Number(v)), '— Choisir —')}</td>
+                      <td style={cellule}>{choixListe(donnees.Compagnies, r.IdCompagnie, (v) => changerAge(i, 'IdCompagnie', v === '' ? null : Number(v)), 'Choisir')}</td>
+                      <td style={cellule}>{choixListe(donnees.SousGaranties, r.IdSousGarantie, (v) => changerAge(i, 'IdSousGarantie', v === '' ? null : Number(v)), 'Choisir')}</td>
                       <td style={cellule}>
                         <input type="number" min={0} className="form-control" value={r.AgeMinimum ?? ''} placeholder="0"
                           onChange={(e) => changerAge(i, 'AgeMinimum', e.target.value === '' ? null : Number(e.target.value))} style={{ width: 90, fontSize: '0.8rem', padding: '0.3rem' }} />
@@ -318,7 +318,7 @@ export const ParametrageDepreciationPage = () => {
               <div style={{ marginTop: '0.9rem', padding: '0.7rem 0.9rem', borderRadius: 8, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.18)', fontSize: '0.86rem' }}>
                 {resultat.ValeurVenale === null
                   ? resultat.Explication
-                  : <>Valeur vénale : <strong>{Number(resultat.ValeurVenale).toLocaleString('fr-FR')} F</strong> — {resultat.Explication} (âge : {resultat.AgeMois} mois).</>}
+                  : <>Valeur vénale : <strong>{Number(resultat.ValeurVenale).toLocaleString('fr-FR')} F</strong> - {resultat.Explication} (âge : {resultat.AgeMois} mois).</>}
               </div>
             )}
           </SectionParametrage>

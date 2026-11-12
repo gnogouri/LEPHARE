@@ -85,7 +85,7 @@ const PaiementCabinet = ({ modes, banques, valeur, onChange }) => {
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label" htmlFor="pc-banque">Banque du cabinet</label>
             <select id="pc-banque" className="form-control" required value={valeur.IdBanque} onChange={champ('IdBanque')}>
-              <option value="">— Choisir —</option>
+              <option value="">Choisir</option>
               {banques.map((b) => <option key={b.idbanque} value={b.idbanque}>{b.libelle}</option>)}
             </select>
           </div>
@@ -156,7 +156,7 @@ const BordereauModal = ({ bordereau, modes, banques, onClose, onChange }) => {
   return (
     <Modal isOpen onClose={onClose} size="large"
       title={`${b.Titre} N° ${b.Numero || b.NumeroReversement}`}
-      subtitle={`${b.NomBordereau || b.Compagnie} — du ${dateFr(b.DateBordereau)} — ${b.LibelleStatut}`}>
+      subtitle={`${b.NomBordereau || b.Compagnie} - du ${dateFr(b.DateBordereau)} - ${b.LibelleStatut}`}>
       <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', fontSize: '0.88rem', marginBottom: '0.9rem' }}>
         <span>Montant à reverser : <strong>{fcfa(b.MontantAReverser)} F</strong></span>
         <span>Quittances : <strong>{b.Lignes.length}</strong></span>
@@ -177,11 +177,11 @@ const BordereauModal = ({ bordereau, modes, banques, onClose, onChange }) => {
             {b.Blocs.map((bloc) => (
               <React.Fragment key={bloc.Titre}>
                 <tr><td colSpan={13} style={{ fontWeight: 700, background: 'var(--bg-surface-elevated)' }}>
-                  {bloc.Titre}{!bloc.Soldees && ` — reste dû par les clients : ${fcfa(bloc.Totaux.ResteDu)} F`}
+                  {bloc.Titre}{!bloc.Soldees && ` - reste dû par les clients : ${fcfa(bloc.Totaux.ResteDu)} F`}
                 </td></tr>
                 {bloc.Lignes.map((l) => (
                   <tr key={l.NumeroQuittance}>
-                    <td>{l.Client}<div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.LibelleStatutPaiement}{!l.Soldee && ` — reste dû ${fcfa(l.ResteDu)} F`}</div></td>
+                    <td>{l.Client}<div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.LibelleStatutPaiement}{!l.Soldee && ` - reste dû ${fcfa(l.ResteDu)} F`}</div></td>
                     <td>{l.Assurance}</td><td>{l.PoliceCompagnie || <span style={{ color: 'var(--accent-amber, #d97706)' }}>{l.NumeroPolice}</span>}</td><td>{l.Avenant}</td>
                     <td>{dateFr(l.DateEffet)}</td><td>{dateFr(l.DateExpiration)}</td>
                     <td style={{ textAlign: 'right' }}>{fcfa(l.PrimeHT)}</td><td style={{ textAlign: 'right' }}>{fcfa(l.PrimeTtc)}</td>
@@ -335,7 +335,7 @@ const TableauReversement = ({ compagnie, nomCompagnie, recherche }) => {
                 {ls.map((l) => l.Reversements.map((rv, i) => (
                   <tr key={`${l.NumeroQuittance}-${rv.IdReversement}`}>
                     {i === 0 && <td rowSpan={l.Reversements.length}>{l.Client}</td>}
-                    <td>{dateFr(rv.DateCourrier)}</td><td>{dateFr(rv.DateDecharge) || '—'}</td><td>{rv.Numero || '—'}</td>
+                    <td>{dateFr(rv.DateCourrier)}</td><td>{dateFr(rv.DateDecharge) || '-'}</td><td>{rv.Numero || '-'}</td>
                     {i === 0 && (
                       <>
                         <td rowSpan={l.Reversements.length}>{l.Branche}</td>
@@ -503,7 +503,7 @@ export const CompanyRemittancePage = () => {
     ].filter(Boolean);
     const ok = await confirmer({
       titre: aReverser.length && directes.length ? 'Générer deux bordereaux et leurs courriers' : 'Générer le bordereau et son courrier',
-      message: `${nomCompagnie} — bordereau(x) du ${dateFr(dateBordereau)}`,
+      message: `${nomCompagnie} - bordereau(x) du ${dateFr(dateBordereau)}`,
       consequences: details.join('\n'),
       confirmer: 'Générer',
       ton: sansPolice ? 'attention' : 'info',
@@ -680,7 +680,7 @@ export const CompanyRemittancePage = () => {
                       <td>{l.Client}<div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{l.NumeroQuittance}</div></td>
                       <td>{l.Branche}</td>
                       <td><PoliceDeduite ligne={l} /></td>
-                      <td style={{ minWidth: 190 }}>{l.Reglement || [l.Mode, l.Reference].filter(Boolean).join(' — ')}</td>
+                      <td style={{ minWidth: 190 }}>{l.Reglement || [l.Mode, l.Reference].filter(Boolean).join(' - ')}</td>
                       <td title={/esp[eè]ce/i.test(l.Mode || '') ? 'Espèces : directement à la compagnie, sans reversement par le cabinet' : "Ordre du règlement enregistré à l'encaissement"}>
                         <div style={{ fontWeight: 600 }}>{l.Ordre !== 'COMPAGNIE' ? nomCabinet() : /esp[eè]ce/i.test(l.Mode || '') ? 'La compagnie (espèces)' : 'La compagnie'}</div>
                         <div style={{ marginTop: 3 }}><BadgeNature nature={l.Nature} /></div>

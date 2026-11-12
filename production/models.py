@@ -46,6 +46,7 @@ class Brouillon(models.Model):
 
     TYPES = [
         ("DEVIS_AUTO", "Devis automobile"),
+        ("DEVIS_IA", "Devis Individuelle Accidents"),
         ("AVENANT", "Modification de contrat"),
     ]
 
@@ -617,8 +618,9 @@ class DevisDetail(models.Model):
     extincteur = models.BooleanField(default=False)
     idprofession = models.IntegerField(blank=True, null=True)
     conducteur = models.TextField(max_length=2048, blank=True, null=True)
+    # Adresse de la maison en MRH (150 caractères : 50 ne suffisaient pas à une adresse complète)
     adressecnd = models.CharField(
-        max_length=50, null=True, blank=True, default=""
+        max_length=150, null=True, blank=True, default=""
     )
     villecnd = models.IntegerField(blank=True, null=True)
     sexe = models.CharField(max_length=1, default="M")
@@ -646,7 +648,7 @@ class DevisDetail(models.Model):
     )
     modelevehicule = models.CharField(
         verbose_name="Modèle du véhicule",
-        max_length=30,
+        max_length=50,  # code de l'usage en MRH (proprietaire_non_occupant_meuble : 32 caractères)
         db_column="modelevehicule",
         default="",
     )
@@ -1250,7 +1252,7 @@ class ContratDetail(models.Model):
     )  # Field name made lowercase.
     adressecnd = models.CharField(
         db_column="adressecnd",
-        max_length=50,
+        max_length=150,
         default="",
         null=True,
         blank=True,
@@ -1297,7 +1299,7 @@ class ContratDetail(models.Model):
     )
     modelevehicule = models.CharField(
         verbose_name="Modèle du véhicule",
-        max_length=30,
+        max_length=50,  # code de l'usage en MRH (proprietaire_non_occupant_meuble : 32 caractères)
         db_column="modelevehicule",
         default="",
     )
@@ -1924,11 +1926,37 @@ class Encaissement(models.Model):
 
         from autorisations.models import DemandeAutorisation
 
+        # Liste : valeur posée pour toutes les lignes par precharger_demandes_annulation
+        if "_demande_annulation" in self.__dict__:
+            return self._demande_annulation
         content_type = ContentType.objects.get_for_model(self.__class__)
         return DemandeAutorisation.objects.filter(
             content_type=content_type,
             object_id=self.idencaissement,
         ).first()
+
+    @classmethod
+    def precharger_demandes_annulation(cls, encaissements):
+        """
+        Pose sur chaque encaissement d'une liste sa demande d'annulation, lue en une seule requête
+        (sans cela, la propriété demande_annulation interroge la base deux fois par ligne).
+        """
+        from django.contrib.contenttypes.models import ContentType
+
+        from autorisations.models import DemandeAutorisation
+
+        encaissements = list(encaissements)
+        demandes = {}
+        if encaissements:
+            for demande in DemandeAutorisation.objects.filter(
+                content_type=ContentType.objects.get_for_model(cls),
+                object_id__in=[e.idencaissement for e in encaissements],
+            ).order_by("-pk"):
+                # Même choix que .first() : la demande la plus ancienne de l'encaissement
+                demandes[demande.object_id] = demande
+        for encaissement in encaissements:
+            encaissement._demande_annulation = demandes.get(encaissement.idencaissement)
+        return encaissements
 
     @property
     def demande_annulation_en_cours(self):
@@ -4373,3 +4401,61 @@ class ImportsHistorique(models.Model):
             Taux de réussite: {self.taux_reussite:.1f}%
             Durée: {self.duree_secondes}s
         """
+
+
+class RepriseAffaire(models.Model):
+    """Affaire antérieure reprise dans LE PHARE (production/reprise.py) : contrat, devis et quittance créés, données
+    saisies ou importées, commission perçue ou non."""
+
+    MODES = [("saisie", "Saisie"), ("import", "Import Excel"), ("devis", "Écrans de devis")]
+
+    idcontrat = models.IntegerField(unique=True, db_column="idcontrat")
+    iddevis = models.IntegerField(db_column="iddevis")
+    idquittance = models.IntegerField(db_column="idquittance")
+    mode = models.CharField(max_length=10, choices=MODES, default="saisie", db_column="mode")
+    lot = models.CharField(max_length=40, null=True, blank=True, db_column="lot")
+    donnees = models.JSONField(default=dict, db_column="donnees")
+    commission_percue = models.BooleanField(default=False, db_column="commission_percue")
+    date_commission_percue = models.DateField(null=True, blank=True, db_column="date_commission_percue")
+    creepar = models.CharField(max_length=150, blank=True, default="", db_column="creepar")
+    idutilisateur = models.IntegerField(null=True, db_column="idutilisateur")
+    datecreation = models.DateTimeField(auto_now_add=True, db_column="datecreation")
+
+    class Meta:
+        db_table = "lephare_reprise"
+        verbose_name = "Affaire antérieure reprise"
+        verbose_name_plural = "Affaires antérieures reprises"
+        ordering = ["-id"]
+
+
+class RepriseDevis(models.Model):
+    """Devis saisi dans un écran de devis de la vue Production depuis Affaires antérieures (/user/reprises/saisie/…), en attente de
+    finalisation (production/reprise.py, reprendre_devis) : les écrans de devis ne datent pas leur création."""
+
+    iddevis = models.IntegerField(unique=True, db_column="iddevis")
+    creepar = models.CharField(max_length=150, blank=True, default="", db_column="creepar")
+    idutilisateur = models.IntegerField(null=True, db_column="idutilisateur")
+    datecreation = models.DateTimeField(auto_now_add=True, db_column="datecreation")
+
+    class Meta:
+        db_table = "lephare_reprise_devis"
+        verbose_name = "Devis d'affaire antérieure à finaliser"
+        verbose_name_plural = "Devis d'affaires antérieures à finaliser"
+
+
+class AvenantSanteReference(models.Model):
+    """Avenant Santé de modification (changement de formule, incorporation : sante/avenant.py) : composition d'avant la
+    modification tarifée à la création de l'avenant par sp_creation_devis_sante, prime annuelle par garantie (idgarantie 0 :
+    accessoire). sp_creation_devis_sante v9 en déduit l'écart de l'avenant, qui ne porte ainsi que sur la modification
+    même pour un contrat émis avec d'anciennes règles de calcul."""
+
+    iddevis = models.IntegerField(db_column="iddevis")
+    idgarantie = models.IntegerField(db_column="idgarantie")
+    montant = models.DecimalField(max_digits=18, decimal_places=4, default=0, db_column="montant")
+    datecreation = models.DateTimeField(auto_now_add=True, db_column="datecreation")
+
+    class Meta:
+        db_table = "lephare_avenant_sante_reference"
+        unique_together = (("iddevis", "idgarantie"),)
+        verbose_name = "Référence d'avenant Santé"
+        verbose_name_plural = "Références d'avenants Santé"

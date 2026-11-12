@@ -7,7 +7,7 @@ import { sortUniqueBy } from '../../../utils/sortUtils';
 const MODELE = '/assets/modeles/modele_flotte_automobile.xlsx';
 // Formulaire assurance auto d'OREOLE (compte rendu du 12-10-2026), rempli par le client : mono ou flotte
 const FORMULAIRE = '/assets/modeles/formulaire_assurance_auto.xlsx';
-const f = (v) => (v || v === 0 ? Number(v).toLocaleString('fr-FR') : '—');
+const f = (v) => (v || v === 0 ? Number(v).toLocaleString('fr-FR') : '-');
 const messageErreur = (err) => err?.response?.data?.error || err?.response?.data?.detail || err?.message || 'erreur du serveur';
 // « 2644 EN 01 », « 2644-en-01 » et « 2644EN01 » désignent le même véhicule
 const immat = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -200,7 +200,7 @@ export const ImportFlotteModal = ({
                       <span style={{ minWidth: 110, fontWeight: 700 }}>{m}</span>
                       <select className="form-control" value={correspondances[m] || ''}
                         onChange={(e) => setCorrespondances((c) => ({ ...c, [m]: e.target.value }))}>
-                        <option value="">— Choisir —</option>
+                        <option value="">Choisir</option>
                         {sortUniqueBy(marques, (x) => x.libelle).map((x) => <option key={x.id} value={x.id}>{x.libelle}</option>)}
                       </select>
                     </label>
@@ -240,11 +240,11 @@ export const ImportFlotteModal = ({
                             aria-label={`Importer ${v.immatriculation || `la ligne ${l.Ligne}`}`} />
                         </td>
                         <td style={cellule}>{l.Ligne}{l.Numero ? ` (n° ${l.Numero})` : ''}</td>
-                        <td style={{ ...cellule, fontWeight: 700, color: '#38bdf8' }}>{v.immatriculation || '—'}</td>
+                        <td style={{ ...cellule, fontWeight: 700, color: '#38bdf8' }}>{v.immatriculation || '-'}</td>
                         <td style={cellule}>{v.codeCategorie} {v.categorieContrat}</td>
                         <td style={cellule}>{v.marqueVehicule}<div style={{ color: 'var(--text-muted)' }}>{l.Fichier.Type} → {v.genreVehicule}</div></td>
-                        <td style={cellule}>{v.puissanceFiscale || '—'} CV{v.chargeUtile ? ` / ${f(v.chargeUtile)} kg` : ''}</td>
-                        {analyse.Format === 'formulaire' && <td style={cellule}>{l.Fichier.DateMec ? l.Fichier.DateMec.split('-').reverse().join('/') : '—'}</td>}
+                        <td style={cellule}>{v.puissanceFiscale || '-'} CV{v.chargeUtile ? ` / ${f(v.chargeUtile)} kg` : ''}</td>
+                        {analyse.Format === 'formulaire' && <td style={cellule}>{l.Fichier.DateMec ? l.Fichier.DateMec.split('-').reverse().join('/') : '-'}</td>}
                         <td style={cellule}>{v.energie}</td>
                         <td style={nombre}>
                           {f(v.valeurNeuf)}<div>{f(v.valeurVenale)}</div>
@@ -254,7 +254,7 @@ export const ImportFlotteModal = ({
                         </td>
                         <td style={cellule}>{v.nombrePlace}</td>
                         <td style={cellule}>
-                          {v.offreSelectionnee || '—'}
+                          {v.offreSelectionnee || '-'}
                           {l.ColonnesRetirees?.length > 0 && <div style={{ color: 'var(--text-muted)' }}>sans {l.ColonnesRetirees.join(', ')}</div>}
                           {v.codeFormuleSecuriteRoutiere && v.codeFormuleSecuriteRoutiere !== 'AUCUNE' && <div style={{ color: 'var(--text-muted)' }}>SR {v.codeFormuleSecuriteRoutiere}</div>}
                         </td>

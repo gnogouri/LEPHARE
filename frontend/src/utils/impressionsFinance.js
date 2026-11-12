@@ -112,7 +112,7 @@ export const construireBordereau = (b) => {
   // présentation d'origine
   const dissocie = blocs.some((bloc) => !bloc.Soldees);
   const corps = dissocie
-    ? blocs.map((bloc) => `<tr class="bloc"><td colspan="16">${e(bloc.Titre)}${bloc.Soldees ? '' : ` — reste dû par les clients : ${f(bloc.Totaux.ResteDu)} F`}</td></tr>
+    ? blocs.map((bloc) => `<tr class="bloc"><td colspan="16">${e(bloc.Titre)}${bloc.Soldees ? '' : ` - reste dû par les clients : ${f(bloc.Totaux.ResteDu)} F`}</td></tr>
         ${bloc.Lignes.map((l) => ligneBordereau(b, l)).join('')}
         ${blocs.length > 1 ? ligneTotal(b, `Sous-total ${bloc.Soldees ? 'primes soldées' : 'primes en arriéré'}`, bloc.Totaux, 'sous-total') : ''}`).join('')
     : (b.Lignes || []).map((l) => ligneBordereau(b, l)).join('');
@@ -310,7 +310,7 @@ const totalRecap = (libelle, ls, classe = 'total') => {
 };
 
 /**
- * Bordereau récapitulatif de reversement — réclamation de commissions (réclamation de l'écran Commissions).
+ * Bordereau récapitulatif de reversement - réclamation de commissions (réclamation de l'écran Commissions).
  * Aucun modèle d'OREOLE n'a été fourni pour ce document : il reprend la présentation des bordereaux 1175 / 2088 / 2117
  * et les colonnes du tableau de reversement, une ligne par quittance réclamée, par mois de bordereau s'il y en a
  * plusieurs, et la somme réclamée arrêtée en lettres.
@@ -421,7 +421,7 @@ export const imprimerEtatRecapitulatifCommissions = (r) => {
   const parMois = (r.ParMois || []).length
     ? `<div class="rcm-section"><h2>PAR MOIS DE REVERSEMENT</h2>${syntheseEtat('Mois', r.ParMois.map((g) => [moisEtat(g.Mois), g]), t)}</div>`
     : '';
-  const payees = `<div class="rcm-section"><h2>COMMISSIONS PAYÉES — RÈGLEMENTS REÇUS DES ASSUREURS</h2>${reglements.length
+  const payees = `<div class="rcm-section"><h2>COMMISSIONS PAYÉES - RÈGLEMENTS REÇUS DES ASSUREURS</h2>${reglements.length
     ? tableEtat(
       [['Date', 7.5], ['Compagnie', 15], ['N° du règlement', 12], ['Bordereau réclamé', 12], ['Mode', 7], ['N° chèque / virement', 12],
         ['Banque', 11], ['Quittances', 6.5], ['Montant du règlement', 8.5], ['Commissions réglées', 8.5]],
@@ -431,7 +431,7 @@ export const imprimerEtatRecapitulatifCommissions = (r) => {
       `<tr class="total"><td colspan="7">TOTAL</td><td>${somme(reglements, 'Nombre')}</td><td>${f(somme(reglements, 'MontantReglement'))}</td><td>${f(somme(reglements, 'Montant'))}</td></tr>`,
     )
     : '<div class="rcm-vide">Aucun règlement de commission reçu pour ces quittances.</div>'}</div>`;
-  const reclamees = `<div class="rcm-section"><h2>EN ATTENTE DE PAIEMENT — COMMISSIONS RÉCLAMÉES À L'ASSUREUR</h2>${reclamations.length
+  const reclamees = `<div class="rcm-section"><h2>EN ATTENTE DE PAIEMENT - COMMISSIONS RÉCLAMÉES À L'ASSUREUR</h2>${reclamations.length
     ? tableEtat(
       [['N° du bordereau', 14], ['Compagnie', 20], ['Émis le', 9], ['Ancienneté', 8], ['Quittances', 8], ['Commissions réclamées', 14],
         ['Déjà réglé', 13], ['Reste dû', 14]],
@@ -441,7 +441,7 @@ export const imprimerEtatRecapitulatifCommissions = (r) => {
         <td>${f(somme(reclamations, 'CommissionPayee'))}</td><td>${f(somme(reclamations, 'Reste'))}</td></tr>`,
     )
     : '<div class="rcm-vide">Aucun bordereau de réclamation en attente de règlement.</div>'}</div>`;
-  const aReclamer = `<div class="rcm-section"><h2>EN ATTENTE DE PAIEMENT — COMMISSIONS NON ENCORE RÉCLAMÉES</h2>${nonReclamees.length
+  const aReclamer = `<div class="rcm-section"><h2>EN ATTENTE DE PAIEMENT - COMMISSIONS NON ENCORE RÉCLAMÉES</h2>${nonReclamees.length
     ? tableEtat(
       [['Compagnie', 34], ['Plus ancien reversement', 16], ['Ancienneté', 14], ['Quittances', 14], ['Montant à réclamer', 22]],
       nonReclamees.map((n) => `<tr><td class="g">${e(n.Compagnie)}</td><td>${jma(n.PlusAncien)}</td><td>${jours(n.Anciennete)}</td>
@@ -455,15 +455,15 @@ export const imprimerEtatRecapitulatifCommissions = (r) => {
       <div class="brd-titre">ETAT RECAPITULATIF DES COMMISSIONS</div><div></div>
     </div>
     <div class="brd-cie">${e(r.Compagnie || 'TOUTES LES COMPAGNIES')}</div>
-    <div class="rcm-infos">Commissions payées et en attente de paiement — ${e(periodeEtat(r.Du, r.Au))} — situation au <b>${jma(r.Situation)}</b></div>
+    <div class="rcm-infos">Commissions payées et en attente de paiement - ${e(periodeEtat(r.Du, r.Au))} - situation au <b>${jma(r.Situation)}</b></div>
     <div class="rcm-cartes">
-      <div class="rcm-carte"><span>Commissions dues</span><b>${f(t.CommissionDue)} F</b><small>${t.Nombre || 0} quittance(s) — ${f(t.PrimesReversees)} F reversés</small></div>
+      <div class="rcm-carte"><span>Commissions dues</span><b>${f(t.CommissionDue)} F</b><small>${t.Nombre || 0} quittance(s) - ${f(t.PrimesReversees)} F reversés</small></div>
       <div class="rcm-carte"><span>Commissions payées</span><b>${f(t.CommissionPayee)} F</b><small>Recouvré : ${pourcent(t.TauxRecouvrement)}</small></div>
       <div class="rcm-carte"><span>En attente : réclamées</span><b>${f(t.EnAttenteReclamee)} F</b><small>${reclamations.length} bordereau(x) en attente de règlement</small></div>
       <div class="rcm-carte"><span>En attente : non réclamées</span><b>${f(t.EnAttenteAReclamer)} F</b><small>Bordereau récapitulatif à émettre</small></div>
     </div>
     ${parCompagnie}${parMois}${payees}${reclamees}${aReclamer}
-    <div class="rcm-pied"><span>Total en attente de paiement : <b>${f(t.EnAttente)} F</b></span><span>${e(nomCabinet())} — édité le ${jma(r.Situation)}</span></div>
+    <div class="rcm-pied"><span>Total en attente de paiement : <b>${f(t.EnAttente)} F</b></span><span>${e(nomCabinet())} - édité le ${jma(r.Situation)}</span></div>
   </div>`;
   ecrire('Etat recapitulatif des commissions', STYLES_ETAT_COMMISSIONS, corps, true);
 };
@@ -489,7 +489,7 @@ export const imprimerRecapitulatifEncaissements = (etat, { compagnie = '', filtr
   const valides = lignes.filter((l) => !STATUTS_HORS_TOTAL.includes(l.Statut));
   const total = valides.reduce((s, l) => s + (Number(l.Montant) || 0), 0);
   const grouper = (cle) => Object.values(valides.reduce((acc, l) => {
-    const libelle = l[cle] || '—';
+    const libelle = l[cle] || '-';
     const g = acc[libelle] || { Libelle: libelle, Nombre: 0, Montant: 0 };
     g.Nombre += 1;
     g.Montant += Number(l.Montant) || 0;
@@ -511,14 +511,14 @@ export const imprimerRecapitulatifEncaissements = (etat, { compagnie = '', filtr
       <div class="brd-titre">BORDEREAU RECAPITULATIF DES ENCAISSEMENTS</div><div></div>
     </div>
     <div class="brd-cie">${e(compagnie || 'TOUTES LES COMPAGNIES')}</div>
-    <div class="rcm-infos">Encaissements du <b>${jma(etat.Du)}</b> au <b>${jma(etat.Au)}</b>${filtres ? ` — ${e(filtres)}` : ''} — ${valides.length} encaissement(s) retenu(s)</div>
+    <div class="rcm-infos">Encaissements du <b>${jma(etat.Du)}</b> au <b>${jma(etat.Au)}</b>${filtres ? ` - ${e(filtres)}` : ''} - ${valides.length} encaissement(s) retenu(s)</div>
     <div class="rcm-section">${tableEtat(
     colonnes,
     lignes.map((l) => {
       const hors = STATUTS_HORS_TOTAL.includes(l.Statut) ? ' class="hors"' : '';
       return `<tr><td>${e(l.NumeroPiece)}</td><td>${jma(l.DateEncaissement)}</td><td class="g">${e(l.Client)}</td>
         ${avecCompagnie ? `<td>${e(l.Compagnie)}</td>` : ''}<td>${e(l.NumeroQuittance)}</td><td>${e(l.NumeroPolice)}</td><td>${e(l.Mode)}</td>
-        <td>${e([l.Reference, l.Banque].filter(Boolean).join(' — '))}</td><td${hors}><b>${f(l.Montant)}</b></td><td>${e(l.LibelleStatut)}</td></tr>`;
+        <td>${e([l.Reference, l.Banque].filter(Boolean).join(' - '))}</td><td${hors}><b>${f(l.Montant)}</b></td><td>${e(l.LibelleStatut)}</td></tr>`;
     }),
     `<tr class="total"><td colspan="${colonnes.length - 2}">TOTAL (hors encaissements annulés et chèques impayés)</td><td>${f(total)}</td><td></td></tr>`,
   )}</div>

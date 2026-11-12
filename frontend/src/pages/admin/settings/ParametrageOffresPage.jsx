@@ -53,7 +53,7 @@ const EMPTY_MATRICE_FORM = {
 
 // Chaque sous-garantie (stdsousgarantie) porte des indicateurs de saisie par produit
 // (SaisieAuto, SaisieSante, SaisieRd, SaisieTransport). C'est la vraie relation
-// produit ↔ garantie en base — bien plus fiable qu'une déduction par code tarif.
+// produit ↔ garantie en base - bien plus fiable qu'une déduction par code tarif.
 // "Rd" (Risques Divers) couvre les branches CIMA Dommages corporels, Incendie/Multirisques
 // (MRH), Autres dommages aux biens et Responsabilité Civile.
 const BRANCHE_TO_SAISIE_FLAG = {
@@ -77,20 +77,20 @@ export const ParametrageOffresPage = () => {
   const [branches, setBranches] = useState([]);
   const [categoriesParBranche, setCategoriesParBranche] = useState([]);
 
-  // Filtre Produit (branche CIMA) appliqué aux deux onglets — '' = tous les produits ; ?branche=600 : ouvert depuis les
+  // Filtre Produit (branche CIMA) appliqué aux deux onglets - '' = tous les produits ; ?branche=600 : ouvert depuis les
   // Réglages par branche
   const [parametresUrl] = useSearchParams();
   const [selectedBranche, setSelectedBranche] = useState(() => parametresUrl.get('branche') || '');
-  // Filtre Compagnie — '' = toutes compagnies. Une offre n'a pas de compagnie unique
+  // Filtre Compagnie - '' = toutes compagnies. Une offre n'a pas de compagnie unique
   // (le lien se fait via stdoffregarantie), donc ce filtre ne garde que les offres
   // ayant au moins une garantie liée à la compagnie choisie.
   const [selectedCompagnie, setSelectedCompagnie] = useState('');
 
-  // Offres (stdoffre) — chargées et persistées via l'API réelle
+  // Offres (stdoffre) - chargées et persistées via l'API réelle
   const [offres, setOffres] = useState([]);
   const [loadingOffres, setLoadingOffres] = useState(true);
 
-  // Matrice Offre ↔ Garantie (stdoffregarantie) — filtrée par offre sélectionnée
+  // Matrice Offre ↔ Garantie (stdoffregarantie) - filtrée par offre sélectionnée
   const [matriceOffreId, setMatriceOffreId] = useState('');
   const [matrice, setMatrice] = useState([]);
   const [loadingMatrice, setLoadingMatrice] = useState(false);
@@ -278,7 +278,7 @@ export const ParametrageOffresPage = () => {
     },
     {
       header: 'Tarif CIMA Rattaché',
-      render: (r) => <span style={{ color: '#38bdf8', fontWeight: 600 }}>{r.TarifOffre ? tarifLibelle(r.TarifOffre) : '—'}</span>
+      render: (r) => <span style={{ color: '#38bdf8', fontWeight: 600 }}>{r.TarifOffre ? tarifLibelle(r.TarifOffre) : '-'}</span>
     },
     {
       header: 'Garanties Liées',
@@ -382,7 +382,7 @@ export const ParametrageOffresPage = () => {
       header: 'Montants (grille tarifaire)',
       render: (r) => {
         const detail = tarifDetails.find((td) => td.IdGarantie === Number(r.IdSousGarantie));
-        if (!detail) return <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>;
+        if (!detail) return <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>;
         const taux = Number(detail.Taux) || 0;
         const primeGar = Number(detail.PrimeGar) || 0;
         const capitalMax = Number(detail.CapitalMax) || 0;
@@ -391,7 +391,7 @@ export const ParametrageOffresPage = () => {
             {taux > 0 && <>Taux: {taux}% </>}
             {primeGar > 0 && <>Prime forfait: {formatMoney(primeGar)} </>}
             {capitalMax > 0 && capitalMax < 999999999 && <>Capital max: {formatMoney(capitalMax)}</>}
-            {taux === 0 && primeGar === 0 && (capitalMax === 0 || capitalMax >= 999999999) && '—'}
+            {taux === 0 && primeGar === 0 && (capitalMax === 0 || capitalMax >= 999999999) && '-'}
           </span>
         );
       }
@@ -476,7 +476,7 @@ export const ParametrageOffresPage = () => {
         </div>
       </div>
 
-      {/* Filtre Produit (branche CIMA) — s'applique aux deux onglets */}
+      {/* Filtre Produit (branche CIMA) - s'applique aux deux onglets */}
       <div className="glass-panel" style={{ padding: '1rem 1.5rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
         <label className="form-label" style={{ margin: 0 }}>Produit :</label>
         <select
@@ -622,7 +622,7 @@ export const ParametrageOffresPage = () => {
             >
               <option value="">-- Aucun --</option>
               {sortUniqueBy(selectedBranche ? tarifsDuProduit : tarifs, (t) => t.Libelle).map((t) => (
-                <option key={t.IdTarif} value={t.IdTarif}>{t.Libelle} — {t.CodeCategorie}</option>
+                <option key={t.IdTarif} value={t.IdTarif}>{t.Libelle} - {t.CodeCategorie}</option>
               ))}
             </select>
           </div>

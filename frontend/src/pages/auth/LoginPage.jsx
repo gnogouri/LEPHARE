@@ -83,7 +83,7 @@ export const LoginPage = () => {
           </button>
         </form>
         <p style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          Compte repris d'URANUS : mêmes adresse e-mail et mot de passe. Mot de passe oublié : adressez-vous à l'administrateur.
+          Les comptes existants utilisent leur adresse e-mail et leur mot de passe habituels. Mot de passe oublié : adressez-vous à l'administrateur.
         </p>
       </div>
     </div>

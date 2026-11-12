@@ -1,563 +1,371 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Building2, ChevronDown, ChevronRight, Clock, Edit3, FileSignature, HandCoins, Loader2, RefreshCw, Search, Wallet,
+} from 'lucide-react';
 import { conventionsApi } from '../../../api/endpoints';
-import { dataStore } from '../../../api/dataStore';
 import { MetricCard } from '../../../components/common/MetricCard';
 import { Modal } from '../../../components/common/Modal';
-import { DeleteConfirmModal } from '../../../components/common/DeleteConfirmModal';
-import { validateBusinessRule } from '../../../utils/rbac';
+import { AmountInput } from '../../../components/common/AmountInput';
+import { Champ } from '../../../components/common/RechercheClient';
 import { useToast } from '../../../context/ToastContext';
-import {
-  FileCheck,
-  Building,
-  ShieldCheck,
-  Calendar,
-  Percent,
-  Plus,
-  Edit2,
-  Clock,
-  Banknote,
-  Layers,
-  CheckCircle,
-  HelpCircle,
-  Trash2,
-} from 'lucide-react';
+import { messageErreurApi } from '../../../utils/financeUtils';
 
-export const ConventionsEnginePage = () => {
+/* =========================================================================
+   CONVENTIONS AVEC LES COMPAGNIES
+   Refaite le 2026-10-28 sur les données réelles (demande : « actualise les informations de cette vue ») : une ligne
+   par compagnie du référentiel, avec son code intermédiaire, les taux de commission en vigueur, les primes à
+   reverser et les commissions (mêmes montants que les écrans des reversements et des commissions), l'activité de
+   l'exercice et les conditions de la convention, saisies ici et enregistrées en base (production/views_conventions.py).
+   L'ancienne vue montrait quatre conventions de démonstration et des chiffres écrits dans l'écran.
+   ========================================================================= */
+
+const fcfa = (v) => `${Math.round(Number(v) || 0).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`;
+const nombre = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 }).replace(/[  ]/g, ' ');
+const dateFr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
+const FILTRES = [
+  ['TOUTES', 'Compagnies'],
+  ['ACTIVITE', 'Avec activité'],
+  ['A_REVERSER', 'Avec primes à reverser'],
+  ['CONVENTION', 'Convention renseignée'],
+  ['SANS_CONVENTION', 'Convention à renseigner'],
+];
+const CONDITIONS_VIDES = {
+  EncaissementDelegue: true, DelaiReversementJours: 30, PlafondDelegationSinistre: 0,
+  ParticipationBeneficiaire: { Active: false, Taux: '', SeuilSp: '' }, DateEffet: '', DateRenouvellement: '', Statut: 'Actif',
+};
+const aActivite = (c) => c.Activite.ContratsEnVigueur > 0 || c.Activite.ContratsExercice > 0 || c.Activite.AReverser.Montant > 0
+  || c.Activite.Commissions.Dues > 0;
+
+const Ligne = ({ libelle, children }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.35rem 0', borderBottom: '1px dashed var(--border-subtle)', fontSize: '0.82rem' }}>
+    <span style={{ color: 'var(--text-muted)' }}>{libelle}</span>
+    <span style={{ fontWeight: 600, color: 'var(--text-primary)', textAlign: 'right' }}>{children}</span>
+  </div>
+);
+const Bloc = ({ titre, children }) => (
+  <div style={{ padding: '0.85rem 1rem', borderRadius: '10px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface-elevated)' }}>
+    <div style={{ fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>{titre}</div>
+    {children}
+  </div>
+);
+
+// ------------------------------------------------------------------ détail d'une compagnie
+const DetailCompagnie = ({ c, exercice, onConditions, onFiche }) => {
+  const a = c.Activite;
+  const conv = c.Convention;
+  const pb = conv?.ParticipationBeneficiaire;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: '0.75rem', padding: '0.25rem 0 0.5rem' }}>
+      <Bloc titre={`Activité ${exercice}`}>
+        <Ligne libelle="Polices en vigueur">{nombre(a.ContratsEnVigueur)}</Ligne>
+        <Ligne libelle={`Contrats émis en ${exercice}`}>{nombre(a.ContratsExercice)}</Ligne>
+        <Ligne libelle="Primes TTC émises">{fcfa(a.PrimesExercice)}</Ligne>
+        <Ligne libelle="Dernière émission">{dateFr(a.DerniereEmission)}</Ligne>
+      </Bloc>
+      <Bloc titre="Reversements et commissions">
+        <Ligne libelle="Primes à reverser">{a.AReverser.Montant ? `${fcfa(a.AReverser.Montant)} (${a.AReverser.Nombre})` : '-'}</Ligne>
+        <Ligne libelle="Plus ancien encaissement à reverser">{dateFr(a.AReverser.PlusAncien)}</Ligne>
+        <Ligne libelle="Commissions dues">{fcfa(a.Commissions.Dues)}</Ligne>
+        <Ligne libelle="Commissions payées">{fcfa(a.Commissions.Payees)}{a.Commissions.Dues ? ` (${nombre(a.Commissions.TauxRecouvrement)} %)` : ''}</Ligne>
+        <Ligne libelle="En attente de paiement">{fcfa(a.Commissions.EnAttente)}</Ligne>
+      </Bloc>
+      <Bloc titre="Taux de commission en vigueur">
+        {c.Taux.length === 0 && <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: 0 }}>Aucun taux en vigueur pour cette compagnie.</p>}
+        {c.Taux.map((t) => (
+          <Ligne key={t.IdProduit} libelle={t.Branche || `Produit ${t.IdProduit}`}>
+            {nombre(t.Taux)} %{t.Forfait ? ` + ${fcfa(t.Forfait)}` : ''}
+          </Ligne>
+        ))}
+        <Ligne libelle="Part du cabinet dans les accessoires">
+          {c.PartAccessoiresCabinet === null ? '-' : `${nombre(c.PartAccessoiresCabinet)} %`}
+          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>{c.PartAccessoiresReglee ? ' (fiche compagnie)' : ' (barème du cabinet)'}</span>
+        </Ligne>
+      </Bloc>
+      <Bloc titre="Conditions de la convention">
+        {conv ? (
+          <>
+            <Ligne libelle="Statut">{conv.Statut}</Ligne>
+            <Ligne libelle="Mandat d'encaissement">{conv.EncaissementDelegue ? 'Délégué au cabinet' : 'Encaissement par la compagnie'}</Ligne>
+            <Ligne libelle="Délai de reversement">{conv.DelaiReversementJours} jours</Ligne>
+            <Ligne libelle="Plafond de délégation des sinistres">{conv.PlafondDelegationSinistre ? fcfa(conv.PlafondDelegationSinistre) : 'Aucune délégation'}</Ligne>
+            <Ligne libelle="Participation bénéficiaire">
+              {pb?.Active ? `${pb.Taux !== null && pb.Taux !== undefined ? `${nombre(pb.Taux)} %` : 'Oui'}${pb.SeuilSp !== null && pb.SeuilSp !== undefined ? `, S/P au plus ${nombre(pb.SeuilSp)} %` : ''}` : 'Non'}
+            </Ligne>
+            <Ligne libelle="Période">{conv.DateEffet || conv.DateRenouvellement ? `${dateFr(conv.DateEffet)} au ${dateFr(conv.DateRenouvellement)}` : '-'}</Ligne>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>Mise à jour le {dateFr(conv.DateMaj)}{conv.MajPar ? ` par ${conv.MajPar}` : ''}</div>
+          </>
+        ) : (
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: 0 }}>Conditions non renseignées : mandat d'encaissement, délai de reversement, délégation des sinistres.</p>
+        )}
+      </Bloc>
+      <Bloc titre="Coordonnées et courriers">
+        <Ligne libelle="Adresse">{c.Coordonnees.Adresse || '-'}</Ligne>
+        <Ligne libelle="Téléphone">{[c.Coordonnees.Telephone, c.Coordonnees.Mobile].filter(Boolean).join(', ') || '-'}</Ligne>
+        <Ligne libelle="Courriers adressés à">{[c.Courrier.Destinataire, c.Courrier.Service, c.Courrier.Ville].filter(Boolean).join(', ') || '-'}</Ligne>
+        {c.Courrier.AttentionDe && <Ligne libelle="À l'attention de">{c.Courrier.AttentionDe}</Ligne>}
+        {[['Production Auto', c.Coordonnees.ResponsableProductionAuto], ['Production risques divers', c.Coordonnees.ResponsableProductionRisquesDivers],
+          ['Sinistres Auto', c.Coordonnees.ResponsableSinistresAuto], ['Sinistres risques divers', c.Coordonnees.ResponsableSinistresRisquesDivers]]
+          .filter(([, v]) => v).map(([l, v]) => <Ligne key={l} libelle={`Responsable ${l}`}>{v}</Ligne>)}
+      </Bloc>
+      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary" onClick={() => onConditions(c)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <Edit3 size={15} /> {conv ? 'Modifier les conditions' : 'Renseigner les conditions'}
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={onFiche} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <Building2 size={15} /> Fiche compagnie
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------ conditions de la convention
+const FormulaireConditions = ({ compagnie, statuts, onFermer, onEnregistre }) => {
   const { success, error: toastError } = useToast();
-  const [conventions, setConventions] = useState(() => dataStore.getConventions());
-  const [deletingConvention, setDeletingConvention] = useState(null);
-  const [deleteValidation, setDeleteValidation] = useState({ allowed: true });
-  const [selectedConvention, setSelectedConvention] = useState(() => dataStore.getConventions()[0] || null);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showProtocolModal, setShowProtocolModal] = useState(false);
-
-  useEffect(() => {
-    let isMounted = true;
-    const loadData = async () => {
-      try {
-        const data = await conventionsApi.getConventions();
-        if (isMounted && data && Array.isArray(data) && data.length > 0) {
-          setConventions(data);
-          setSelectedConvention(data[0]);
-        }
-      } catch (err) {
-        console.error('Erreur conventions Django:', err);
-      }
-    };
-    loadData();
-    return () => { isMounted = false; };
-  }, []);
-  const [editForm, setEditForm] = useState({
-    plafond_delegation_sinistre: 5000000,
-    delai_reversement_jours: 30,
-    encaissement_delegue: true,
-  });
-
-  const handleOpenEdit = (cnv) => {
-    setSelectedConvention(cnv);
-    setEditForm({
-      plafond_delegation_sinistre: cnv.plafond_delegation_sinistre || 5000000,
-      delai_reversement_jours: cnv.delai_reversement_jours || 30,
-      encaissement_delegue: cnv.encaissement_delegue ?? true,
-    });
-    setShowEditModal(true);
-  };
-
-  const handleSaveEdit = () => {
-    if (!selectedConvention) return;
-    const updated = dataStore.updateConvention(selectedConvention.id, {
-      plafond_delegation_sinistre: Number(editForm.plafond_delegation_sinistre),
-      delai_reversement_jours: Number(editForm.delai_reversement_jours),
-      encaissement_delegue: Boolean(editForm.encaissement_delegue),
-    });
-    setConventions(dataStore.getConventions());
-    setSelectedConvention(updated || selectedConvention);
-    setShowEditModal(false);
-    success(`Modifications contractuelles enregistrées pour ${selectedConvention.compagnie}.`);
-  };
-
-  useEffect(() => {
-    const unsub = dataStore.subscribe(() => {
-      const list = dataStore.getConventions();
-      setConventions(list);
-      if (selectedConvention) {
-        const found = list.find((c) => c.id === selectedConvention.id);
-        if (found) setSelectedConvention(found);
-      }
-    });
-    return unsub;
-  }, [selectedConvention]);
-
-  // New convention form
-  const [newCnv, setNewCnv] = useState({
-    compagnie: '',
-    code_partenaire: '',
-    delai_reversement_jours: 30,
-    plafond_delegation_sinistre: 5000000,
-    encaissement_delegue: true,
-    participation_beneficiaire: { active: true, taux: '15%', seuil_sp: '60%' },
-  });
-
-  const handleCreateConvention = async (e) => {
-    e.preventDefault();
-    const payload = {
-      code_convention: `CNV-2026-${String(conventions.length + 1).padStart(3, '0')}`,
-      ...newCnv,
-      delai_reversement_jours: Number(newCnv.delai_reversement_jours),
-      plafond_delegation_sinistre: Number(newCnv.plafond_delegation_sinistre),
-      date_effet: '2026-01-01',
-      date_renouvellement: '2026-12-31',
-      statut: 'Actif',
-      commissions_branches: {
-        automobile: 12.5,
-        mrh: 15.0,
-        sante: 10.0,
-        rc: 14.0,
+  const [f, setF] = useState(() => {
+    const c = compagnie.Convention;
+    if (!c) return CONDITIONS_VIDES;
+    return {
+      ...c,
+      ParticipationBeneficiaire: {
+        Active: Boolean(c.ParticipationBeneficiaire?.Active),
+        Taux: c.ParticipationBeneficiaire?.Taux ?? '', SeuilSp: c.ParticipationBeneficiaire?.SeuilSp ?? '',
       },
+      DateEffet: c.DateEffet || '', DateRenouvellement: c.DateRenouvellement || '',
     };
-
-    const saved = dataStore.saveConvention(payload);
+  });
+  const [envoi, setEnvoi] = useState(false);
+  const changer = (cle, valeur) => setF((x) => ({ ...x, [cle]: valeur }));
+  const changerPb = (cle, valeur) => setF((x) => ({ ...x, ParticipationBeneficiaire: { ...x.ParticipationBeneficiaire, [cle]: valeur } }));
+  const enregistrer = async () => {
+    setEnvoi(true);
     try {
-      await conventionsApi.createConvention(payload);
+      const r = await conventionsApi.enregistrerConditions(compagnie.IdCompagnie, f);
+      success(r.message);
+      onEnregistre(r);
     } catch (err) {
-      console.warn('Fallback convention creation');
+      toastError(messageErreurApi(err));
+    } finally {
+      setEnvoi(false);
     }
-
-    setConventions(dataStore.getConventions());
-    setSelectedConvention(saved);
-    setShowAddModal(false);
-    success(`Convention avec ${payload.compagnie} paramétrée avec succès.`);
   };
+  const grille = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '1rem' };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={grille}>
+        <Champ label="Statut">
+          <select className="form-control" value={f.Statut} onChange={(e) => changer('Statut', e.target.value)}>
+            {statuts.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Champ>
+        <Champ label="Mandat d'encaissement">
+          <select className="form-control" value={f.EncaissementDelegue ? 'oui' : 'non'} onChange={(e) => changer('EncaissementDelegue', e.target.value === 'oui')}>
+            <option value="oui">Délégué au cabinet</option>
+            <option value="non">Encaissement par la compagnie</option>
+          </select>
+        </Champ>
+        <Champ label="Délai de reversement (jours)" aide="Après l'encaissement de la prime">
+          <input type="number" min="0" max="365" className="form-control" value={f.DelaiReversementJours} onChange={(e) => changer('DelaiReversementJours', e.target.value)} />
+        </Champ>
+        <Champ label="Plafond de délégation des sinistres" aide="0 : pas de délégation">
+          <AmountInput value={f.PlafondDelegationSinistre} onChange={(v) => changer('PlafondDelegationSinistre', v)} suffix="F" />
+        </Champ>
+        <Champ label="Date d'effet">
+          <input type="date" className="form-control" value={f.DateEffet} onChange={(e) => changer('DateEffet', e.target.value)} />
+        </Champ>
+        <Champ label="Date de renouvellement">
+          <input type="date" className="form-control" min={f.DateEffet || undefined} value={f.DateRenouvellement} onChange={(e) => changer('DateRenouvellement', e.target.value)} />
+        </Champ>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', cursor: 'pointer', fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <input type="checkbox" checked={f.ParticipationBeneficiaire.Active} onChange={(e) => changerPb('Active', e.target.checked)} style={{ width: 17, height: 17 }} />
+        Participation bénéficiaire prévue par la convention
+      </label>
+      {f.ParticipationBeneficiaire.Active && (
+        <div style={grille}>
+          <Champ label="Taux de participation (%)">
+            <input type="number" min="0" max="100" step="0.01" className="form-control" value={f.ParticipationBeneficiaire.Taux} onChange={(e) => changerPb('Taux', e.target.value)} />
+          </Champ>
+          <Champ label="Rapport sinistres / primes au plus (%)">
+            <input type="number" min="0" max="100" step="0.01" className="form-control" value={f.ParticipationBeneficiaire.SeuilSp} onChange={(e) => changerPb('SeuilSp', e.target.value)} />
+          </Champ>
+        </div>
+      )}
+      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0 }}>
+        Le code intermédiaire, les taux de commission et la part du cabinet dans les accessoires se règlent ailleurs : Compagnies partenaires et barèmes de commissions.
+      </p>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
+        <button type="button" className="btn btn-secondary" onClick={onFermer} disabled={envoi}>Annuler</button>
+        <button type="button" className="btn btn-primary" onClick={enregistrer} disabled={envoi} aria-busy={envoi} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          {envoi && <Loader2 size={15} className="spin" />} Enregistrer
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------ page
+export const ConventionsEnginePage = () => {
+  const navigate = useNavigate();
+  const { error: toastError } = useToast();
+  const [donnees, setDonnees] = useState(null);
+  const [chargement, setChargement] = useState(true);
+  const [recherche, setRecherche] = useState('');
+  const [filtre, setFiltre] = useState('TOUTES');
+  const [ouverte, setOuverte] = useState(null);
+  const [conditionsPour, setConditionsPour] = useState(null);
+
+  const charger = () => {
+    setChargement(true);
+    conventionsApi.parCompagnie()
+      .then(setDonnees)
+      .catch((err) => toastError(`Conventions non chargées : ${messageErreurApi(err)}`))
+      .finally(() => setChargement(false));
+  };
+  useEffect(() => { charger(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const compagnies = donnees?.Compagnies || [];
+  // Compagnies actives d'abord, puis par activité (polices en vigueur, primes émises), puis par nom
+  const liste = useMemo(() => {
+    const t = recherche.trim().toLowerCase();
+    return compagnies
+      .filter((c) => !t || `${c.Compagnie} ${c.CodeIntermediaire}`.toLowerCase().includes(t))
+      .filter((c) => (filtre === 'ACTIVITE' ? aActivite(c)
+        : filtre === 'A_REVERSER' ? c.Activite.AReverser.Montant > 0
+          : filtre === 'CONVENTION' ? Boolean(c.Convention)
+            : filtre === 'SANS_CONVENTION' ? !c.Convention : true))
+      .sort((a, b) => (Number(b.Active) - Number(a.Active)) || (b.Activite.ContratsEnVigueur - a.Activite.ContratsEnVigueur)
+        || (b.Activite.PrimesExercice - a.Activite.PrimesExercice) || a.Compagnie.localeCompare(b.Compagnie, 'fr'));
+  }, [compagnies, recherche, filtre]);
+
+  const actives = compagnies.filter((c) => c.Active);
+  const avecPolices = compagnies.filter((c) => c.Activite.ContratsEnVigueur > 0);
+  const aReverser = compagnies.filter((c) => c.Activite.AReverser.Montant > 0);
+  const somme = (cles) => compagnies.reduce((s, c) => s + Number(cles(c) || 0), 0);
+  const plusAncien = aReverser.map((c) => c.Activite.AReverser.PlusAncien).filter(Boolean).sort()[0];
+  const avecConvention = compagnies.filter((c) => c.Convention).length;
+
+  const th = { textAlign: 'left', padding: '0.55rem 0.6rem', fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-medium)', whiteSpace: 'nowrap' };
+  const td = { padding: '0.55rem 0.6rem', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-primary)', fontSize: '0.84rem', verticalAlign: 'middle' };
+  const num = { textAlign: 'right', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
-      {/* Header */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-            <span className="badge badge-primary">Module I – Conventions & Partenaires</span>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Moteur Multi-Compagnies</span>
-          </div>
-          <h1 className="title-xl">Conventions avec les compagnies</h1>
+          <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <FileSignature size={26} color="#3b82f6" /> Conventions avec les compagnies
+          </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-            Les accords signés avec chaque compagnie : mandat d'encaissement, délais de reversement, plafonds de délégation.
+            Compagnies partenaires du cabinet : code intermédiaire, taux de commission en vigueur, primes à reverser, commissions et conditions de la convention.
+            {donnees && <> Situation au {dateFr(donnees.Situation)}.</>}
           </p>
         </div>
-
-        <button
-          className="btn btn-primary"
-          onClick={() => setShowAddModal(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-        >
-          <Plus size={16} />
-          <span>Nouvelle Convention</span>
+        <button type="button" className="btn btn-secondary" onClick={charger} disabled={chargement} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <RefreshCw size={15} className={chargement ? 'spin' : undefined} /> Actualiser
         </button>
       </div>
 
-      {/* KPI Overview */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-        <MetricCard
-          title="Conventions Actives"
-          value={conventions.length}
-          subtitle="Partenaires agréés"
-          icon={<Building size={22} color="#60a5fa" />}
-        />
-        <MetricCard
-          title="Délai Reversement Légal"
-          value="30 Jours"
-          subtitle="Strictement conforme CIMA Livre V"
-          icon={<Clock size={22} color="#34d399" />}
-        />
-        <MetricCard
-          title="Mandat Délégation Max"
-          value="15 M FCFA"
-          subtitle="Plafond C3MEDICAL Santé / Évacuation"
-          icon={<ShieldCheck size={22} color="#818cf8" />}
-        />
-        <MetricCard
-          title="Participation Bénéficiaire"
-          value="4 Partenaires"
-          subtitle="Accords de PB négociés"
-          icon={<Percent size={22} color="#fbbf24" />}
-        />
+      {donnees && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+          <MetricCard title="Compagnies partenaires" value={nombre(actives.length)} subtitle={`${nombre(avecConvention)} convention${avecConvention > 1 ? 's' : ''} renseignée${avecConvention > 1 ? 's' : ''}`} icon={<Building2 size={22} color="#60a5fa" />} />
+          <MetricCard title="Polices en vigueur" value={nombre(somme((c) => c.Activite.ContratsEnVigueur))} subtitle={`chez ${nombre(avecPolices.length)} compagnie${avecPolices.length > 1 ? 's' : ''}`} icon={<Clock size={22} color="#34d399" />} color="emerald" />
+          <MetricCard title="Primes à reverser" value={fcfa(somme((c) => c.Activite.AReverser.Montant))} subtitle={aReverser.length ? `${nombre(aReverser.length)} compagnie${aReverser.length > 1 ? 's' : ''}, depuis le ${dateFr(plusAncien)}` : 'Rien à reverser'} icon={<Wallet size={22} color="#fbbf24" />} color="amber" />
+          <MetricCard title="Commissions en attente" value={fcfa(somme((c) => c.Activite.Commissions.EnAttente))} subtitle={`Payées : ${fcfa(somme((c) => c.Activite.Commissions.Payees))}`} icon={<HandCoins size={22} color="#c084fc" />} color="purple" />
+        </div>
+      )}
+
+      <div className="card" style={{ padding: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <div style={{ position: 'relative', flex: '1 1 260px', maxWidth: 420 }}>
+            <Search size={15} style={{ position: 'absolute', left: '0.7rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input type="search" className="form-control" placeholder="Rechercher une compagnie ou un code intermédiaire" value={recherche}
+              onChange={(e) => setRecherche(e.target.value)} style={{ paddingLeft: '2.1rem' }} aria-label="Rechercher une compagnie" />
+          </div>
+          <select className="form-control" value={filtre} onChange={(e) => setFiltre(e.target.value)} style={{ width: 'auto', minWidth: 220 }} aria-label="Filtrer les compagnies">
+            {FILTRES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+
+        {chargement && !donnees ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.88rem' }}><Loader2 size={15} className="spin" /> Lecture des compagnies…</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={th}>Compagnie</th>
+                  <th style={th}>Code intermédiaire</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Polices en vigueur</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Primes émises {donnees?.Exercice}</th>
+                  <th style={{ ...th, textAlign: 'right' }}>À reverser</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Commissions en attente</th>
+                  <th style={th}>Convention</th>
+                </tr>
+              </thead>
+              <tbody>
+                {liste.length === 0 && (
+                  <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>Aucune compagnie pour ce filtre.</td></tr>
+                )}
+                {liste.map((c) => {
+                  const estOuverte = ouverte === c.IdCompagnie;
+                  return (
+                    <React.Fragment key={c.IdCompagnie}>
+                      <tr onClick={() => setOuverte(estOuverte ? null : c.IdCompagnie)} style={{ cursor: 'pointer', opacity: c.Active ? 1 : 0.6 }}
+                        aria-expanded={estOuverte}>
+                        <td style={{ ...td, fontWeight: 700 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                            {estOuverte ? <ChevronDown size={15} /> : <ChevronRight size={15} />} {c.Compagnie}
+                          </span>
+                          {!c.Active && <span className="badge" style={{ marginLeft: '0.4rem', fontSize: '0.68rem' }}>inactive</span>}
+                          {c.Etranger && <span className="badge" style={{ marginLeft: '0.4rem', fontSize: '0.68rem' }}>étrangère</span>}
+                        </td>
+                        <td style={{ ...td, fontFamily: 'var(--font-mono)' }}>{c.CodeIntermediaire || '-'}</td>
+                        <td style={{ ...td, ...num }}>{c.Activite.ContratsEnVigueur ? nombre(c.Activite.ContratsEnVigueur) : '-'}</td>
+                        <td style={{ ...td, ...num }}>{c.Activite.PrimesExercice ? fcfa(c.Activite.PrimesExercice) : '-'}</td>
+                        <td style={{ ...td, ...num, color: c.Activite.AReverser.Montant ? 'var(--accent-amber)' : undefined, fontWeight: c.Activite.AReverser.Montant ? 700 : 400 }}>
+                          {c.Activite.AReverser.Montant ? fcfa(c.Activite.AReverser.Montant) : '-'}
+                        </td>
+                        <td style={{ ...td, ...num }}>{c.Activite.Commissions.EnAttente ? fcfa(c.Activite.Commissions.EnAttente) : '-'}</td>
+                        <td style={td}>
+                          {c.Convention
+                            ? <span className="badge badge-emerald">{c.Convention.Statut}</span>
+                            : <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>À renseigner</span>}
+                        </td>
+                      </tr>
+                      {estOuverte && (
+                        <tr>
+                          <td colSpan={7} style={{ ...td, background: 'var(--bg-surface)' }}>
+                            <DetailCompagnie c={c} exercice={donnees.Exercice} onConditions={setConditionsPour} onFiche={() => navigate('/admin/settings/companies')} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Conventions Grid & Detailed Config */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
-        {conventions.map((cnv) => (
-          <div
-            key={cnv.id}
-            className="glass-panel"
-            style={{
-              padding: '1.5rem',
-              borderRadius: 'var(--radius-xl)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              borderTop: '4px solid #2563eb',
-              boxShadow: 'var(--shadow-sm)',
+      <Modal isOpen={Boolean(conditionsPour)} onClose={() => setConditionsPour(null)} maxWidth="640px"
+        title={conditionsPour ? `Convention avec ${conditionsPour.Compagnie}` : ''}
+        subtitle={conditionsPour ? `Code intermédiaire ${conditionsPour.CodeIntermediaire || 'non renseigné'}` : ''}>
+        {conditionsPour && (
+          <FormulaireConditions
+            key={conditionsPour.IdCompagnie}
+            compagnie={conditionsPour}
+            statuts={donnees?.Statuts || ['Actif']}
+            onFermer={() => setConditionsPour(null)}
+            onEnregistre={(r) => {
+              setDonnees((d) => ({ ...d, Compagnies: d.Compagnies.map((x) => (x.IdCompagnie === r.IdCompagnie ? { ...x, Convention: r.Convention } : x)) }));
+              setConditionsPour(null);
             }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <span style={{ fontSize: '0.75rem', color: '#60a5fa', fontWeight: 600 }}>{cnv.id}</span>
-                <h2 className="title-md" style={{ margin: '0.2rem 0' }}>
-                  {cnv.compagnie}
-                </h2>
-                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
-                  {cnv.statut}
-                </span>
-              </div>
-              <div
-                style={{
-                  width: '40px',
-                  height: '40px',
-                  borderRadius: '10px',
-                  background: 'rgba(37,99,235,0.1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#60a5fa',
-                }}
-              >
-                <Building size={20} />
-              </div>
-            </div>
-
-            {/* Key parameters */}
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.6rem',
-                background: 'var(--bg-surface)',
-                padding: '1rem',
-                borderRadius: 'var(--radius-md)',
-                fontSize: '0.85rem',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Pouvoir Encaissement :</span>
-                <strong style={{ color: cnv.encaissement_delegue ? '#34d399' : '#fbbf24' }}>
-                  {cnv.encaissement_delegue ? 'Délégué (Quittance LE PHARE)' : 'Direct Assureur'}
-                </strong>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Délai Reversement CIMA :</span>
-                <strong>{cnv.delai_reversement_jours} jours calendaires</strong>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Plafond Gestion Sinistres :</span>
-                <strong style={{ color: '#60a5fa' }}>
-                  {Number(cnv.plafond_delegation_sinistre || 0).toLocaleString('fr-FR')} FCFA
-                </strong>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Participation Bénéficiaire :</span>
-                <span>
-                  {cnv.participation_beneficiaire?.active
-                    ? `${cnv.participation_beneficiaire.taux} (seuil S/P ${cnv.participation_beneficiaire.seuil_sp})`
-                    : 'Non applicable'}
-                </span>
-              </div>
-            </div>
-
-            {/* Commission rates by branch */}
-            <div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>
-                Barème de Commissions LE PHARE
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                {Object.entries(cnv.commissions_branches || {}).map(([branche, taux]) => (
-                  <div
-                    key={branche}
-                    style={{
-                      background: 'rgba(255,255,255,0.03)',
-                      padding: '0.4rem 0.6rem',
-                      borderRadius: '6px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      fontSize: '0.8rem',
-                    }}
-                  >
-                    <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>{branche} :</span>
-                    <strong style={{ color: '#34d399' }}>{taux} %</strong>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: '0.5rem', marginTop: 'auto', paddingTop: '0.5rem' }}>
-              <button
-                className="btn btn-secondary"
-                style={{ flex: 1, fontSize: '0.75rem', padding: '0.4rem' }}
-                onClick={() => {
-                  setSelectedConvention(cnv);
-                  setShowProtocolModal(true);
-                }}
-              >
-                <FileCheck size={13} style={{ marginRight: '0.35rem' }} /> Accord & Mandat
-              </button>
-              <button
-                className="btn btn-primary"
-                style={{ flex: 1, fontSize: '0.75rem', padding: '0.4rem' }}
-                onClick={() => handleOpenEdit(cnv)}
-              >
-                <Edit2 size={13} style={{ marginRight: '0.35rem' }} /> Modifier
-              </button>
-              <button
-                className="btn btn-secondary"
-                style={{ padding: '0.4rem 0.6rem', fontSize: '0.75rem', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.25)' }}
-                onClick={() => {
-                  const check = validateBusinessRule('delete', 'conventions', cnv, dataStore);
-                  setDeleteValidation(check);
-                  setDeletingConvention(cnv);
-                }}
-                title="Supprimer la convention"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Modal: New convention */}
-      <Modal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        title="Ajouter une Convention Assureur"
-        subtitle="Paramétrage des règles de gestion déléguée, plafonds et délais CIMA."
-        maxWidth="560px"
-      >
-        <form onSubmit={handleCreateConvention} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div className="form-group">
-            <label className="form-label">Raison Sociale Compagnie Assureur *</label>
-            <input
-              type="text"
-              className="form-control"
-              required
-              placeholder="ex: SANLAM ASSURANCES CI"
-              value={newCnv.compagnie}
-              onChange={(e) => setNewCnv({ ...newCnv, compagnie: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Délai Reversement (Jours CIMA)</label>
-              <input
-                type="number"
-                className="form-control"
-                value={newCnv.delai_reversement_jours}
-                onChange={(e) => setNewCnv({ ...newCnv, delai_reversement_jours: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Plafond Délégation Sinistre (FCFA)</label>
-              <input
-                type="number"
-                className="form-control"
-                value={newCnv.plafond_delegation_sinistre}
-                onChange={(e) => setNewCnv({ ...newCnv, plafond_delegation_sinistre: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
-              <input
-                type="checkbox"
-                checked={newCnv.encaissement_delegue}
-                onChange={(e) => setNewCnv({ ...newCnv, encaissement_delegue: e.target.checked })}
-              />
-              <span>Mandat d'encaissement délégué avec émission de quittance LE PHARE</span>
-            </label>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>
-              Annuler
-            </button>
-            <button type="submit" className="btn btn-primary">
-              Créer la Convention
-            </button>
-          </div>
-        </form>
+          />
+        )}
       </Modal>
-
-      {/* Modal: Edit convention */}
-      {selectedConvention && (
-        <Modal
-          isOpen={showEditModal}
-          onClose={() => setShowEditModal(false)}
-          title={`Paramètres Convention – ${selectedConvention.compagnie}`}
-          subtitle="Ajustement contractuel du plafond et des délais de reversement."
-          maxWidth="560px"
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Plafond de gestion déléguée des sinistres (FCFA)</label>
-              <input
-                type="number"
-                className="form-control"
-                value={editForm.plafond_delegation_sinistre}
-                onChange={(e) => setEditForm({ ...editForm, plafond_delegation_sinistre: e.target.value })}
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Délai contractuel de reversement (jours CIMA)</label>
-              <input
-                type="number"
-                className="form-control"
-                value={editForm.delai_reversement_jours}
-                onChange={(e) => setEditForm({ ...editForm, delai_reversement_jours: e.target.value })}
-              />
-            </div>
-
-            <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
-                <input
-                  type="checkbox"
-                  checked={editForm.encaissement_delegue}
-                  onChange={(e) => setEditForm({ ...editForm, encaissement_delegue: e.target.checked })}
-                />
-                <span>Mandat d'encaissement délégué actif</span>
-              </label>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>
-                Fermer
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleSaveEdit}
-              >
-                Sauvegarder
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Modal: View Convention Protocol & Mandate Certificate */}
-      {selectedConvention && (
-        <Modal
-          isOpen={showProtocolModal}
-          onClose={() => setShowProtocolModal(false)}
-          title={`Accord & Protocole de Convention – ${selectedConvention.compagnie}`}
-          subtitle={`Référence Convention : ${selectedConvention.id} • Conforme Code des Assurances CIMA`}
-          maxWidth="640px"
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div
-              style={{
-                background: 'rgba(37,99,235,0.06)',
-                border: '1px solid rgba(37,99,235,0.2)',
-                borderRadius: 'var(--radius-md)',
-                padding: '1rem',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>Partenaire Porteur de Risque</div>
-                <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#fff' }}>{selectedConvention.compagnie}</div>
-                <div style={{ fontSize: '0.75rem', color: '#60a5fa' }}>Mandat de Courtage & Délégation de Gestion</div>
-              </div>
-              <span className="badge badge-success" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}>
-                Convention Active 2026
-              </span>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', fontSize: '0.825rem' }}>
-              <div style={{ padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.7rem' }}>POUVOIR D'ENCAISSEMENT (ART. 13)</span>
-                <strong style={{ color: selectedConvention.encaissement_delegue ? '#34d399' : '#fbbf24' }}>
-                  {selectedConvention.encaissement_delegue ? 'Délégué avec quittance LE PHARE' : 'Direct Compagnie'}
-                </strong>
-              </div>
-              <div style={{ padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.7rem' }}>DÉLAI DE REVERSEMENT (ART. 544)</span>
-                <strong style={{ color: '#fff' }}>{selectedConvention.delai_reversement_jours} Jours Calendaires</strong>
-              </div>
-              <div style={{ padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.7rem' }}>PLAFOND RÈGLEMENT SINISTRES (ART. 54)</span>
-                <strong style={{ color: '#60a5fa' }}>{Number(selectedConvention.plafond_delegation_sinistre || 0).toLocaleString('fr-FR')} FCFA</strong>
-              </div>
-              <div style={{ padding: '0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.7rem' }}>PARTICIPATION BÉNÉFICIAIRE</span>
-                <strong style={{ color: '#fbbf24' }}>
-                  {selectedConvention.participation_beneficiaire?.active
-                    ? `${selectedConvention.participation_beneficiaire.taux} (S/P ${selectedConvention.participation_beneficiaire.seuil_sp})`
-                    : 'Non applicable'}
-                </strong>
-              </div>
-            </div>
-
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                Taux de Commissions Contractuels par Branche CIMA
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem' }}>
-                {Object.entries(selectedConvention.commissions_branches || {}).map(([b, t]) => (
-                  <div key={b} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: 'var(--bg-surface)', borderRadius: '4px', border: '1px solid var(--border-subtle)', fontSize: '0.8rem' }}>
-                    <span style={{ textTransform: 'capitalize' }}>{b}</span>
-                    <strong style={{ color: '#34d399' }}>{t} %</strong>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowProtocolModal(false)}>
-                Fermer
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  window.print();
-                  success('Impression du protocole de convention lancée.');
-                }}
-              >
-                Imprimer le Protocole
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Modal Suppression Convention */}
-      <DeleteConfirmModal
-        isOpen={!!deletingConvention}
-        onClose={() => setDeletingConvention(null)}
-        itemType="convention assureur"
-        itemName={`Convention ${deletingConvention?.code} (${deletingConvention?.compagnie})`}
-        itemCode={deletingConvention?.code}
-        validation={deleteValidation}
-        onConfirm={() => {
-          if (deletingConvention) {
-            try {
-              dataStore.deleteConvention(deletingConvention.id);
-              setConventions(dataStore.getConventions());
-              success(`Convention ${deletingConvention.code} supprimée.`);
-              setDeletingConvention(null);
-            } catch (err) {
-              toastError(err.message);
-            }
-          }
-        }}
-      />
     </div>
   );
 };

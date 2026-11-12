@@ -17,6 +17,7 @@ import {
   mockUsers,
   mockLeads,
 } from './mockData.js';
+import { estSolde, resteAEncaisser } from '../utils/resteEncaissement';
 
 const STORAGE_KEYS = {
   CLIENTS: 'uranus_clients',
@@ -855,11 +856,11 @@ export const dataStore = {
       montant_encaisse: Number(contractData.montant_encaisse || 0),
       statut_encaissement:
         contractData.statut_encaissement ||
-        (Number(contractData.montant_encaisse || 0) >= Number(contractData.prime_totale || 0)
+        (estSolde(contractData.prime_totale, contractData.montant_encaisse)
           ? 'Soldé'
           : 'À Encaisser'),
       statut_encaissement_badge:
-        Number(contractData.montant_encaisse || 0) >= Number(contractData.prime_totale || 0)
+        estSolde(contractData.prime_totale, contractData.montant_encaisse)
           ? 'emerald'
           : 'rose',
       statut_contrat: contractData.statut_contrat || 'En cours',
@@ -1341,7 +1342,7 @@ export const dataStore = {
 
     const paymentAmount = Number(montant || 0);
     const newMontantEncaisse = (contract.montant_encaisse || 0) + paymentAmount;
-    const isSolde = newMontantEncaisse >= contract.prime_totale;
+    const isSolde = estSolde(contract.prime_totale, newMontantEncaisse);
 
     // Update contract
     const updatedContract = dataStore.updateContract(contract.id, {
@@ -1362,7 +1363,7 @@ export const dataStore = {
       branche: contract.produit,
       montant_encaisse: paymentAmount,
       prime_totale: contract.prime_totale,
-      reste_a_payer: Math.max(0, contract.prime_totale - newMontantEncaisse),
+      reste_a_payer: resteAEncaisser(contract.prime_totale, newMontantEncaisse),
       mode_paiement: modePaiement || 'ESPECES',
       reference_paiement: reference || (modePaiement === 'CHEQUE' ? `CHQ-${banque || 'BNI'}` : 'Caisse Centrale'),
       date_encaissement: `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')}`,

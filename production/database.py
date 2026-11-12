@@ -11,6 +11,7 @@ from django.db.models import Sum
 from django.db.utils import DatabaseError
 from rest_framework.exceptions import APIException, ValidationError
 
+from autorisations.journal import journaliser
 from core.date_parser import date_emission_du_jour, parse_date_string
 from core.services import ServiceError
 from configuration_api.models import Banque, ModeEncaissement
@@ -18,6 +19,13 @@ from customer.models import Client
 from uranus.settings import MAX_LIMIT_FOR_SEARCH
 
 from .iautils import convert_to_date, unpack_ia_quotation_post_data
+from .incorporation import (
+    _verifier_periode_devis,
+    controler_vehicule_incorpore,
+    mode_incorporation,
+    tarification_incorporation,
+    verifier_incorporation_non_vide,
+)
 from .models import (
     AssureIaInfo,
     AssureIaParDevisOuContrat,
@@ -171,9 +179,21 @@ def verifier_categorie_police(cursor, id_devis):
     confirmation d'une affaire nouvelle, d'un remplacement ou d'un transfert, avec le code catégorie
     du tarif d'une ligne du devis : sans ligne catégorisée, la police sortirait en « 000 ».
     """
+    # Prime invalide (NaN : fichier importé à cellules vides) : elle passerait au contrat et au compte du client
+    cursor.execute(
+        """SELECT 1 FROM stddevis d WHERE d.iddevis = %(devis)s AND ('NaN' IN (d.primenette, d.accessoire, d.taxe, d.primettc)
+           OR EXISTS (SELECT 1 FROM stddevisdetail dd WHERE dd.iddevis = d.iddevis AND dd.primenette = 'NaN'))""",
+        {"devis": id_devis},
+    )
+    if cursor.fetchone():
+        raise ValueError(
+            "Les primes de ce devis sont invalides (fichier importé avec des cellules vides ?) : "
+            "supprimez ce devis ou importez de nouveau le fichier avant de confirmer."
+        )
     cursor.execute(
         """
-        SELECT TRIM(COALESCE(a.codeavenant, '')),
+        SELECT d.idproduit,
+               TRIM(COALESCE(a.codeavenant, '')),
                COUNT(x.iddevisdetail),
                COUNT(x.iddevisdetail) FILTER (
                    WHERE COALESCE(NULLIF(TRIM(t.codecategorie), ''), '000') <> '000'
@@ -183,20 +203,21 @@ def verifier_categorie_police(cursor, id_devis):
         LEFT JOIN stddevisdetail x ON x.iddevis = d.iddevis
         LEFT JOIN stdtarif t ON t.idtarif = x.idtarif
         WHERE d.iddevis = %s
-        GROUP BY a.codeavenant
+        GROUP BY d.idproduit, a.codeavenant
         """,
         [id_devis],
     )
     row = cursor.fetchone()
-    if not row or row[0] not in ("AFN", "RPP", "TRP"):
+    if not row or row[1] not in ("AFN", "RPP", "TRP"):
         return
-    _, nb_lignes, nb_lignes_categorisees = row
+    id_produit, _, nb_lignes, nb_lignes_categorisees = row
     if nb_lignes == 0:
         raise ValueError(
             "Ce devis n'a aucune ligne de détail : impossible d'attribuer un numéro de police "
             "(code courtier + code catégorie + année). Complétez le devis avant de le confirmer."
         )
-    if nb_lignes_categorisees < nb_lignes:
+    # La Vie/AFA utilise volontairement la catégorie 000 (« non spécifiée »).
+    if id_produit != 10 and nb_lignes_categorisees < nb_lignes:
         raise ValueError(
             "Une ligne du devis n'a pas de catégorie de tarif : le numéro de police porterait la "
             "catégorie 000. Corrigez la catégorie avant de confirmer le devis."
@@ -217,6 +238,11 @@ def save_contract(input_data):
         with transaction.atomic():
             with connection.cursor() as cursor:
                 verifier_categorie_police(cursor, IdDevis)
+                verifier_incorporation_non_vide(cursor, IdDevis)
+                # Retraite complémentaire : pas de mois confirmé sans son état des cotisations
+                from .vie_retraite import verifier_etat_avant_confirmation
+
+                verifier_etat_avant_confirmation(cursor, IdDevis)
                 cursor.execute(
                     "CALL sp_confirmation_devis(%s, %s, %s);",
                     (IdDevis, IdContrat, OutputMessage),
@@ -309,7 +335,6 @@ def save_quotation_ia(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (
         error_occured,
@@ -386,7 +411,6 @@ def save_insured_ia(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -532,7 +556,6 @@ def save_quotation_voyage(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -669,7 +692,6 @@ def save_quotation_mrh(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occurred,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -821,7 +843,6 @@ def save_quotation_tousrisquesinfo(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occurred,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1116,7 +1137,6 @@ def save_quotation_globaledebanque(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occurred,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1305,8 +1325,29 @@ def save_quotation(input_data):
                 list(chain(queryset_vide, data_insertion_result_list)),
             )
 
+    mode_tarif = None
     try:
-        with connection.cursor() as cursor:
+        if IdDevis:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT a.codeavenant, b.dateeffet::date, d.dateexpiration::date
+                       FROM stddevis d
+                       JOIN stdavenant a ON a.idavenant = d.idavenant
+                       LEFT JOIN stddevis b ON b.iddevis = d.idoldhist
+                       WHERE d.iddevis = %s""",
+                    [IdDevis],
+                )
+                devis_mouvement = cursor.fetchone()
+                if devis_mouvement:
+                    _verifier_periode_devis(
+                        devis_mouvement[0], devis_mouvement[1], devis_mouvement[2], DateEffet, DateExpiration,
+                    )
+                # Incorporation dans une flotte : véhicule pas encore assuré dans la police, prime au prorata des
+                # jours restants jusqu'à l'échéance (affaire forfaitaire : prime annuelle entière)
+                mode_tarif = mode_incorporation(cursor, IdDevis)
+                if mode_tarif:
+                    controler_vehicule_incorpore(cursor, IdDevis, Matricule)
+        with tarification_incorporation(mode_tarif), connection.cursor() as cursor:
             cursor.execute(
                 "CALL sp_creation_devis(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);",
                 (
@@ -1388,7 +1429,6 @@ def save_quotation(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occurred,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1421,6 +1461,11 @@ def quotation_completion(input_data):
             )
             connection.commit()
             row = cursor.fetchone()
+            # IA : montants exacts gardés (fichier importé, contrat renouvelé) réappliqués après le calcul
+            from .ia_montants_imposes import appliquer as appliquer_montants_ia
+
+            if appliquer_montants_ia(cursor, IdDevis):
+                connection.commit()
             sql_output = DataInsertionResult(
                 ObjectId=IdDevis,
                 OutputMessage=row[0],
@@ -1440,7 +1485,6 @@ def quotation_completion(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1487,7 +1531,6 @@ def archive_quote(input_data, user_id):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1532,7 +1575,6 @@ def unarchive_quote(input_data, user_id):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_insertion_result_list)),
@@ -1578,7 +1620,6 @@ def cancel_car_input(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (
         error_occured,
         list(chain(queryset_vide, data_deletion_result_list)),
@@ -1626,7 +1667,6 @@ def enregistrer_ayant_droit(input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return list(chain(queryset_vide, data_insertion_result_list))
 
 
@@ -1706,7 +1746,6 @@ def get_quotation_info(iddevis):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -1767,7 +1806,6 @@ def get_liste_assure_ia(id, statut):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -1792,7 +1830,6 @@ def get_taux_reduction_flotte(iddevis):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return taux_reduction
 
@@ -1843,7 +1880,6 @@ def get_assure_ia(iddevis):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -1880,7 +1916,6 @@ def get_encaissement_info_for_sms(idencaissement):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return encaissement_info_list
 
@@ -1964,7 +1999,6 @@ def get_contract_info(idcontrat):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2005,7 +2039,6 @@ def get_contract_coverage(idcontrat):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2057,7 +2090,6 @@ def get_garantie_souscrite(id_entite, type_entite):
     finally:
         if connection:
             cursor.close()
-            connection.close()
     return (msg, res)
 
 
@@ -2133,7 +2165,6 @@ def get_contract_car_list(id, contrat=True):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2192,7 +2223,6 @@ def get_contract_list_for_pc(referenceclient, referencecontrat):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2264,7 +2294,6 @@ def get_contract_list_for_customer(
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2337,7 +2366,6 @@ def get_encaissement_recherche(referenceclient, referencecontrat):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2391,7 +2419,6 @@ def get_contract_premium_remittance(idcompagnie):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2448,7 +2475,6 @@ def get_info_encaissement(detailencaissement):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2511,7 +2537,6 @@ def get_info_vehicule(idcontrat):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2567,7 +2592,6 @@ def get_info_reversement(reversement):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 
@@ -2669,6 +2693,44 @@ def get_quotation_counts(idproduit):
 
 #####################################################################
 # Save premium collection
+# Modes qui contre-passent ou sortent de l'argent d'une quittance : pas de plafond (décaissement, annulation, contrepartie)
+MODES_SANS_PLAFOND = {"DMA", "ANL", "CPA"}
+
+
+def _controler_reste_du(liste_quittance):
+    """Un règlement ne dépasse jamais ce qui reste dû sur sa quittance (demande du 2026-11-05). La procédure écrêtait la
+    quittance, gardait le montant entier sur la ligne, base du reversement, et mettait le surplus en avoir client. Les
+    quittances restent verrouillées jusqu'à la fin de l'enregistrement : deux caisses ne règlent pas le même reste."""
+    numeros = [str(ligne["numero_quittance"]) for ligne in liste_quittance]
+    if len(set(numeros)) != len(numeros):
+        raise ValidationError("Une même quittance figure deux fois dans ce règlement.")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT numeroquittance, COALESCE(primettc, 0), COALESCE(mt_encaisse, 0) FROM stdquittance WHERE numeroquittance = ANY(%s) FOR UPDATE",
+            [numeros],
+        )
+        quittances = {numero: (ttc, encaisse) for numero, ttc, encaisse in cursor.fetchall()}
+    # Centimes affichés quand il y en a : « 4 684 163,34 F dépasse 4 684 163,33 F »
+    francs = lambda valeur: (f"{valeur:,.0f}" if valeur == valeur.to_integral_value() else f"{valeur:,.2f}").replace(",", " ").replace(".", ",")  # noqa: E731
+    for ligne, numero in zip(liste_quittance, numeros):
+        if numero not in quittances:
+            raise ValidationError(f"Quittance {numero} introuvable.")
+        ttc, encaisse = quittances[numero]
+        du = ttc - encaisse
+        montant = Decimal(str(ligne["montant_encaissement"]))
+        # Ristourne : la quittance est négative, et ce qui reste dû aussi
+        sens = -1 if ttc < 0 else 1
+        if du * sens <= 0:
+            raise ValidationError(f"La quittance {numero} est déjà soldée : aucun règlement n'est possible.")
+        if montant * sens < 0:
+            raise ValidationError(f"Quittance {numero} : le montant du règlement est invalide.")
+        if montant * sens > du * sens:
+            raise ValidationError(
+                f"Quittance {numero} : le règlement de {francs(montant)} F dépasse le reste dû de {francs(du)} F "
+                f"(prime {francs(ttc)} F, déjà encaissé {francs(encaisse)} F)."
+            )
+
+
 def save_premium_collection(user, input_data):
     def texte(cle):
         return str(input_data.get(cle) or "").strip()
@@ -2684,7 +2746,8 @@ def save_premium_collection(user, input_data):
     if input_data.get("banque"):
         banque = int(input_data["banque"])
 
-    montant_total = Decimal(input_data["montant_total"])
+    # str : un montant à centimes reçu en nombre flottant vaut exactement ce qui a été saisi, comme les lignes envoyées à la procédure
+    montant_total = Decimal(str(input_data["montant_total"]))
     # Tout chèque porte sa banque (demande du 2026-10-21) ; 1 = « NEANT »
     if abrege == "CHQ" and banque <= 1:
         raise ValidationError("La banque du chèque est à renseigner.")
@@ -2695,7 +2758,7 @@ def save_premium_collection(user, input_data):
     utilisation_cheque = abrege == "CHQ" and banque != 1 and numero_cheque != ""
     montant_initial_cheque = None
     if input_data.get("montant_initial_cheque"):
-        montant_initial_cheque = Decimal(input_data["montant_initial_cheque"])
+        montant_initial_cheque = Decimal(str(input_data["montant_initial_cheque"]))
 
     reference_encaissement = texte("reference_encaissement")
     # Paiement mobile saisi à la caisse : le reçu remis par l'opérateur tient lieu de
@@ -2708,6 +2771,8 @@ def save_premium_collection(user, input_data):
     motif_compensation = texte("motif_compensation") if compensation else ""
     reference_reencaissement = texte("reference_reencaissement")
     id_cheque_impaye = input_data.get("id_cheque_impaye")
+    # Réencaissement d'un règlement décaissé, autre qu'un chèque (production/decaissements.py)
+    id_decaissement = input_data.get("id_decaissement")
     # Ordre du règlement (titre du bordereau remis à la compagnie, production/views_bordereaux.py) : un chèque ou un
     # virement à l'ordre de la compagnie lui est transmis tel quel ; mode URANUS « A la compagnie » : toujours ;
     # espèces : toujours, directement au bordereau de réclamation de commission (demande du 2026-10-20)
@@ -2772,8 +2837,12 @@ def save_premium_collection(user, input_data):
     id_encaissement = 0
     output_message = ""
     cheque = None
+    trace_reutilisation = ""
 
     with transaction.atomic():
+        if abrege not in MODES_SANS_PLAFOND:
+            _controler_reste_du(liste_quittance)
+
         # Réencaissement d'un chèque impayé : ses références sont obligatoires
         cheque_impaye = None
         if id_cheque_impaye:
@@ -2784,12 +2853,22 @@ def save_premium_collection(user, input_data):
             )
             if not cheque_impaye:
                 raise ValidationError(
-                    "Chèque impayé introuvable ou déjà réencaissé."
+                    "Chèque annulé introuvable ou déjà réencaissé."
                 )
             if not reference_reencaissement:
                 raise ValidationError(
                     "Les références du réencaissement doivent être renseignées."
                 )
+        if id_decaissement:
+            from .decaissements import ErreurDecaissement, verrouiller_pour_reencaissement
+
+            if not reference_reencaissement:
+                raise ValidationError("Les références du réencaissement doivent être renseignées.")
+            try:
+                with connection.cursor() as cursor:
+                    verrouiller_pour_reencaissement(cursor, int(id_decaissement))
+            except (ErreurDecaissement, ValueError) as erreur:
+                raise ValidationError(str(erreur) or "Annulation introuvable.")
 
         # 1. Tentative de récupération ou création du chèque
         # On verrouille la ligne pour éviter les accès concurrents (select_for_update)
@@ -2799,13 +2878,12 @@ def save_premium_collection(user, input_data):
                 .filter(numero_cheque=numero_cheque, banque_id=banque)
                 .first()
             )
-            if cheque and cheque.statut == Cheque.Statut.IMPAYE:
-                raise ValidationError(
-                    "Ce chèque est revenu impayé : il ne peut plus régler de quittance."
-                )
+            # Chèque annulé : remis en service (demande du 2026-11-12), son montant initial peut être corrigé
+            if cheque and cheque.statut in STATUTS_CHEQUE_ANNULE:
+                trace_reutilisation = reutiliser_cheque_annule(cheque, montant_initial_cheque, date_encaissement)
             # Un chèque qui règle plusieurs quittances garde le montant de son premier usage :
             # un autre montant saisi est une erreur (il était ignoré sans prévenir)
-            if cheque and montant_initial_cheque and montant_initial_cheque != cheque.montant_initial:
+            elif cheque and montant_initial_cheque and montant_initial_cheque != cheque.montant_initial:
                 raise ValidationError(
                     f"Ce chèque est déjà enregistré pour un montant initial de {cheque.montant_initial:,.0f} F "
                     f"(solde disponible {cheque.solde_disponible:,.0f} F).".replace(",", " ")
@@ -2888,8 +2966,23 @@ def save_premium_collection(user, input_data):
                 date_operation=date_encaissement,
             )
 
-        # 5. Chèque impayé entièrement réencaissé
-        if cheque_impaye:
+        if id_decaissement:
+            from .decaissements import lier_reencaissement
+
+            with connection.cursor() as cursor:
+                lier_reencaissement(cursor, int(id_decaissement), id_enc_genere)
+
+        if trace_reutilisation:
+            journaliser(
+                utilisateur=user, module="encaissements", action=ACTION_REUTILISATION_CHEQUE, objet_type="cheque",
+                objet_id=cheque.id_cheque, type_operation="ENCAISSEMENT",
+                description=f"Chèque n° {cheque.numero_cheque} réutilisé après annulation : {trace_reutilisation}, encaissement {id_enc_genere}",
+                details={"Cheque": cheque.id_cheque, "Encaissement": id_enc_genere, "Montant": str(montant_total),
+                         "MontantInitial": str(cheque.montant_initial), "Trace": trace_reutilisation},
+            )
+
+        # 5. Chèque impayé entièrement réencaissé (sauf s'il se réencaisse lui-même : il est de nouveau en service)
+        if cheque_impaye and not (cheque and cheque.id_cheque == cheque_impaye.id_cheque):
             reencaisse = Encaissement.objects.filter(
                 cheque_impaye=cheque_impaye,
                 piece_annulee=False,
@@ -2905,7 +2998,61 @@ def save_premium_collection(user, input_data):
     }
     if utilisation_cheque:
         res_dict["solde_restant_cheque"] = cheque.solde_disponible
+    if trace_reutilisation:
+        res_dict["cheque_reutilise"] = trace_reutilisation
     return res_dict
+
+
+# État d'un chèque dans les messages du Portefeuille des règlements (« Annuler » au lieu de « Impayé », 2026-11-11)
+ETATS_CHEQUE = {"A_DEPOSER": "à déposer", "IMPAYE": "déjà annulé", "REENCAISSE": "annulé puis réencaissé"}
+
+# Chèque annulé (IMPAYE, « Annulé » à l'écran ; REENCAISSE : annulé puis réglé autrement) : réutilisable (demande du
+# 2026-11-12 : « un chèque annulé doit pouvoir être réutilisable à cause des diverses causes d'annulation » - erreur de
+# client, de quittance ou de montant, chèque représenté à la banque…). Ses anciennes pièces restent contre-passées ; il
+# retrouve le montant qu'aucune pièce en cours n'utilise. Trace : observation du chèque et journal.
+STATUTS_CHEQUE_ANNULE = (Cheque.Statut.IMPAYE, Cheque.Statut.REENCAISSE)
+ACTION_REUTILISATION_CHEQUE = "encaissements.cheque.reutilisation"
+
+
+def montant_utilise_cheque(cheque):
+    """Montant du chèque consommé par des pièces non annulées."""
+    operations = list(cheque.operations.all())
+    actives = set(
+        Encaissement.objects.filter(
+            idencaissement__in=[op.id_encaissement for op in operations], piece_annulee=False
+        ).values_list("idencaissement", flat=True)
+    )
+    return sum((op.montant_operation for op in operations if op.id_encaissement in actives), Decimal("0"))
+
+
+def reutiliser_cheque_annule(cheque, montant_initial=None, jour=None, statut=Cheque.Statut.ENCAISSE, echeance=None, id_client=None):
+    """Remet en service un chèque annulé (ligne verrouillée par l'appelant) : encaissé ce jour, ou de nouveau à déposer à
+    l'échéance donnée (échéancier). Montant initial corrigeable s'il couvre ce que des pièces en cours utilisent encore.
+    Renvoie la trace écrite dans l'observation du chèque."""
+    jour = jour or date_emission_du_jour()
+    utilise = montant_utilise_cheque(cheque)
+    if montant_initial and montant_initial != cheque.montant_initial:
+        if montant_initial < utilise:
+            raise ValidationError(
+                f"Ce chèque règle encore {utilise:,.0f} F : son montant initial ne peut pas descendre en dessous.".replace(",", " ")
+            )
+        cheque.montant_initial = montant_initial
+    annule = f"annulé le {cheque.date_decaissement:%d/%m/%Y}" if cheque.date_decaissement else "annulé"
+    if cheque.motif_decaissement:
+        annule += f" ({cheque.motif_decaissement.strip()[:60]})"
+    trace = f"{annule}, réutilisé le {jour:%d/%m/%Y}" + (" pour l'échéancier" if statut == Cheque.Statut.A_DEPOSER else "")
+    historique = f"{cheque.observation.strip()} ; {trace[0].upper()}{trace[1:]}" if (cheque.observation or "").strip() else f"{trace[0].upper()}{trace[1:]}"
+    # Observation bornée à 255 caractères : les réutilisations les plus récentes sont gardées
+    cheque.observation = historique if len(historique) <= 255 else "…" + historique[-254:]
+    cheque.solde_disponible = cheque.montant_initial - utilise
+    cheque.statut = statut
+    cheque.date_depot = jour if statut == Cheque.Statut.ENCAISSE else None
+    if echeance:
+        cheque.date_echeance = echeance
+    if id_client:
+        cheque.client_id = id_client
+    cheque.save()
+    return trace
 
 
 def decaisser_cheque_impaye(user, id_cheque, motif, date_decaissement):
@@ -2916,14 +3063,14 @@ def decaisser_cheque_impaye(user, id_cheque, motif, date_decaissement):
     """
     motif = str(motif or "").strip()
     if not motif:
-        raise ValidationError("Le motif du décaissement doit être précisé.")
+        raise ValidationError("Le motif de l'annulation doit être précisé.")
     with transaction.atomic():
         cheque = Cheque.objects.select_for_update().filter(id_cheque=id_cheque).first()
         if not cheque:
             raise ValidationError("Chèque introuvable.")
         if cheque.statut != Cheque.Statut.ENCAISSE:
             raise ValidationError(
-                f"Ce chèque est « {cheque.get_statut_display()} » : décaissement impossible."
+                f"Ce chèque est {ETATS_CHEQUE.get(cheque.statut, cheque.get_statut_display().lower())} : annulation impossible."
             )
         ids = list(cheque.operations.values_list("id_encaissement", flat=True))
         encaissements = list(
@@ -2963,7 +3110,7 @@ def decaisser_cheque_impaye(user, id_cheque, motif, date_decaissement):
         "id_cheque": cheque.id_cheque,
         "montant_impaye": montant,
         "encaissements_annules": len(encaissements),
-        "message": f"Chèque déclaré impayé : {len(encaissements)} encaissement(s) annulé(s).",
+        "message": f"Chèque annulé : {len(encaissements)} encaissement(s) contre-passé(s), les quittances sont de nouveau à encaisser.",
     }
 
 
@@ -2997,7 +3144,12 @@ def enregistrer_echeancier_cheques(id_client, id_banque, cheques, observation=""
                     f"Le chèque n° {numero} ({banques[banque]}) est saisi deux fois."
                 )
             vus.add((numero, banque))
-            if Cheque.objects.filter(numero_cheque=numero, banque_id=banque).exists():
+            existant = Cheque.objects.select_for_update().filter(numero_cheque=numero, banque_id=banque).first()
+            if existant and existant.statut in STATUTS_CHEQUE_ANNULE:
+                reutiliser_cheque_annule(existant, montant, statut=Cheque.Statut.A_DEPOSER, echeance=echeance, id_client=id_client)
+                crees.append(existant)
+                continue
+            if existant:
                 raise ValidationError(
                     f"Le chèque n° {numero} de la banque {banques[banque]} est déjà enregistré."
                 )
@@ -3129,7 +3281,6 @@ def save_plate_number(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (
         error_occured,
@@ -3205,7 +3356,6 @@ def policy_modification(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (
         error_occured,
@@ -3279,7 +3429,6 @@ def save_premium_remittance(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return list(chain(queryset_vide, data_insertion_result_list))
 
@@ -3332,7 +3481,6 @@ def premium_remittance_validation(user_id, input_data):
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return error_occured, list(
         chain(queryset_vide, data_insertion_result_list)
@@ -3371,7 +3519,6 @@ def get_contrat_echeance():
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (msg, res)
 

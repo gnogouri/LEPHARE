@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 
 // Formate en direct pendant la saisie : "30000000" -> "30 000 000". La valeur
 // numérique brute (sans espaces) est ce qui est transmis à onChange, jamais
-// la chaîne affichée — pour rester lisible sans casser les montants stockés.
+// la chaîne affichée - pour rester lisible sans casser les montants stockés.
 const groupThousands = (digits) => {
   if (!digits) return '';
   return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');

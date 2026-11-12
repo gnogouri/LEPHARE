@@ -119,6 +119,37 @@ def _reprendre_assure_existant(assure_existant, assure_data, numero_ligne, rappo
         )
 
 
+def donnees_avec_avenant(request_post_data, id_avenant_devis, police_connexe_devis=""):
+    """Données de l'écran avec l'avenant du devis existant à la place de celui envoyé. L'écran IA envoyait l'avenant 1
+    (affaire nouvelle) en important dans un devis de renouvellement : sp_creation_devis_ia le réécrivait sur le devis,
+    qui sortait de la page Renouvellement (devis REN seuls) et aurait pris une nouvelle police à la confirmation.
+    La police Santé connexe du devis (IA MINENE) complète aussi une saisie vide, que la base refuse pour l'offre MINENE."""
+    changer_avenant = bool(id_avenant_devis) and str(request_post_data.get("IdAvenant") or "") != str(id_avenant_devis)
+    police = str(police_connexe_devis or "").strip()
+    changer_police = bool(police) and not str(request_post_data.get("NumeroPoliceConnexe") or "").strip()
+    if not (changer_avenant or changer_police):
+        return request_post_data
+    donnees = request_post_data.copy()
+    if changer_avenant:
+        donnees["IdAvenant"] = str(id_avenant_devis)
+    if changer_police:
+        donnees["NumeroPoliceConnexe"] = police
+    return donnees
+
+
+def _avec_avenant_du_devis(request_post_data):
+    """Import dans un devis existant (renouvellement, incorporation, modification) : son avenant est gardé."""
+    id_devis = int(request_post_data.get("IdDevis") or 0)
+    if not id_devis:
+        return request_post_data
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT idavenant, numeropoliceconnexe FROM stddevis WHERE iddevis = %s", [id_devis])
+        ligne = cursor.fetchone()
+    if not ligne:
+        return request_post_data
+    return donnees_avec_avenant(request_post_data, ligne[0], ligne[1])
+
+
 def _controler_entete(entete_fichier, request_post_data, rapport):
     """Acte, période et souscripteur du fichier comparés à la saisie de l'écran (avertissements)."""
     from ..iautils import convert_to_date
@@ -160,7 +191,47 @@ def _controler_entete(entete_fichier, request_post_data, rapport):
         rapport.avertissements.append(f"Le fichier indique « {acte} » : le devis est créé en affaire nouvelle.")
 
 
-def _controler_primes(id_devis, assures_inscrits, rapport):
+def _garder_montants_fichier(id_devis, assures_inscrits, rapport):
+    """PRIME HT et PRIME TTC du fichier gardées pour chaque assuré (production/ia_montants_imposes.py) : réappliquées exactement après chaque
+    calcul du devis, quelle que soit l'offre. Renvoie les assurés concernés."""
+    from ..ia_montants_imposes import MESSAGE_MIGRATION, OFFRES_HORS_MONTANTS_GARDES, appliquer, decomposer, enregistrer, table_presente, taux_taxe
+
+    imposes, incomplets, a_garder = set(), 0, []
+    with connection.cursor() as cursor:
+        if not table_presente(cursor):
+            if any(_montant(a.get("PrimeHT")) > 0 for _n, _i, a in assures_inscrits):
+                rapport.avertissements.append(MESSAGE_MIGRATION)
+            return imposes
+        cursor.execute("SELECT idcompagnie, dateeffet::date FROM stddevis WHERE iddevis = %s", [id_devis])
+        id_compagnie, date_effet = cursor.fetchone()
+        cursor.execute("SELECT CAST(matricule AS bigint), TRIM(matricule), idoffre FROM stddevisdetail WHERE iddevis = %s AND matricule ~ '^[0-9]+$'", [id_devis])
+        lignes = {id_client: (matricule, offre) for id_client, matricule, offre in cursor.fetchall()}
+        taux = {}
+        for _numero, id_client, assure_data in assures_inscrits:
+            if id_client not in lignes:
+                continue
+            matricule, offre = lignes[id_client]
+            if offre in OFFRES_HORS_MONTANTS_GARDES:
+                continue  # IA MINENE : tarif fixe de la formule
+            if offre not in taux:
+                taux[offre] = taux_taxe(cursor, id_compagnie, offre, date_effet)
+            montants = decomposer(assure_data.get("PrimeHT"), assure_data.get("PrimeTTC"), taux[offre])
+            if not montants:
+                incomplets += int(_montant(assure_data.get("PrimeHT")) > 0 or _montant(assure_data.get("PrimeTTC")) > 0)
+                continue
+            prime_nette, accessoire, prime_ttc = montants
+            a_garder.append({"Matricule": matricule, "PrimeNette": prime_nette, "Accessoire": accessoire, "PrimeTtc": prime_ttc,
+                             "CapitalDeces": assure_data.get("CapitalDeces"), "CapitalInfirmite": assure_data.get("CapitalInfirmite"), "IdOffre": offre})
+            imposes.add(id_client)
+        if a_garder:
+            enregistrer(cursor, id_devis, a_garder, "FICHIER")
+            appliquer(cursor, id_devis)
+    if incomplets:
+        rapport.avertissements.append(f"{incomplets} assuré(s) avec une seule des deux primes (HT ou TTC) dans le fichier : tarif de l'offre appliqué pour eux.")
+    return imposes
+
+
+def _controler_primes(id_devis, assures_inscrits, rapport, imposes=()):
     """Prime nette de chaque assuré inscrit au devis comparée à la « PRIME HT » du fichier : une
     prime nulle alors que le fichier en indique une refuse tout l'import (offre sans tarif pour
     ces capitaux) ; un autre écart est signalé. Renvoie les totaux du fichier."""
@@ -177,7 +248,8 @@ def _controler_primes(id_devis, assures_inscrits, rapport):
         totaux["prime_ht"] += prime_fichier
         totaux["prime_ttc"] += _montant(assure_data.get("PrimeTTC"))
         totaux["assures"] += 1
-        if prime_fichier <= 0 or id_client not in lignes:
+        # Montants du fichier imposés à cet assuré : ni refus ni écart possibles
+        if prime_fichier <= 0 or id_client not in lignes or id_client in imposes:
             continue
         prime_devis, offre = lignes[id_client]
         nom = f"{assure_data['Nom']} {assure_data.get('Prenoms', '')}".strip()
@@ -237,6 +309,13 @@ def traiter_assures(assures, request_post_data, config, rapport):
     
     id_devis = 0
 
+    # Lignes déjà au devis avant l'import (renouvellement : assurés du contrat), par matricule : un assuré connu du fichier y est mis à jour
+    lignes_existantes = {}
+    if id_devis_initial:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT TRIM(matricule), iddevisdetail FROM stddevisdetail WHERE iddevis = %s", [id_devis_initial])
+            lignes_existantes = dict(cursor.fetchall())
+
     # ✅ AMÉLIORATION 1 : Cache local des clés uniques traitées dans ce fichier
     cles_traitees_fichier = set()
     # Assurés inscrits au devis (ligne, client, données du fichier) : contrôle des primes
@@ -295,7 +374,7 @@ def traiter_assures(assures, request_post_data, config, rapport):
                                     int(request_post_data.get("IdClient") or 0),
                                 )
                             cles_traitees_fichier.add(cle_unique)
-                            id_devis = enregistrer_devis_ia(entete_devis, assure_data, assure_existant.IdClient)
+                            id_devis = enregistrer_devis_ia(entete_devis, assure_data, assure_existant.IdClient, lignes_existantes)
                             entete_devis["IdDevis"] = id_devis
                             assures_inscrits.append((idx, assure_existant.IdClient, assure_data))
                             rapport.assures_mis_a_jour.append(AssureResultat(
@@ -475,7 +554,8 @@ def traiter_assures(assures, request_post_data, config, rapport):
         # Contrôles du fichier contre le devis obtenu : primes de chaque assuré (une prime nulle
         # refuse tout l'import), puis acte, période et souscripteur (avertissements)
         if id_devis and assures_inscrits:
-            rapport.totaux_fichier = _controler_primes(id_devis, assures_inscrits, rapport)
+            imposes = _garder_montants_fichier(id_devis, assures_inscrits, rapport)
+            rapport.totaux_fichier = _controler_primes(id_devis, assures_inscrits, rapport, imposes)
             _controler_entete(assures_inscrits[0][2].get("EnteteFichier") or {}, request_post_data, rapport)
 
     return id_devis
@@ -557,6 +637,7 @@ def importer_assures_anti_doublons(
         # ÉTAPE 3: Extraire les assurés du fichier
         # ─────────────────────────────────────────────────────────────
         logger.info("→ Extraction des assurés...")
+        request_post_data = _avec_avenant_du_devis(request_post_data)
         # Offre de l'écran transmise : imposée pour les offres standard et spécifiques (6, 7, 173,
         # 174), sinon l'offre est déduite des capitaux et de la prime du fichier (CGA, CI-ENERGIES)
         assures = extraire_assures(filepath, int(request_post_data.get("IdOffre") or 0))

@@ -1,3 +1,6 @@
+import re
+import unicodedata
+
 from django_celery_beat.models import (
     ClockedSchedule,
     CrontabSchedule,
@@ -333,6 +336,30 @@ class TypeAssureSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+def _nombre_clients(serialiseur, champ, valeur):
+    """Nombre de clients rattachés à une ligne de référentiel (profession, secteur d'activité).
+
+    Sur une liste, les clients sont comptés en une seule requête pour toutes les lignes (au lieu
+    d'un comptage par ligne) ; le résultat est gardé sur le sérialiseur racine le temps de la réponse.
+    """
+    try:
+        from django.db.models import Count
+
+        from customer.models import Client
+
+        racine = serialiseur.root
+        if not isinstance(racine, serializers.ListSerializer):
+            return Client.objects.filter(**{champ: valeur}).count()
+        comptes = racine.__dict__.setdefault("_nombre_clients", {})
+        if champ not in comptes:
+            comptes[champ] = dict(
+                Client.objects.exclude(**{champ: None}).values_list(champ).annotate(n=Count("pk")).order_by()
+            )
+        return comptes[champ].get(valeur, 0)
+    except Exception:
+        return 0
+
+
 class ProfessionSerializer(serializers.ModelSerializer):
     client_count = serializers.SerializerMethodField()
 
@@ -341,11 +368,7 @@ class ProfessionSerializer(serializers.ModelSerializer):
         fields = ["IdProfession", "Libelle", "CodeProfession", "client_count"]
 
     def get_client_count(self, obj):
-        try:
-            from customer.models import Client
-            return Client.objects.filter(IdProfession=obj.IdProfession).count()
-        except Exception:
-            return 0
+        return _nombre_clients(self, "IdProfession", obj.IdProfession)
 
 
 class GenreVehiculeSerializer(serializers.ModelSerializer):
@@ -448,6 +471,10 @@ class QualiteSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+def _sans_accent(texte):
+    return re.sub(r"[^A-Z0-9]+", " ", unicodedata.normalize("NFKD", str(texte or "")).encode("ascii", "ignore").decode("ascii").upper()).strip()
+
+
 class ApporteurSerializer(serializers.ModelSerializer):
     # Code attribué à la création (APP-0001…) s'il n'est pas saisi
     Code = serializers.CharField(max_length=20, required=False, allow_blank=True)
@@ -456,15 +483,47 @@ class ApporteurSerializer(serializers.ModelSerializer):
         model = Apporteur
         fields = "__all__"
 
+    def validate(self, donnees):
+        """Pas de doublon : même pièce, même téléphone, même email, ou même nom sans pièce différente qui les distingue."""
+        valeur = lambda champ: donnees.get(champ, getattr(self.instance, champ, "") if self.instance else "")  # noqa: E731
+        if (valeur("TauxRetrocession") or 0) > 0 and (valeur("MontantParAssure") or 0) > 0:
+            raise serializers.ValidationError({"non_field_errors": "Saisissez un taux ou un montant par assuré, pas les deux."})
+        if not _sans_accent(valeur("Nom")):
+            raise serializers.ValidationError({"Nom": "Saisissez le nom de l'apporteur."})
+        nom = (_sans_accent(valeur("Nom")), _sans_accent(valeur("Prenoms")))
+        piece = _sans_accent(valeur("PieceIdentite"))
+        telephones = {re.sub(r"\D", "", valeur(c) or "")[-8:] for c in ("Telephone", "Telephone2")} - {""}
+        email = (valeur("Email") or "").strip().lower()
+        for autre in Apporteur.objects.exclude(pk=getattr(self.instance, "pk", None)):
+            piece_autre = _sans_accent(autre.PieceIdentite)
+            raison = ""
+            if piece and piece == piece_autre:
+                raison = "même pièce d'identité"
+            elif telephones & ({re.sub(r"\D", "", t or "")[-8:] for t in (autre.Telephone, autre.Telephone2)} - {""}):
+                raison = "même téléphone"
+            elif email and email == (autre.Email or "").strip().lower():
+                raison = "même email"
+            elif nom == (_sans_accent(autre.Nom), _sans_accent(autre.Prenoms)) and not (piece and piece_autre):
+                raison = "même nom"
+            if raison:
+                etat = "" if autre.Actif else ", désactivé : réactivez-le"
+                raise serializers.ValidationError({"non_field_errors": f"Cet apporteur existe déjà : {autre.Code} - {autre.Nom} {autre.Prenoms}".strip() + f" ({raison}{etat})."})
+        return donnees
+
     def validate_Code(self, valeur):
         valeur = (valeur or "").strip().upper()
         if valeur and Apporteur.objects.filter(Code=valeur).exclude(pk=getattr(self.instance, "pk", None)).exists():
             raise serializers.ValidationError("Ce code est déjà attribué à un autre apporteur.")
         return valeur
 
+    def validate_MontantParAssure(self, valeur):
+        if valeur is not None and valeur < 0:
+            raise serializers.ValidationError("Le montant par assuré est positif.")
+        return valeur
+
     def validate_TauxRetrocession(self, valeur):
         if valeur is not None and not (0 <= valeur <= 100):
-            raise serializers.ValidationError("Le taux de rétrocession est compris entre 0 et 100 %.")
+            raise serializers.ValidationError("Le taux général de commission est compris entre 0 et 100 %.")
         return valeur
 
 
@@ -482,11 +541,7 @@ class SecteurActiviteSerializer(serializers.ModelSerializer):
         fields = ["IdSecteurActivite", "Libelle", "client_count"]
 
     def get_client_count(self, obj):
-        try:
-            from customer.models import Client
-            return Client.objects.filter(IdSecteurActivite=obj.IdSecteurActivite).count()
-        except Exception:
-            return 0
+        return _nombre_clients(self, "IdSecteurActivite", obj.IdSecteurActivite)
 
 
 
@@ -585,10 +640,41 @@ class TypeReductionSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+def cle_banque(libelle):
+    """Nom de banque comparé sans accents, espaces ni ponctuation : « GT BANK » et « GTBANK » sont la même banque."""
+    texte = unicodedata.normalize("NFKD", str(libelle or "")).encode("ascii", "ignore").decode()
+    return "".join(c for c in texte.upper() if c.isalnum())
+
+
 class BanqueSerializer(serializers.ModelSerializer):
+    """Banque des chèques, virements et traites (stdbanque) : nom et code en majuscules, sans doublon. Code facultatif
+    (« 00 » d'URANUS quand il n'est pas connu)."""
+
     class Meta:
         model = Banque
         fields = "__all__"
+
+    def _autres(self):
+        return Banque.objects.exclude(pk=self.instance.pk) if self.instance else Banque.objects.all()
+
+    def validate_libelle(self, valeur):
+        libelle = " ".join(str(valeur or "").split()).upper()
+        if not libelle:
+            raise serializers.ValidationError("Saisissez le nom de la banque.")
+        cle = cle_banque(libelle)
+        doublon = next((b for b in self._autres() if cle_banque(b.libelle) == cle), None)
+        if doublon:
+            raise serializers.ValidationError(f"Cette banque existe déjà : {doublon.libelle.strip()}.")
+        return libelle
+
+    def validate_code_banque(self, valeur):
+        code = "".join(str(valeur or "").split()).upper()
+        if code in ("", "00"):
+            return "00"
+        doublon = self._autres().filter(code_banque__iexact=code).first()
+        if doublon:
+            raise serializers.ValidationError(f"Ce code est déjà celui de la banque {doublon.libelle.strip()}.")
+        return code
 
 
 class ModeEncaissementSerializer(serializers.ModelSerializer):

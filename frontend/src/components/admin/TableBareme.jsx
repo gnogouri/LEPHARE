@@ -12,18 +12,20 @@ import { useToast } from '../../context/ToastContext';
  * Tableau d'un barème de la base (taux de taxe, commissions, accessoires, réductions flotte…)
  * modifiable ligne à ligne. Chaque colonne décrit un champ de la route DRF :
  *   { champ, titre, type, requis, min, max, aide, filtre, role }
- * type : 'compagnie' | 'produit' | 'garantie' | 'sousgarantie' (listes de la base), 'texte', 'entier', 'nombre',
+ * type : 'compagnie' | 'produit' | 'garantie' | 'sousgarantie' | 'tarif' (listes de la base), 'texte', 'entier', 'nombre',
  *        'pourcentage', 'montant', 'date' ; filtre : liste de filtre au-dessus du tableau ;
+ * options : filtre des choix d'une liste de la base (ex. catégories tarifaires de l'Automobile) ;
+ * masquee : champ du formulaire seulement, absent du tableau ;
  * role : 'debut' / 'fin' pour les dates de validité (statut « En vigueur », contrôle début <= fin).
  * Les filtres se pré-remplissent depuis l'adresse (?compagnie=21&produit=1). `dupliquer` à false masque
  * « Dupliquer » pour les tables qui n'acceptent qu'une ligne par clé (ex. une taxe par sous-garantie).
  */
 
-const REFERENTIELS = ['compagnie', 'produit', 'garantie', 'sousgarantie'];
+const REFERENTIELS = ['compagnie', 'produit', 'garantie', 'sousgarantie', 'tarif'];
 const aujourdhui = () => new Date().toISOString().slice(0, 10);
-const formatMontant = (v) => (v === null || v === undefined || v === '' ? '—' : `${Math.round(Number(v)).toLocaleString('fr-FR').replace(/ | /g, ' ')} F`);
-const formatNombre = (v, decimales = 2) => (v === null || v === undefined || v === '' ? '—' : Number(v).toLocaleString('fr-FR', { maximumFractionDigits: decimales }));
-const formatDate = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—');
+const formatMontant = (v) => (v === null || v === undefined || v === '' ? '-' : `${Math.round(Number(v)).toLocaleString('fr-FR').replace(/ | /g, ' ')} F`);
+const formatNombre = (v, decimales = 2) => (v === null || v === undefined || v === '' ? '-' : Number(v).toLocaleString('fr-FR', { maximumFractionDigits: decimales }));
+const formatDate = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
 const normaliser = (t) => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 // Montant reçu de l'API en texte décimal (« 5000.0000 ») : AmountInput n'attend que des chiffres
 const montantSaisi = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? '' : Math.round(Number(v)));
@@ -54,7 +56,7 @@ export const TableBareme = ({
   const api = useMemo(() => parametrageApi.bareme(route), [route]);
   const [lignes, setLignes] = useState([]);
   const [chargement, setChargement] = useState(true);
-  const [referentiels, setReferentiels] = useState({ compagnie: [], produit: [], garantie: [], sousgarantie: [] });
+  const [referentiels, setReferentiels] = useState({ compagnie: [], produit: [], garantie: [], sousgarantie: [], tarif: [] });
   const [filtres, setFiltres] = useState(() => Object.fromEntries(
     colonnes.filter((c) => c.filtre).map((c) => [c.champ, parametresUrl.get(c.type) || parametresUrl.get(c.champ) || '']),
   ));
@@ -94,13 +96,18 @@ export const TableBareme = ({
         .map((g) => ({ id: g.IdSousGarantie, libelle: g.LibelleSousGarantie, inactif: g.Active === false }))
         .sort((a, b) => a.libelle.localeCompare(b.libelle, 'fr'))]));
     }
+    if (types.has('tarif')) {
+      demandes.push(parametrageApi.bareme('tarif').lister().then((l) => ['tarif', l
+        .map((t) => ({ id: t.IdTarif, libelle: `${t.CodeCategorie} - ${t.Libelle}`, code: String(t.CodeCategorie || '') }))
+        .sort((a, b) => a.libelle.localeCompare(b.libelle, 'fr'))]));
+    }
     Promise.all(demandes)
       .then((res) => setReferentiels((avant) => ({ ...avant, ...Object.fromEntries(res) })))
       .catch((err) => toastError(`Listes de référence non chargées : ${messageErreurApi(err)}`));
   }, [route]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const libelleRef = (type, id) => {
-    if (id === null || id === undefined || id === '') return '—';
+    if (id === null || id === undefined || id === '') return '-';
     const trouve = referentiels[type]?.find((r) => Number(r.id) === Number(id));
     return trouve ? trouve.libelle : `n° ${id}`;
   };
@@ -109,11 +116,11 @@ export const TableBareme = ({
     const v = ligne[c.champ];
     if (REFERENTIELS.includes(c.type)) return libelleRef(c.type, v);
     if (c.type === 'montant') return formatMontant(v);
-    if (c.type === 'pourcentage') return v === null || v === undefined || v === '' ? '—' : `${formatNombre(v)} %`;
+    if (c.type === 'pourcentage') return v === null || v === undefined || v === '' ? '-' : `${formatNombre(v)} %`;
     if (c.type === 'nombre') return formatNombre(v, 4);
-    if (c.type === 'entier') return v === null || v === undefined || v === '' ? '—' : String(v);
+    if (c.type === 'entier') return v === null || v === undefined || v === '' ? '-' : String(v);
     if (c.type === 'date') return formatDate(v);
-    return v || '—';
+    return v || '-';
   };
 
   const visibles = useMemo(() => {
@@ -249,11 +256,11 @@ export const TableBareme = ({
     const v = edition.ligne[c.champ];
     const commun = { id: `champ-${c.champ}`, required: c.requis };
     if (REFERENTIELS.includes(c.type)) {
-      const options = referentiels[c.type] || [];
+      const options = (referentiels[c.type] || []).filter(c.options || (() => true));
       return (
         <select {...commun} className="form-control" value={v ?? ''} onChange={(e) => changer(c.champ, e.target.value === '' ? '' : Number(e.target.value))}>
-          <option value="">— Choisir —</option>
-          {options.map((o) => <option key={o.id} value={o.id}>{o.libelle}{o.inactif ? ' — inactif' : ''}</option>)}
+          <option value="">Choisir</option>
+          {options.map((o) => <option key={o.id} value={o.id}>{o.libelle}{o.inactif ? ' - inactif' : ''}</option>)}
         </select>
       );
     }

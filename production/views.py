@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import cast
@@ -62,6 +63,7 @@ from configuration_api.serializers import (  # Serializers lecture
 )
 from core.date_parser import parse_date_string
 from core.services import ServiceError
+from core.utils import relations_directes
 from customer.models import Client
 
 from .anti_doublons.importateur import importer_assures_anti_doublons
@@ -102,6 +104,8 @@ from .database import (
     save_plate_number,
     decaisser_cheque_impaye,
     enregistrer_echeancier_cheques,
+    montant_utilise_cheque,
+    STATUTS_CHEQUE_ANNULE,
     save_premium_collection,
     save_premium_collection_cancellation,
     save_premium_remittance,
@@ -115,8 +119,11 @@ from .database import (
     unarchive_quote,
 )
 from .exceltopostgresql import export_excel
+from . import pieces_jointes
 from .import_assures import import_ia_insured, insert_new_assure
+from .periode_contrat import objets_periode, periode_contrat
 from .releve_compte import releve_compte as donnees_releve_compte
+from .reste_encaissement import RELIQUAT_NEGLIGEABLE, reste_a_encaisser
 from .views_devis_ia import completer_assures_devis_ia
 from sante.models import Adherent, Affilie
 from .models import (
@@ -159,6 +166,9 @@ from .serializers import (  # Serializers requêtes; Serializers réponses
     ConsolidationDevisClientSerializer,
     ContractForPremiumCollectionSerializer,
     ContratDetailSerializer,
+    ContratAdministrationSerializer,
+    ContratDetailAdministrationSerializer,
+    ContratGarantieAdministrationSerializer,
     ContratDetGarantieSerializer,
     ContratSerializer,
     CorrectionDevisSerializer,
@@ -275,9 +285,17 @@ class ContractForPremiumCollectionView(generics.ListCreateAPIView):
             return ContractForPremiumCollection.objects.none()
 
 
+def encaissements_avec_relations(queryset):
+    """Encaissements avec ce que lit EncaissementSerializer (mode, banque, auteur, quittances et clients
+    des lignes) : 4 requêtes pour la liste au lieu de 4 par encaissement."""
+    return queryset.select_related("modepaiement", "banque", "utilisateur").prefetch_related(
+        "details__numeroquittance__client"
+    )
+
+
 class EncaissementRechercheView(generics.ListCreateAPIView):
-    queryset = Encaissement.objects.filter(~Q(piece_annulee=True)).order_by(
-        "-dateencaissement"
+    queryset = encaissements_avec_relations(
+        Encaissement.objects.filter(~Q(piece_annulee=True)).order_by("-dateencaissement")
     )[:1000]
     serializer_class = EncaissementSerializer
     permission_classes = [
@@ -300,7 +318,7 @@ class EncaissementRechercheView(generics.ListCreateAPIView):
                 reference_client, reference_contrat
             )
             if not msg:
-                return item
+                return encaissements_avec_relations(item)
             else:
                 return Encaissement.objects.none()
         return super().get_queryset()
@@ -369,15 +387,86 @@ TABLES_CONDITIONS_PARTICULIERES = {
            "energie": "se.codeenergie = dd.codecarburant"},
 }
 
+ID_PRODUIT_MRH = 4
+
+
+def sites_conditions_particulieres_mrh(pk, contrat=False):
+    """
+    Maisons (sites) d'un devis ou d'un contrat MRH pour les Conditions Particulières « Liste des
+    garanties MRH multisites » (modèle NSIA) : usage, adresse, valeurs déclarées et prime de
+    chaque site, puis ses garanties acquises avec le capital, la franchise et les primes
+    enregistrés (saisis à la répartition des garanties). Rien n'est déduit des valeurs déclarées.
+    """
+    t = TABLES_CONDITIONS_PARTICULIERES[contrat]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT dd.{t['detail_pk']}, u.libelle, dd.adressecnd, dd.valeurneuve,
+                   dd.valeurvenale, dd.valeuraccessoire, dd.primenette
+            FROM {t['detail']} dd
+            LEFT JOIN stdmrh_usage_habitation u ON u.code = dd.modelevehicule
+            WHERE dd.{t['cle']} = %s
+            ORDER BY dd.{t['detail_pk']}
+            """,
+            [pk],
+        )
+        sites = [
+            {
+                "id": iddetail,
+                "usage": usage,
+                "adresse": (adresse or "").strip() or None,
+                "valeur_batiment": int(batiment or 0),
+                "valeur_contenu": int(contenu or 0),
+                "capital_rvt": int(rvt or 0),
+                "prime_nette": int(prime or 0),
+                "garanties": [],
+            }
+            for iddetail, usage, adresse, batiment, contenu, rvt, prime in cursor.fetchall()
+        ]
+        cursor.execute(
+            f"""
+            SELECT dg.{t['garantie_fk']}, sg.idsousgarantie, sg.libellesousgarantie, dg.capital,
+                   dg.franchise, dg.textefranchise, dg.tauxfranchise, dg.minfranchise,
+                   dg.maxfranchise, dg.primenette
+            FROM {t['detail']} dd
+            JOIN {t['garantie']} dg ON dg.{t['garantie_fk']} = dd.{t['detail_pk']}
+            JOIN stdsousgarantie sg ON sg.idsousgarantie = dg.idgarantie
+            WHERE dd.{t['cle']} = %s AND dg.acquise AND dg.idgarantie <> 0
+            """,
+            [pk],
+        )
+        par_site = {s["id"]: s for s in sites}
+        for (iddetail, idg, libelle, capital, fixe, texte, taux, mini, maxi,
+             prime) in cursor.fetchall():
+            par_site[iddetail]["garanties"].append({
+                "id_garantie": idg,
+                "libelle": libelle,
+                "capital": int(capital or 0),
+                "franchise": int(fixe or 0),
+                "texte_franchise": (texte or "").strip() or None,
+                "taux_franchise": float(taux or 0),
+                "min_franchise": int(mini or 0),
+                "max_franchise": int(maxi or 0),
+                "prime_nette": int(prime or 0),
+            })
+    return sites
+
 
 def vehicules_conditions_particulieres_flotte(pk, contrat=False):
     """
     Véhicules d'une flotte automobile pour les Conditions Particulières « Liste des véhicules
     en Automobile » (modèle NSIA) : caractéristiques, catégorie / tarif, et chaque garantie
     du véhicule avec son état (acquise), son capital, sa franchise et sa prime nette.
+    Contrat de base d'une période qui a des avenants : véhicules à jour de la période, incorporés compris et retirés
+    écartés (production.periode_contrat, demande du 2026-11-02).
     """
     t = TABLES_CONDITIONS_PARTICULIERES[contrat]
     with connection.cursor() as cursor:
+        filtre, valeur = f"dd.{t['cle']} = %s", pk
+        if contrat:
+            periode = periode_contrat(cursor, pk)
+            if periode and periode["EstBase"] and len(periode["Contrats"]) > 1:
+                filtre, valeur = f"dd.{t['detail_pk']} = ANY(%s)", objets_periode(cursor, periode)
         cursor.execute(
             f"""
             SELECT dd.{t['detail_pk']}, dd.matricule, m.libellemarque, dd.modelevehicule,
@@ -390,10 +479,10 @@ def vehicules_conditions_particulieres_flotte(pk, contrat=False):
             LEFT JOIN stdenergie se ON {t['energie']}
             LEFT JOIN stdtarif tr ON tr.idtarif = dd.idtarif
             LEFT JOIN stdcategorie cat ON cat.idcategorie = tr.idcategorie
-            WHERE dd.{t['cle']} = %s
+            WHERE {filtre}
             ORDER BY cat.codecategorie, tr.idtarif, dd.{t['detail_pk']}
             """,
-            [pk],
+            [valeur],
         )
         vehicules = [
             {
@@ -428,10 +517,10 @@ def vehicules_conditions_particulieres_flotte(pk, contrat=False):
                    dg.deces, dg.primenette
             FROM {t['garantie']} dg
             JOIN {t['detail']} dd ON dd.{t['detail_pk']} = dg.{t['garantie_fk']}
-            WHERE dd.{t['cle']} = %s AND dg.idgarantie <> 0
+            WHERE {filtre} AND dg.idgarantie <> 0
             ORDER BY dg.idgarantie
             """,
-            [pk],
+            [valeur],
         )
         par_vehicule = {v["id"]: v["garanties"] for v in vehicules}
         for iddetail, idgarantie, acquise, capital, franchise, deces, prime in cursor.fetchall():
@@ -470,7 +559,7 @@ def donnees_conditions_particulieres(objet, contrat=False):
                    q.libelle, p.libelle,
                    a.nom, a.prenoms, a.adresse1, a.adresse2,
                    i.libelleintermediaire, o.idoffre, o.libelleoffre, av.libelleavenant,
-                   d.numeropoliceconnexe, c.email, ta.libelletype, a.datenaissance
+                   d.numeropoliceconnexe, c.email, ta.libelletype, a.datenaissance, c.fax
             FROM {t['entete']} d
             LEFT JOIN stdclient c ON c.idclient = d.idclient
             LEFT JOIN stdqualite q ON q.idqualite = c.idqualite
@@ -489,7 +578,7 @@ def donnees_conditions_particulieres(objet, contrat=False):
             titre, profession,
             a_nom, a_prenoms, a_adr1, a_adr2,
             intermediaire, idoffre, libelle_offre, mouvement,
-            police_connexe, c_email, type_client, a_naissance,
+            police_connexe, c_email, type_client, a_naissance, c_fax,
         ) = cursor.fetchone()
 
         # Offre non spécifiée au niveau du devis (idoffre 0) : on reprend celle
@@ -578,6 +667,8 @@ def donnees_conditions_particulieres(objet, contrat=False):
 
     return {
             "risque": risque,
+            # MRH : maisons et garanties de chaque maison (« Liste des garanties MRH multisites »)
+            "sites": sites_conditions_particulieres_mrh(objet.pk, contrat) if id_produit == ID_PRODUIT_MRH else None,
             "client": {
                 "titre": clean(titre),
                 "nom": nom_complet(c_nom, c_prenoms),
@@ -588,6 +679,9 @@ def donnees_conditions_particulieres(objet, contrat=False):
                 "mobile": clean(c_mobile) or clean(c_tel),
                 "email": clean(c_email),
                 "type": clean(type_client),
+                # Utilisés par la CP MRH (modèle NSIA : « Téléphone » et « Fax » du souscripteur)
+                "fixe": clean(c_fixe),
+                "fax": clean(c_fax),
             },
             "intermediaire": clean(intermediaire),
             "quittance": {
@@ -654,6 +748,9 @@ class DevisViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         if self.action == "list":
             three_years_ago = timezone.now() - timedelta(days=365 * 3)
             queryset = queryset.filter(dateemission__gte=three_years_ago)
+            # Devis saisis pour une affaire antérieure : suivis dans Affaires antérieures, pas dans le registre
+            from .models import RepriseDevis
+            queryset = queryset.exclude(iddevis__in=RepriseDevis.objects.values("iddevis"))
 
         # Filtre par produit
         idproduit = self.request.query_params.get("idproduit")
@@ -696,8 +793,13 @@ class DevisViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         if dateexpiration_avant:
             queryset = queryset.filter(dateexpiration__date__lt=dateexpiration_avant)
 
-        # Les devis les plus récents en premier
-        return queryset.order_by("-dateemission", "-iddevis")
+        # Les devis les plus récents en premier ; relations sérialisées (depth=1) chargées dans la
+        # même requête : une page de 200 devis lançait plus de 2 000 requêtes
+        return (
+            queryset.select_related(*relations_directes(Devis))
+            .prefetch_related("produit__avenants")
+            .order_by("-dateemission", "-iddevis")
+        )
 
     @action(detail=True, methods=["get"], url_path="garanties")
     def get_garanties(self, request, pk=None):
@@ -797,6 +899,16 @@ class DevisViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         except Devis.DoesNotExist:
             raise Http404("Devis introuvable")
 
+    # Pièce jointe téléversée à l'enregistrement (MRH, RC, MRP) : fiche, puis fichier affiché dans l'application
+    @action(detail=True, methods=["get"], url_path="piece-jointe")
+    def piece_jointe(self, request, pk=None):
+        devis = cast(Devis, self.get_object())
+        return Response(pieces_jointes.fiche(devis.piece_jointe, "devis"))
+
+    @action(detail=True, methods=["get"], url_path="piece-jointe/fichier")
+    def piece_jointe_fichier(self, request, pk=None):
+        return pieces_jointes.reponse_fichier(cast(Devis, self.get_object()).piece_jointe)
+
 
 class CertificatTransportView(generics.ListCreateAPIView):
     queryset = CertificatTransport.objects.all().order_by("-date_fin_periode")[
@@ -852,13 +964,14 @@ class DevisClientView(generics.ListAPIView):
         except Produit.DoesNotExist as eq:
             print(eq)
             devis_qs = devis_qs.filter(iddevis=0)
-        devis_qs = devis_qs.prefetch_related(
+        devis_qs = devis_qs.select_related("client").prefetch_related(
             Prefetch(
                 "details",
-                queryset=DevisDetail.objects.filter(iddevis__in=devis_qs),
+                queryset=DevisDetail.objects.select_related("idmarque"),
             )
         )
-        return devis_qs
+        # Ordre explicite : les pages ne changent plus d'un appel à l'autre
+        return devis_qs.order_by("pk")
 
 
 class ConsolidationDevisView(APIView):
@@ -1016,7 +1129,7 @@ class ConsolidationDevisView(APIView):
 
 
 class DevisDetailViewSet(viewsets.ModelViewSet):
-    queryset = DevisDetail.objects.all()
+    queryset = DevisDetail.objects.select_related(*relations_directes(DevisDetail)).order_by("pk")
     serializer_class = DevisDetailSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -1024,7 +1137,9 @@ class DevisDetailViewSet(viewsets.ModelViewSet):
 
 
 class DevisDetGarantieViewSet(viewsets.ModelViewSet):
-    queryset = DevisDetGarantie.objects.filter(~Q(IdGarantie=0))
+    queryset = DevisDetGarantie.objects.filter(~Q(IdGarantie=0)).select_related(
+        *relations_directes(DevisDetGarantie)
+    ).order_by("pk")
     serializer_class = DevisDetGarantieSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -1104,11 +1219,32 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                 queryset = queryset.filter(idproduit_id=int(idproduit))
         return queryset
 
+    def _renouvellement_posterieur(self):
+        """Renouvellement (avenant REN) non annulé, plus récent, sur la police du contrat (sous-requête)."""
+        from django.db.models import OuterRef
+
+        return Contrat.objects.filter(
+            numeropolice=OuterRef("numeropolice"),
+            idcontratannulation=0,
+            idavenant__CodeAvenant="REN",
+            dateeffet__gt=OuterRef("dateeffet"),
+        )
+
     def _filtres_portefeuille(self, queryset):
         """Recherche et périodes du portefeuille (paramètres communs à la liste et à synthese/)."""
         from datetime import date, timedelta
 
+        from django.db.models import Exists, OuterRef
+
+        from .models import RepriseAffaire
+
         params = self.request.query_params
+        # Affaire antérieure pas encore renouvelée : suivie dans Affaires antérieures ; une fois son renouvellement
+        # confirmé en contrat, elle rejoint le portefeuille (demande du 2026-10-27 : « après renouvellement ils doivent
+        # être migrés dans le module contrat »)
+        queryset = queryset.exclude(
+            Exists(RepriseAffaire.objects.filter(idcontrat=OuterRef("pk"))) & ~Exists(self._renouvellement_posterieur())
+        )
         recherche = (params.get("recherche") or "").strip()
         if recherche:
             # Chaque mot se retrouve dans le n° de police, le client, le produit ou la compagnie.
@@ -1122,35 +1258,36 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                     | Q(idproduit__libelle_produit__icontains=mot)
                     | Q(idcompagnie__RaisonSociale__icontains=mot)
                 )
-        else:
-            # Sans recherche : contrats émis durant les 3 dernières années (même fenêtre que le
-            # Registre des Devis) ; un contrat plus ancien reste consultable par son identifiant
-            queryset = queryset.filter(dateemission__gte=timezone.now() - timedelta(days=365 * 3))
+        filtre_emission = False
         for champ, parametre, operateur in (
             ("dateeffet", "effet_du", "gte"),
             ("dateeffet", "effet_au", "lte"),
             ("dateexpiration", "echeance_du", "gte"),
             ("dateexpiration", "echeance_au", "lte"),
+            ("dateemission", "emission_du", "gte"),
+            ("dateemission", "emission_au", "lte"),
         ):
             try:
                 jour = date.fromisoformat(str(params.get(parametre) or "")[:10])
             except ValueError:
                 continue
+            if champ == "dateemission":
+                filtre_emission = True
             queryset = queryset.filter(**{f"{champ}__date__{operateur}": jour})
+        if not recherche and not filtre_emission:
+            # Sans recherche ni période d'émission explicite : contrats émis durant les 3 dernières
+            # années (même fenêtre que le Registre des Devis). Un filtre d'émission peut consulter
+            # tout l'historique, y compris les contrats plus anciens.
+            queryset = queryset.filter(dateemission__gte=timezone.now() - timedelta(days=365 * 3))
         return queryset
 
     def _statut_portefeuille(self, queryset):
         from datetime import timedelta
 
-        from django.db.models import Case, CharField, Exists, OuterRef, Value, When
+        from django.db.models import Case, CharField, Exists, Value, When
 
         aujourdhui = timezone.localdate()
-        renouvellement_posterieur = Contrat.objects.filter(
-            numeropolice=OuterRef("numeropolice"),
-            idcontratannulation=0,
-            idavenant__CodeAvenant="REN",
-            dateeffet__gt=OuterRef("dateeffet"),
-        )
+        renouvellement_posterieur = self._renouvellement_posterieur()
         return queryset.annotate(
             statut_portefeuille=Case(
                 When(~Q(idcontratannulation=0), then=Value("annule")),
@@ -1171,9 +1308,9 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
 
         if params.get("a_encaisser") in ("1", "true"):
             # Caisse : même règle que fn_liste_contrat_encaissement (URANUS), la quittance du
-            # contrat n'est pas soldée. Sans fenêtre de 3 ans : un devis ancien confirmé
-            # aujourd'hui garde sa date d'émission. Derniers contrats confirmés en tête, sinon
-            # ils sortent des 200 lignes de la page.
+            # contrat n'est pas soldée (un reliquat de moins de 5 F compte comme nul). Sans
+            # fenêtre de 3 ans : un devis ancien confirmé aujourd'hui garde sa date d'émission.
+            # Derniers contrats confirmés en tête, sinon ils sortent des 200 lignes de la page.
             from django.db.models import Value
             from django.db.models.functions import Coalesce
 
@@ -1181,7 +1318,7 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                 solde_quittance=F("idquittance__primettc")
                 - Coalesce(F("idquittance__mt_encaisse"), Value(Decimal(0)))
             ).filter(
-                idquittance__police=F("numeropolice"), solde_quittance__gt=0
+                idquittance__police=F("numeropolice"), solde_quittance__gte=RELIQUAT_NEGLIGEABLE
             )
             queryset = self._filtre_produit(queryset).order_by("-idcontrat")
         elif self.action != "list":
@@ -1208,12 +1345,35 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
             else:
                 queryset = queryset.order_by("-idcontrat")
 
-        # Relations sérialisées (depth=1) et offre boisée chargées dans la même requête :
-        # évite 8 à 10 requêtes par contrat sur les listes de 200 lignes
+        if self.action == "list":
+            # Liste : les relations sont ajoutées aux seuls contrats de la page (paginate_queryset)
+            return queryset
+        return self._avec_relations(queryset)
+
+    @staticmethod
+    def _avec_relations(queryset):
+        """Relations sérialisées (depth=1) et offre boisée chargées dans la même requête : évite 8 à 10
+        requêtes par contrat sur les listes de 200 lignes."""
         return queryset.select_related(
             "iddevis", "idcompagnie", "idintermediaire", "idproduit",
             "idclient", "idavenant", "idquittance", "piece_jointe",
-        ).annotate(offreboisee_annotee=OffreAutomobileBoisee(F("iddevis__offre__IdOffre")))
+        ).prefetch_related("idproduit__avenants").annotate(offreboisee_annotee=OffreAutomobileBoisee(F("iddevis__offre__IdOffre")))
+
+    def paginate_queryset(self, queryset):
+        """
+        Page du Portefeuille en deux temps : les identifiants de la page d'abord (filtres, statut, tri),
+        puis ces seuls contrats avec leurs relations. En une seule requête, PostgreSQL joignait devis,
+        clients et quittances de tout le portefeuille avant de garder 25 lignes (1,5 s par page filtrée).
+        """
+        if self.action != "list":
+            return super().paginate_queryset(queryset)
+        identifiants = super().paginate_queryset(
+            queryset.select_related(None).prefetch_related(None).values_list("pk", flat=True)
+        )
+        if identifiants is None:
+            return None
+        contrats = {contrat.pk: contrat for contrat in self._avec_relations(queryset.filter(pk__in=identifiants))}
+        return [contrats[pk] for pk in identifiants if pk in contrats]
 
     @action(detail=False, methods=["get"])
     def synthese(self, request):
@@ -1249,6 +1409,284 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         ).distinct("idgarantie_id")
         serializer = ContratDetGarantieSerializer(garanties, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def _donnees_administration(self, contrat):
+        details = ContratDetail.objects.filter(idcontrat=contrat).order_by(
+            "idcontratdetail"
+        ).prefetch_related(
+            Prefetch(
+                "garanties",
+                queryset=ContratDetGarantie.objects.order_by("idcontratdetgarantie"),
+            )
+        )
+        # Un seul sérialiseur pour tous les objets et un seul pour toutes les garanties : en créer un par
+        # ligne prenait 3 s sur une flotte de 600 véhicules
+        details = list(details)
+        garanties = [garantie for detail in details for garantie in detail.garanties.all()]
+        donnees_garanties = iter(ContratGarantieAdministrationSerializer(garanties, many=True).data)
+        resultat_details = []
+        for detail, donnees_detail in zip(details, ContratDetailAdministrationSerializer(details, many=True).data):
+            resultat_details.append(
+                {
+                    **donnees_detail,
+                    "idcontratdetail": detail.pk,
+                    "garanties": [
+                        {
+                            **next(donnees_garanties),
+                            "idcontratdetgarantie": garantie.pk,
+                        }
+                        for garantie in detail.garanties.all()
+                    ],
+                }
+            )
+        return {
+            "contrat": ContratAdministrationSerializer(contrat).data,
+            "details": resultat_details,
+            "contexte": self._contexte_administration(contrat, resultat_details),
+            "referentiels": self._referentiels_administration(),
+        }
+
+    # Listes de choix de l'administration des contrats : identifiants montrés avec leur libellé (« code - libellé »)
+    REFERENTIELS_ADMINISTRATION = {
+        "compagnies": "SELECT idcompagnie, TRIM(raisonsociale) FROM stdcompagnie ORDER BY 2",
+        "marques": "SELECT idmarque, TRIM(libellemarque) FROM stdmarque ORDER BY 2",
+        "genres": "SELECT idgenre, TRIM(libellegenre) FROM stdgenrevehicule ORDER BY 2",
+        "types": "SELECT id, TRIM(libelletype) FROM stdtypevehicule ORDER BY 2",
+        "usages": "SELECT idusage, TRIM(COALESCE(codeusage, '')) || ' - ' || TRIM(libelleusage) FROM stdusage ORDER BY 2",
+        "carrosseries": "SELECT idcarrosserie, TRIM(libellecarrosserie) FROM stdcarrosserie ORDER BY 2",
+        "tarifs": "SELECT idtarif, TRIM(COALESCE(codecategorie, '')) || ' - ' || TRIM(libelle) FROM stdtarif ORDER BY 2",
+        "offres": "SELECT idoffre, TRIM(libelleoffre) FROM stdoffre ORDER BY 2",
+        "garanties": "SELECT idsousgarantie, TRIM(libellesousgarantie) FROM stdsousgarantie ORDER BY 2",
+        "professions": "SELECT idprofession, TRIM(libelle) FROM stdprofession ORDER BY 2",
+    }
+
+    def _referentiels_administration(self):
+        resultat = {}
+        with connection.cursor() as cursor:
+            for nom, sql in self.REFERENTIELS_ADMINISTRATION.items():
+                cursor.execute(sql)
+                # « 000 - » (code sans libellé) : le tiret et les blancs de bord sont retirés
+                resultat[nom] = [{"id": i, "libelle": (libelle or "").strip(" -") or f"N° {i}"} for i, libelle in cursor.fetchall()]
+        return resultat
+
+    def _contexte_administration(self, contrat, details):
+        """Libellés du contrat (client, assuré, compagnie, produit, mouvement, devis, quittance liée) et noms des
+        assurés de ses risques, pour l'écran d'administration."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT TRIM(COALESCE(cl.nom, '') || ' ' || COALESCE(cl.prenoms, '')),
+                       TRIM(COALESCE(asu.nom, '') || ' ' || COALESCE(asu.prenoms, '')),
+                       TRIM(co.raisonsociale), TRIM(ap.raisonsociale), c.idproduit, TRIM(p.libelleproduit),
+                       a.codeavenant, TRIM(a.libelleavenant), TRIM(i.libelleintermediaire), d.numerodevis,
+                       q.numeroquittance, q.primettc, COALESCE(q.mt_encaisse, 0), COALESCE(c.idcontratannulation, 0)
+                FROM stdcontrat c
+                LEFT JOIN stdclient cl ON cl.idclient = c.idclient
+                LEFT JOIN stdclient asu ON asu.idclient = c.idassure
+                LEFT JOIN stdcompagnie co ON co.idcompagnie = c.idcompagnie
+                LEFT JOIN stdcompagnie ap ON ap.idcompagnie = c.idaperiteur
+                LEFT JOIN stdproduit p ON p.idproduit = c.idproduit
+                LEFT JOIN stdavenant a ON a.idavenant = c.idavenant
+                LEFT JOIN stdintermediaire i ON i.idintermediaire = c.idintermediaire
+                LEFT JOIN stddevis d ON d.iddevis = c.iddevis
+                LEFT JOIN stdquittance q ON q.idquittance = c.idquittance
+                WHERE c.idcontrat = %s
+                """,
+                [contrat.pk],
+            )
+            (client, assure, compagnie, aperiteur, id_produit, produit, code_avenant, avenant, intermediaire, numero_devis,
+             numero_quittance, ttc_quittance, encaisse, annule) = cursor.fetchone()
+            ids_assures = sorted({d["idassure"] for d in details if d.get("idassure")} | {contrat.idclient_id, contrat.idassure})
+            cursor.execute(
+                "SELECT idclient, TRIM(COALESCE(nom, '') || ' ' || COALESCE(prenoms, '')) FROM stdclient WHERE idclient = ANY(%s)",
+                [[i for i in ids_assures if i]],
+            )
+            noms = {str(i): nom for i, nom in cursor.fetchall()}
+        return {
+            "Client": client or "", "Assure": assure or "", "Compagnie": compagnie or "", "Aperiteur": aperiteur or "",
+            "IdProduit": id_produit, "Produit": produit or "", "CodeMouvement": code_avenant or "", "Mouvement": avenant or "",
+            "Intermediaire": intermediaire or "", "NumeroDevis": numero_devis or "", "Annule": bool(annule),
+            "Quittance": {
+                "Numero": numero_quittance, "PrimeTtc": float(ttc_quittance or 0), "Encaisse": float(encaisse or 0),
+                "Reste": float(reste_a_encaisser(ttc_quittance, encaisse)),
+            } if numero_quittance else None,
+            "Noms": noms,
+        }
+
+    @action(detail=False, methods=["get"], url_path="administration")
+    def administration_liste(self, request):
+        from django.db.models import Count
+
+        params = request.query_params
+        base = self._filtres_portefeuille(Contrat.objects.all())
+        par_produit = {
+            str(ligne["idproduit_id"]): ligne["n"]
+            for ligne in base.filter(idcontratannulation=0)
+            .values("idproduit_id").annotate(n=Count("pk")).order_by()
+        }
+        par_statut = {
+            ligne["statut_portefeuille"]: ligne["n"]
+            for ligne in self._statut_portefeuille(self._filtre_produit(base))
+            .values("statut_portefeuille").annotate(n=Count("pk")).order_by()
+        }
+        statut = params.get("statut")
+        queryset = base if statut == "annule" else base.filter(idcontratannulation=0)
+        queryset = self._statut_portefeuille(self._filtre_produit(queryset))
+        if statut in self.STATUTS_PORTEFEUILLE:
+            queryset = queryset.filter(statut_portefeuille=statut)
+        ordre = params.get("ordre") or ""
+        champ = self.ORDRES_PORTEFEUILLE.get(ordre.lstrip("-"))
+        if champ:
+            queryset = queryset.order_by(f"{'-' if ordre.startswith('-') else ''}{champ}", "-idcontrat")
+        else:
+            queryset = queryset.order_by("-idcontrat")
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+            page_size = min(1000, max(1, int(request.query_params.get("page_size", 25))))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Les paramètres de pagination sont invalides."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        total = queryset.count()
+        # Identifiants de la page d'abord, puis ces seuls contrats avec leurs relations (voir paginate_queryset)
+        identifiants = list(queryset.values_list("pk", flat=True)[(page - 1) * page_size : page * page_size])
+        par_identifiant = {
+            contrat.pk: contrat for contrat in self._avec_relations(queryset.filter(pk__in=identifiants))
+        }
+        contrats = [par_identifiant[pk] for pk in identifiants if pk in par_identifiant]
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": ContratSerializer(contrats, many=True).data,
+                "par_produit": par_produit,
+                "par_statut": par_statut,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["get", "patch"], url_path="administration")
+    def administration_detail(self, request, pk=None):
+        contrat = get_object_or_404(
+            Contrat.objects.select_related("idclient", "idcompagnie"), pk=pk
+        )
+        if request.method == "GET":
+            return Response(
+                self._donnees_administration(contrat),
+                status=status.HTTP_200_OK,
+            )
+
+        payload = request.data
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("contrat"), dict)
+            or not isinstance(payload.get("details", []), list)
+        ):
+            return Response(
+                {"detail": "Le format des modifications du contrat est invalide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        contrat_serializer = ContratAdministrationSerializer(
+            contrat, data=payload["contrat"], partial=True
+        )
+        if not contrat_serializer.is_valid():
+            return Response(contrat_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        details_a_sauver = []
+        garanties_a_sauver = []
+        detail_ids = set()
+        for detail_data in payload.get("details", []):
+            if not isinstance(detail_data, dict) or not isinstance(
+                detail_data.get("garanties", []), list
+            ):
+                return Response(
+                    {"details": "Le format d’un détail de contrat est invalide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            valeurs_detail = dict(detail_data)
+            id_detail = valeurs_detail.pop("idcontratdetail", None)
+            if not id_detail or id_detail in detail_ids:
+                return Response(
+                    {"details": "Identifiant de détail absent ou répété."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            detail_ids.add(id_detail)
+            detail = get_object_or_404(
+                ContratDetail.objects.filter(idcontrat=contrat),
+                pk=id_detail,
+            )
+            garanties_data = valeurs_detail.pop("garanties", [])
+            serializer_detail = ContratDetailAdministrationSerializer(
+                detail, data=valeurs_detail, partial=True
+            )
+            if not serializer_detail.is_valid():
+                return Response(
+                    {"details": {str(id_detail): serializer_detail.errors}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            details_a_sauver.append(serializer_detail)
+
+            garantie_ids = set()
+            for garantie_data in garanties_data:
+                if not isinstance(garantie_data, dict):
+                    return Response(
+                        {"garanties": "Le format d’une garantie est invalide."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                valeurs_garantie = dict(garantie_data)
+                id_garantie = valeurs_garantie.pop("idcontratdetgarantie", None)
+                if not id_garantie or id_garantie in garantie_ids:
+                    return Response(
+                        {"garanties": "Identifiant de garantie absent ou répété."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                garantie_ids.add(id_garantie)
+                garantie = get_object_or_404(
+                    ContratDetGarantie.objects.filter(idcontratdetail=detail),
+                    pk=id_garantie,
+                )
+                serializer_garantie = ContratGarantieAdministrationSerializer(
+                    garantie, data=valeurs_garantie, partial=True
+                )
+                if not serializer_garantie.is_valid():
+                    return Response(
+                        {
+                            "garanties": {
+                                str(id_garantie): serializer_garantie.errors
+                            }
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                garanties_a_sauver.append(serializer_garantie)
+
+        periode_modifiee = any(
+            champ in contrat_serializer.validated_data
+            for champ in ("dateeffet", "dateexpiration")
+        )
+        with transaction.atomic():
+            contrat_enregistre = contrat_serializer.save()
+            if periode_modifiee:
+                # Même période sur le devis : les avenants la lisent là (sp_creation_devis_sante)
+                Devis.objects.filter(pk=contrat_enregistre.iddevis_id).update(
+                    dateeffet=contrat_enregistre.dateeffet,
+                    dateexpiration=contrat_enregistre.dateexpiration,
+                )
+            if periode_modifiee and contrat_enregistre.idquittance_id:
+                Quittance.objects.filter(pk=contrat_enregistre.idquittance_id).update(
+                    dateeffet=contrat_enregistre.dateeffet,
+                    dateexpiration=contrat_enregistre.dateexpiration,
+                )
+            for serializer_detail in details_a_sauver:
+                serializer_detail.save()
+            for serializer_garantie in garanties_a_sauver:
+                serializer_garantie.save()
+
+        return Response(
+            self._donnees_administration(contrat),
+            status=status.HTTP_200_OK,
+        )
 
     @action(
         detail=True,
@@ -1323,6 +1761,16 @@ class ContratViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         except Devis.DoesNotExist:
             raise Http404("Devis introuvable")
 
+    # Pièce jointe du contrat, sinon celle de son devis d'origine : fiche, puis fichier affiché dans l'application
+    @action(detail=True, methods=["get"], url_path="piece-jointe")
+    def piece_jointe(self, request, pk=None):
+        piece, origine = pieces_jointes.piece_du_contrat(cast(Contrat, self.get_object()))
+        return Response(pieces_jointes.fiche(piece, origine))
+
+    @action(detail=True, methods=["get"], url_path="piece-jointe/fichier")
+    def piece_jointe_fichier(self, request, pk=None):
+        return pieces_jointes.reponse_fichier(pieces_jointes.piece_du_contrat(cast(Contrat, self.get_object()))[0])
+
 
 class ContratRestreintViewSet(viewsets.ModelViewSet):
     queryset = Contrat.objects.filter(Q(idcontratannulation=0)).order_by(
@@ -1341,7 +1789,7 @@ class ContratDetailViewSet(viewsets.ModelViewSet):
 
 
 class ContratDetGarantieViewSet(viewsets.ModelViewSet):
-    queryset = ContratDetGarantie.objects.filter(~Q(idgarantie=0))
+    queryset = ContratDetGarantie.objects.filter(~Q(idgarantie=0)).select_related("idgarantie").order_by("pk")
     serializer_class = ContratDetGarantieSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -1792,7 +2240,8 @@ class CreerDevisIAMineneView(APIView):
                         (
                             devis_ia.compagnie_id,
                             devis_ia.produit_id,
-                            devis_ia.offre_id,
+                            # Sans offre : aucune garantie ni prime sur cette ligne (voir plus bas)
+                            0,
                             client.IdClient,
                             12,
                             date_effet,
@@ -1843,6 +2292,14 @@ class CreerDevisIAMineneView(APIView):
                     ayants_droits_crees.append(affilie.idaffilie)
                 except Exception as e_ad:
                     erreurs.append({"type": "ayant_droit", "idaffilie": affilie.idaffilie, "message": str(e_ad).split("\n")[0]})
+
+        # Lignes des autres adhérents : offre et tarif de la ligne de l'assuré principal, lus par la confirmation
+        # (catégorie de la police, exonérations de la quittance), sans garantie ni prime : sp_finalisation_devis
+        # additionne les lignes puis multiplie par le nombre d'adhérents, une prime par ligne serait comptée deux fois
+        if devis_detail_obj:
+            DevisDetail.objects.filter(iddevis=id_devis, idoffre=0).update(
+                idoffre=devis_detail_obj.idoffre, idtarif=devis_detail_obj.idtarif
+            )
 
         return Response(
             {
@@ -2032,7 +2489,9 @@ class LogRecordView(APIView):
 
 
 class QuittanceViewSet(viewsets.ModelViewSet):
-    queryset = Quittance.objects.all()
+    queryset = Quittance.objects.select_related(*relations_directes(Quittance)).prefetch_related(
+        "produit__avenants"
+    ).order_by("pk")
     serializer_class = QuittanceSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -2040,7 +2499,7 @@ class QuittanceViewSet(viewsets.ModelViewSet):
 
 
 class DetailQuittanceViewSet(viewsets.ModelViewSet):
-    queryset = DetailQuittance.objects.all()
+    queryset = DetailQuittance.objects.select_related(*relations_directes(DetailQuittance)).order_by("pk")
     serializer_class = DetailQuittanceSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -2054,11 +2513,8 @@ class EncaissementViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         if self.action in ["list", "retrieve", "annuler"]:
-            return (
-                Encaissement.objects.select_related("modepaiement", "banque")
-                .prefetch_related("details")
-                .filter(Q(piece_annulee=False))
-                .order_by("-dateencaissement")
+            return encaissements_avec_relations(
+                Encaissement.objects.filter(Q(piece_annulee=False)).order_by("-dateencaissement")
             )
 
         else:
@@ -2219,7 +2675,8 @@ class EncaissementViewSet(viewsets.ModelViewSet):
 
 
 class DetailEncaissementViewSet(viewsets.ModelViewSet):
-    queryset = DetailEncaissement.objects.all()
+    # Ordre explicite : sans lui, la jointure changeait l'ordre des pages d'un appel à l'autre
+    queryset = DetailEncaissement.objects.select_related(*relations_directes(DetailEncaissement)).order_by("pk")
     serializer_class = DetailEncaissementSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -2376,7 +2833,7 @@ class ReversementCompagnieViewSet(viewsets.ModelViewSet):
 
 
 class DetailReversementViewSet(viewsets.ModelViewSet):
-    queryset = DetailReversement.objects.all()
+    queryset = DetailReversement.objects.select_related(*relations_directes(DetailReversement)).order_by("pk")
     serializer_class = DetailReversementSerializer
     permission_classes = [
         permissions.IsAuthenticated,
@@ -2772,6 +3229,24 @@ def creer_ayant_droit_ia(request):
     )
 
 
+def _confirmation_oreole(donnees):
+    """Devis d'un package Oreole Santé confirmé depuis le registre : les trois polices sortent ensemble, avec leur lien."""
+    from sante.oreole import ErreurOreole, emettre, package_du_devis
+
+    id_devis = int(donnees.get("IdDevis") or 0)
+    with connection.cursor() as cursor:
+        package = package_du_devis(cursor, id_devis)
+    if not package:
+        return None
+    try:
+        resultat = emettre(package["iddevis_sante"])
+    except ErreurOreole as erreur:
+        return JsonResponse([{"ObjectId": 0, "OutputMessage": str(erreur)}], status=status.HTTP_400_BAD_REQUEST, safe=False)
+    produit = next((p for p in resultat["Produits"].values() if p and p["IdDevis"] == id_devis), resultat["Produits"]["Sante"])
+    return JsonResponse([{"ObjectId": produit["IdContrat"], "OutputMessage": f"Polices émises : {', '.join(resultat['Emis']) or 'déjà émises'}."}],
+                        status=status.HTTP_201_CREATED, safe=False)
+
+
 # Change quotation into contract
 @api_view(["POST"])
 @authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
@@ -2783,6 +3258,9 @@ def create_contract(request):
         data=confirmationdevis_data
     )
     if confirmationdevis_serializer.is_valid():
+        reponse_oreole = _confirmation_oreole(confirmationdevis_data)
+        if reponse_oreole is not None:
+            return reponse_oreole
         (err, qryset) = save_contract(confirmationdevis_data)
         data_insertion_serializer = DataInsertionSerializer(qryset, many=True)
         st = status.HTTP_201_CREATED
@@ -3380,13 +3858,8 @@ class GarantieSouscriteDevisView(GarantieSouscriteView):
         return self.get_garantie(iddevis, "DEV")
 
 
-# Save Premium collection
-@api_view(["POST"])
-@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
-@permission_classes([permissions.IsAuthenticated])
-def collect_premium(request):
-    enregistrementencaissement_data = JSONParser().parse(request)
-    print("JSON de la requête:", enregistrementencaissement_data)
+# Contrôle et enregistre un encaissement : caisse (collect_premium) et règlement commun d'un package Oreole Santé
+def enregistrer_encaissement(user, enregistrementencaissement_data):
     enregistrementencaissement_serializer = (
         EncaissementGroupeQuittanceSerializer(
             data=enregistrementencaissement_data
@@ -3396,7 +3869,7 @@ def collect_premium(request):
     try:
 
         result_data = save_premium_collection(
-            request.user, enregistrementencaissement_data
+            user, enregistrementencaissement_data
         )
         # 3. Réponse de succès utilisant notre structure définie
         output_serializer = EncaissementResponseSerializer(result_data)
@@ -3427,6 +3900,16 @@ def collect_premium(request):
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+
+# Save Premium collection
+@api_view(["POST"])
+@authentication_classes([KnoxOrDemoTokenAuthentication, BasicAuthentication])
+@permission_classes([permissions.IsAuthenticated])
+def collect_premium(request):
+    enregistrementencaissement_data = JSONParser().parse(request)
+    print("JSON de la requête:", enregistrementencaissement_data)
+    return enregistrer_encaissement(request.user, enregistrementencaissement_data)
 
 
 # Cancel Premium collection
@@ -4132,8 +4615,17 @@ class CalculMaisonView(APIView):
 ID_TARIF_MRH = 81
 
 
+LONGUEUR_ADRESSE_MAISON = 150  # stddevisdetail.adressecnd (migration production 0217 ; 50 avant)
+
+
 def _message_erreur_mrh(exc):
     """Message lisible d'une erreur de calcul/enregistrement MRH."""
+    # Texte trop long pour une colonne (« valeur trop longue pour le type character varying(50) ») : la seule saisie libre
+    # d'une maison est son adresse ; constaté en production le 2026-11-09 avant l'élargissement de la migration 0217
+    longueur = re.search(r"(?:trop longue|too long) (?:pour le|for) type character varying\((\d+)\)", str(exc))
+    if longueur:
+        return (f"Une saisie dépasse la longueur admise par la base ({longueur.group(1)} caractères au plus), le plus souvent l'adresse "
+                "d'une maison : raccourcissez-la puis enregistrez à nouveau.")
     detail = getattr(exc, "detail", None)
     if detail is None:
         detail = getattr(exc, "message_dict", None) or getattr(exc, "messages", None)
@@ -4169,13 +4661,15 @@ def _enregistrer_maisons_mrh(devis, maisons, id_tarif=None):
     Retourne les totaux du devis mis à jour.
     """
     service = MRHCalculService()
-    totaux = None
-    for maison in maisons:
+    for rang, maison in enumerate(maisons, start=1):
         code_usage = maison.get("code_usage")
         usage = UsageHabitation.objects.filter(code=code_usage).first()
         if not usage or not usage.offre_id:
             raise ValueError(f"Usage habitation inconnu ou sans offre : {code_usage}")
-        resultat = service.calculer_et_enregistrer_maison(
+        adresse = str(maison.get("adresse") or "").strip()
+        if len(adresse) > LONGUEUR_ADRESSE_MAISON:
+            raise ValueError(f"Maison {rang} : l'adresse compte {len(adresse)} caractères, {LONGUEUR_ADRESSE_MAISON} au plus. Raccourcissez-la.")
+        service.calculer_et_enregistrer_maison(
             id_devis=devis.iddevis,
             id_produit=devis.produit_id,
             id_compagnie=devis.compagnie_id,
@@ -4191,9 +4685,16 @@ def _enregistrer_maisons_mrh(devis, maisons, id_tarif=None):
                 maison.get("sous_garanties_optionnelles"), "code_sous_garantie"
             ),
             adresse=maison.get("adresse") or "",
+            mettre_a_jour_totaux=False,
         )
-        totaux = resultat["totaux_devis"]
-    return totaux
+    if maisons:
+        return service.mettre_a_jour_totaux_devis(
+            id_devis=devis.iddevis,
+            id_produit=devis.produit_id,
+            id_compagnie=devis.compagnie_id,
+            inclure_accessoires=True,
+        )
+    return None
 
 
 def _totaux_devis_mrh(devis):
@@ -4417,15 +4918,30 @@ class DevisMRHViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from .incorporation import _devis_incorporation, _verifier_periode_devis
+
+        with connection.cursor() as cursor:
+            incorporation = _devis_incorporation(cursor, devis.iddevis)
+
         try:
             with transaction.atomic():
-                idduree = data.get("idduree") or devis.idduree
-                dateexpiration = data.get("dateexpiration") or calculer_date_expiration(
-                    date_effet=data["dateeffet"], id_duree=idduree, nombre_jours=0
-                )
-                devis.compagnie_id = data["idcompagnie"]
-                devis.client_id = data["idclient"]
-                devis.assure_id = data.get("idassure") or data["idclient"]
+                if incorporation:
+                    # Incorporation d'une maison (avenant INC) : date d'incorporation au choix dans la période du contrat,
+                    # échéance, durée, compagnie, souscripteur et assuré de la police inchangés
+                    effet = data["dateeffet"]
+                    effet = effet.date() if hasattr(effet, "date") else effet
+                    _verifier_periode_devis("INC", incorporation["debut"], incorporation["dateexpiration"], effet,
+                                            incorporation["dateexpiration"])
+                    idduree = devis.idduree
+                    dateexpiration = devis.dateexpiration
+                else:
+                    idduree = data.get("idduree") or devis.idduree
+                    dateexpiration = data.get("dateexpiration") or calculer_date_expiration(
+                        date_effet=data["dateeffet"], id_duree=idduree, nombre_jours=0
+                    )
+                    devis.compagnie_id = data["idcompagnie"]
+                    devis.client_id = data["idclient"]
+                    devis.assure_id = data.get("idassure") or data["idclient"]
                 devis.dateeffet = data["dateeffet"]
                 devis.dateexpiration = dateexpiration
                 # Date d'émission imposée : celle du jour de la modification
@@ -5490,23 +6006,46 @@ class ChequeFilter(filters.FilterSet):
 
 
 class CheckChequeStatusView(APIView):
+    """Chèque déjà au portefeuille, par numéro et banque (?numero_cheque=&banque=) ou par identifiant (?id=) : montant
+    initial, solde ; chèque annulé : réutilisable (database.reutiliser_cheque_annule), avec le montant qu'il retrouvera et
+    son montant initial corrigeable."""
+
     def get(self, request):
-        numero = request.query_params.get("numero_cheque")
-        banque_id = request.query_params.get("banque")
+        if request.query_params.get("id"):
+            try:
+                cheque = Cheque.objects.select_related("banque").filter(id_cheque=int(request.query_params["id"])).first()
+            except ValueError:
+                cheque = None
+        else:
+            cheque = Cheque.objects.select_related("banque").filter(
+                numero_cheque=request.query_params.get("numero_cheque"), banque_id=request.query_params.get("banque")
+            ).first()
 
-        cheque = Cheque.objects.filter(
-            numero_cheque=numero, banque_id=banque_id
-        ).first()
-
-        if cheque:
-            return Response(
-                {
-                    "existe": True,
-                    "montant_initial": cheque.montant_initial,
-                    "solde_disponible": cheque.solde_disponible,
-                }
-            )
-        return Response({"existe": False})
+        if not cheque:
+            return Response({"existe": False})
+        resultat = {
+            "existe": True,
+            "id": cheque.id_cheque,
+            "numero_cheque": cheque.numero_cheque,
+            "banque": cheque.banque_id,
+            "nom_banque": (cheque.banque.libelle or "").strip(),
+            "statut": cheque.statut,
+            "montant_initial": cheque.montant_initial,
+            "solde_disponible": cheque.solde_disponible,
+            "annule": cheque.statut in STATUTS_CHEQUE_ANNULE,
+        }
+        if resultat["annule"]:
+            utilise = montant_utilise_cheque(cheque)
+            resultat.update({
+                "reutilisable": True,
+                # Montant que le chèque retrouvera à sa réutilisation
+                "solde_disponible": cheque.montant_initial - utilise,
+                "montant_utilise": utilise,
+                "montant_modifiable": True,
+                "date_annulation": cheque.date_decaissement,
+                "motif_annulation": cheque.motif_decaissement or "",
+            })
+        return Response(resultat)
 
 
 class ChequeListView(generics.ListAPIView):
@@ -6553,8 +7092,8 @@ class DetailMaisonView(APIView):
             "proprietaire_occupant_rez": "Propriétaire occupant - Rez-de-chaussée",
             "proprietaire_bailleur": "Propriétaire bailleur",
             "proprietaire_non_occupant": "Propriétaire non occupant",
-            "locataire": "Locataire",
-            "locataire_saisonnier": "Locataire saisonnier",
+            "locataire": "Location",
+            "locataire_saisonnier": "Location saisonnière",
             "locaux_commerciaux": "Locaux commerciaux",
             "batiment_usage_mixte": "Bâtiment à usage mixte",
         }

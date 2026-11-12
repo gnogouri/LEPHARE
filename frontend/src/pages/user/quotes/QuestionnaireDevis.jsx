@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
+import { useNavigate } from '../../../utils/navigationDevis';
 import { AlertTriangle, ChevronDown, ClipboardList, Download, FileCheck2, Search, UserPlus, X } from 'lucide-react';
 import { questionnaireApi } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
@@ -88,8 +89,9 @@ export const useQuestionnaireDevis = () => {
     telephone: souscripteur.telephone || '',
     email: souscripteur.email || '',
     adresse: souscripteur.adresse || '',
-    NomContact: souscripteur.contact || '',
-    RegistreCommerce: souscripteur.registre_commerce || '',
+    // Noms des champs de stdclient : contact = représentant légal, RCCM dans le champ pièce / RCCM
+    Responsable: souscripteur.contact || '',
+    CniPat: souscripteur.registre_commerce || '',
   } : null;
 
   return {
@@ -119,7 +121,7 @@ export const ContenuQuestionnaire = ({ lecture, max = 400 }) => {
             <dl>
               {reponses.map((r, k) => (
                 <React.Fragment key={`${r.libelle}-${k}`}>
-                  <dt>{r.libelle || '—'}</dt>
+                  <dt>{r.libelle || '-'}</dt>
                   <dd>{r.genre === 'choix' ? <span className="qd-choix">{r.valeur}</span> : r.valeur}</dd>
                 </React.Fragment>
               ))}

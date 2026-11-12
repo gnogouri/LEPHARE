@@ -72,11 +72,11 @@ const CHAMPS_REPARTITION = [
   { champ: 'taux_frais_gestion_adec', libelle: 'Frais de gestion ADEC', type: 'taux', variante: false },
   { champ: 'taux_autres_frais_gestion', libelle: 'Autres frais de gestion', type: 'taux', variante: false },
   { champ: 'taux_commission_commerciaux', libelle: 'Commission des commerciaux NSIA', type: 'taux', variante: true },
-  { champ: 'frais_gestion_adec_forfait_ia', libelle: 'Frais de gestion ADEC — IA, par adhérent', type: 'forfait', aide: 'Ajoutés à la prime TTC de chaque adhérent du devis IA MINENE.' },
-  { champ: 'frais_gestion_adec_forfait_rc', libelle: 'Frais de gestion ADEC — RC chef de famille, par adhérent', type: 'forfait', aide: 'Ajoutés à la prime TTC de chaque adhérent du devis RC MINENE.' },
+  { champ: 'frais_gestion_adec_forfait_ia', libelle: 'Frais de gestion ADEC - IA, par adhérent', type: 'forfait', aide: 'Ajoutés à la prime TTC de chaque adhérent du devis IA MINENE.' },
+  { champ: 'frais_gestion_adec_forfait_rc', libelle: 'Frais de gestion ADEC - RC chef de famille, par adhérent', type: 'forfait', aide: 'Ajoutés à la prime TTC de chaque adhérent du devis RC MINENE.' },
 ];
 
-const montant = (v) => (v === null || v === undefined || v === '' ? '—' : `${Math.round(Number(v)).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`);
+const montant = (v) => (v === null || v === undefined || v === '' ? '-' : `${Math.round(Number(v)).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`);
 const memes = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const cellule = { padding: '0.55rem 0.5rem', verticalAlign: 'top', fontSize: '0.84rem' };
 const entete = { padding: '0.6rem 0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', textAlign: 'left', whiteSpace: 'nowrap' };
@@ -274,7 +274,7 @@ export const ParametrageSantePage = () => {
                     <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                       <td style={cellule}>
                         <div style={{ fontWeight: 600 }}>{f.Option}</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{f.LibelleOffre}{f.OffreActive ? '' : ' — offre inactive'}</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{f.LibelleOffre}{f.OffreActive ? '' : ' - offre inactive'}</div>
                       </td>
                       <td style={cellule}>{f.PersonnesMin === f.PersonnesMax ? f.PersonnesMax : `${f.PersonnesMin} à ${f.PersonnesMax}`}</td>
                       <td style={{ ...cellule, whiteSpace: 'nowrap' }}>{montant(f.PrimeBase)}</td>

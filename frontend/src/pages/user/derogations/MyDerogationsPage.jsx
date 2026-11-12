@@ -17,7 +17,7 @@ const normalizeDemande = (d) => {
     type_label: d.type_operation === 'ANNUL_ENC' ? "Annulation d'encaissement" : (d.type_operation || 'Dérogation'),
     objet: d.objet || d.motif || 'Dérogation opérationnelle',
     date_demande: d.date_demande ? d.date_demande.substring(0, 16).replace('T', ' ') : new Date().toISOString().substring(0, 10),
-    approbateur_nom: d.valideur ? `${d.valideur.first_name || ''} ${d.valideur.last_name || d.valideur.email || ''}`.trim() : 'Direction Uranus',
+    approbateur_nom: d.valideur ? `${d.valideur.first_name || ''} ${d.valideur.last_name || d.valideur.email || ''}`.trim() : 'Direction',
     statut_label: isApproved ? 'Approuvée' : (isRejected ? 'Rejetée' : 'En attente'),
     statut_badge: isApproved ? 'emerald' : (isRejected ? 'rose' : 'amber'),
     code_jeton: d.code_jeton || (d.jeton && d.jeton.code ? d.jeton.code : null),

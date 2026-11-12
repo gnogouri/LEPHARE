@@ -23,7 +23,7 @@ const MOYENS = { MARITIME: 'Navire', AERIEN: 'Compagnie et n° de vol', TERRESTR
 const TEINTES_STATUT = { 'À facturer': 'var(--accent-amber)', Facturé: 'var(--accent-emerald)', Annulé: 'var(--text-muted)' };
 
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
-const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '—');
+const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '-');
 const aujourdhui = () => new Date().toISOString().slice(0, 10);
 const moisCourant = () => aujourdhui().slice(0, 7);
 const messageErreurApi = (err) => {
@@ -398,7 +398,7 @@ export const TransportAbonnementsPage = () => {
                               <td style={{ fontWeight: 700 }}>{v.Numero}</td>
                               <td>{dateFr(v.DateDepart)}</td>
                               <td>{v.Marchandise}<div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{v.LieuDepart} → {v.LieuArrivee}</div></td>
-                              <td style={{ fontSize: '0.8rem' }}>{[v.MoyenTransport, v.DocumentTransport].filter(Boolean).join(' · ') || '—'}</td>
+                              <td style={{ fontSize: '0.8rem' }}>{[v.MoyenTransport, v.DocumentTransport].filter(Boolean).join(' · ') || '-'}</td>
                               <td style={{ textAlign: 'right' }}>{fcfa(v.Valeur)}</td>
                               <td style={{ textAlign: 'right', fontWeight: 700 }}>{fcfa(v.PrimeTtc)}</td>
                               <td><Statut libelle={v.Statut} />{v.Annule && v.MotifAnnulation && <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{v.MotifAnnulation}</div>}</td>
@@ -427,7 +427,7 @@ export const TransportAbonnementsPage = () => {
                             <tr key={r.IdDevis}>
                               <td style={{ fontWeight: 700, textTransform: 'capitalize' }}>{moisEnLettres(r.Mois)}</td>
                               <td>{r.Voyages}</td>
-                              <td>{r.NumeroQuittance || '—'}</td>
+                              <td>{r.NumeroQuittance || '-'}</td>
                               <td style={{ textAlign: 'right', fontWeight: 700 }}>{fcfa(r.PrimeTtc)}</td>
                               <td style={{ textAlign: 'right' }}>{fcfa(r.Encaisse)}</td>
                               <td style={{ whiteSpace: 'nowrap' }}>

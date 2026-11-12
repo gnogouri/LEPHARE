@@ -10,17 +10,22 @@ Pour un nouveau module : ajouter ses droits ici et ses routes dans garde.REGLES,
 """
 
 MODULES = [
+    ("cockpit", "Cockpit opérationnel"),
     ("clients", "Clients"),
     ("devis", "Devis et production"),
     ("contrats", "Contrats et avenants"),
     ("encaissements", "Caisse et encaissements"),
     ("reversements", "Reversements aux compagnies"),
-    ("commissions", "Commissions et apporteurs"),
+    ("commissions", "Commissions du cabinet"),
+    ("apporteurs", "Apporteurs d'affaires"),
     ("sinistres", "Sinistres"),
+    ("consommations", "Consommations santé"),
+    ("rafas", "RAFAS - Régime autofinancé d'assurance santé"),
     ("approbations", "Dérogations et approbations"),
     ("imports", "Imports de fichiers"),
     ("crm", "Suivi commercial"),
     ("documents", "Documents (GED)"),
+    ("archives", "Archives"),
     ("asaci", "Attestations ASACI"),
     ("reporting", "États et reporting"),
     ("tarifs", "Tarifs et barèmes"),
@@ -32,6 +37,10 @@ MODULES = [
 
 # (code, libellé, description, sensible, motif obligatoire à l'installation, séparation des tâches possible)
 DROITS = [
+    ("cockpit.view", "Consulter le cockpit opérationnel",
+     "Écran d'accueil de l'espace Production ; chaque bloc de chiffres reste soumis au droit de lecture de son module.",
+     False, False, False),
+
     ("clients.view", "Consulter les clients", "Liste, recherche, fiche et dossier 360° des clients.", False, False, False),
     ("clients.create", "Créer un client", "", False, False, False),
     ("clients.update", "Modifier un client", "Identité, coordonnées, qualité : valeurs avant / après journalisées.", True, False, False),
@@ -42,7 +51,8 @@ DROITS = [
     ("devis.create", "Créer un devis", "Toutes branches, brouillons compris.", False, False, False),
     ("devis.update", "Modifier un devis", "« Modifier », garanties, véhicules, assurés, pièces jointes.", False, False, False),
     ("devis.validate", "Transformer un devis en contrat", "Confirmation du devis : police et quittance émises.", True, False, True),
-    ("devis.cancel", "Archiver un devis", "Archivage, désarchivage et abandon d'une saisie.", True, False, False),
+    ("devis.cancel", "Archiver un devis", "Archivage et abandon d'une saisie. La restauration est un droit à part (Archives).", True, False, False),
+    ("devis.delete", "Supprimer un devis", "Suppression définitive d'un devis non confirmé et de sa saisie.", True, True, False),
     ("devis.primes", "Imposer ou corriger les primes", "Primes imposées, correction des primes, répartition des garanties.", True, True, False),
     ("devis.derogation_age", "Déroger à la limite d'âge",
      "Admettre un assuré au-delà des limites d'âge des conditions (Santé MINENE : adulte, enfant), en saisie ou à l'import.",
@@ -50,8 +60,15 @@ DROITS = [
 
     ("contrats.view", "Consulter les contrats", "Portefeuille, quittances, garanties, véhicules, certificats.", False, False, False),
     ("contrats.update", "Modifier un contrat", "Garanties du contrat, pièces jointes.", True, False, False),
+    ("contrats.admin_update", "Modifier toutes les informations d’un contrat",
+     "Écran d’administration : contrat, risques/véhicules et garanties ; justification obligatoire et journal avant/après.", True, True, False),
     ("contrats.avenant", "Établir un avenant", "Renouvellement, incorporation, retrait, changement d'immatriculation, prise d'effet.", True, False, False),
     ("contrats.cancel", "Annuler un contrat", "Avenant d'annulation ou de résiliation.", True, True, False),
+    ("contrats.delete", "Supprimer un contrat",
+     "Suppression définitive d'un contrat sans encaissement et de sa quittance ; son devis revient en attente.", True, True, False),
+    ("contrats.reprise", "Saisir les affaires antérieures",
+     "Reprise des contrats et quittances des années passées absents de LE PHARE : saisie, import Excel, suppression d'une "
+     "reprise erronée par son auteur.", False, False, False),
 
     ("encaissements.view", "Consulter la caisse", "Contrats à encaisser, encaissements, reçus, chèques.", False, False, False),
     ("encaissements.create", "Encaisser une prime", "Encaissement, échéancier de chèques, paiement mobile, demande d'annulation.", False, False, False),
@@ -66,11 +83,31 @@ DROITS = [
     ("commissions.validate", "Encaisser une commission", "Encaissement et validation des paiements de commission.", True, False, False),
     ("commissions.cancel", "Annuler une commission", "", True, True, False),
 
+    ("apporteurs.view", "Consulter les apporteurs et leurs commissions", "Fiches, apporteurs d'une affaire, commissions et règlements.", False, False, False),
+    ("apporteurs.update", "Gérer les apporteurs", "Création, modification, désactivation d'un apporteur.", False, False, False),
+    ("apporteurs.rattacher", "Rattacher un apporteur à une affaire", "Ajout d'un apporteur sur un devis ou un contrat, taux convenu, retrait.", False, False, False),
+    ("apporteurs.payer", "Régler les commissions d'apporteurs", "Enregistrement d'un règlement versé à un apporteur.", True, False, False),
+    ("apporteurs.cancel", "Annuler une commission ou un règlement d'apporteur", "", True, True, False),
+
     ("sinistres.view", "Consulter les sinistres", "", False, False, False),
     ("sinistres.create", "Déclarer un sinistre", "", False, False, False),
     ("sinistres.update", "Instruire un sinistre", "Pièces, demande d'accord, suivi du dossier.", False, False, False),
     ("sinistres.settle", "Régler un sinistre", "Règlement sous plafond de délégation et émission de la quittance subrogative.",
      True, False, False),
+
+    ("consommations.view", "Consulter les consommations santé",
+     "Relevés du gestionnaire santé : droits, prestations, plafonds et soldes par assuré, statistiques par entreprise. Données de santé.",
+     True, False, False),
+    ("consommations.import", "Importer les relevés du gestionnaire santé", "Relevés de prestations et effectifs reçus du gestionnaire (MCI CARE).",
+     True, False, False),
+    ("consommations.fraude", "Détecter et instruire les anomalies santé",
+     "Signaux d'anomalie par bénéficiaire et décision d'instruction ; aucune décision n'est automatique.", True, False, False),
+
+    ("rafas.view", "Consulter le RAFAS",
+     "Conventions des régimes autofinancés, fonds, effectifs, dépenses de santé et contrôles du gestionnaire. Données de santé.", True, False, False),
+    ("rafas.manage", "Gérer les conventions RAFAS et leur fonds",
+     "Conventions, exercices et collèges, appels de fonds, versements du souscripteur, honoraires et commission.", True, False, False),
+    ("rafas.import", "Importer les fichiers du gestionnaire RAFAS", "Effectifs et relevés de prestations (VITALIS SANTE).", True, False, False),
 
     ("approbations.view", "Consulter les demandes d'autorisation", "", False, False, False),
     ("approbations.decider", "Approuver ou rejeter une demande", "Décisions sur les demandes et dérogations accordées.", True, False, True),
@@ -84,6 +121,8 @@ DROITS = [
     ("documents.view", "Consulter les documents", "", False, False, False),
     ("documents.update", "Classer ou retirer des documents", "", False, False, False),
 
+    ("archives.restore", "Restaurer un élément archivé", "Bouton « Restaurer » de la page Archives : clients, devis, contrats et sinistres.", True, False, False),
+
     ("asaci.attestations", "Gérer les attestations ASACI", "Demande, suivi et mise à jour des attestations.", False, False, False),
 
     ("reporting.view", "Consulter les états", "États CIMA, états de gestion, bordereaux d'émission.", False, False, False),
@@ -91,8 +130,8 @@ DROITS = [
     ("tarifs.view", "Consulter les tarifs et barèmes", "Écrans d'administration des barèmes.", False, False, False),
     ("tarifs.update", "Modifier les tarifs et barèmes", "Offres, garanties, taxes, accessoires, commissions, réductions, grilles, réglages Dommages.", True, False, False),
 
-    ("parametrage.update", "Paramétrage général", "Cabinet, compagnies, produits, règles de gestion, listes de référence, apporteurs, conventions.", True, False, False),
-    ("parametrage.technique", "Paramétrage technique", "Tables internes, numérotation, tâches planifiées, menus d'URANUS.", True, False, False),
+    ("parametrage.update", "Paramétrage général", "Cabinet, compagnies, produits, règles de gestion, listes de référence, conventions.", True, False, False),
+    ("parametrage.technique", "Paramétrage technique", "Tables internes, numérotation, tâches planifiées et menus de l'application.", True, False, False),
 
     ("users.view", "Consulter les utilisateurs", "", False, False, False),
     ("users.create", "Créer un utilisateur", "", True, False, False),
@@ -109,7 +148,7 @@ DROITS = [
 
 TOUS = [d[0] for d in DROITS]
 _VUES_METIER = [
-    "clients.view", "devis.view", "contrats.view", "encaissements.view", "reversements.view", "commissions.view",
+    "clients.view", "devis.view", "contrats.view", "encaissements.view", "reversements.view", "commissions.view", "apporteurs.view",
     "sinistres.view", "approbations.view", "crm.view", "documents.view", "reporting.view",
 ]
 
@@ -124,15 +163,16 @@ ROLES_INITIAUX = [
      _VUES_METIER + [
          "devis.validate", "devis.cancel", "devis.primes", "contrats.update", "contrats.avenant", "contrats.cancel",
          "encaissements.cancel", "reversements.create", "reversements.validate", "commissions.validate",
-         "commissions.cancel", "sinistres.settle", "approbations.decider", "crm.update", "documents.update",
+         "commissions.cancel", "apporteurs.rattacher", "apporteurs.payer", "apporteurs.cancel", "sinistres.settle",
+         "approbations.decider", "crm.update", "documents.update",
          "audit.view", "tarifs.view",
      ]),
     ("GESTIONNAIRE", "Gestionnaire", "Production complète (clients, devis, contrats, caisse, sinistres, imports) "
-     "sans paramétrage ; rôle donné aux comptes repris d'URANUS non administrateurs.",
+     "sans paramétrage ; attribué aux comptes importés non administrateurs.",
      _VUES_METIER + [
          "clients.create", "clients.update", "devis.create", "devis.update", "devis.validate", "devis.cancel",
          "devis.primes", "contrats.update", "contrats.avenant", "encaissements.create", "reversements.create",
-         "commissions.create", "sinistres.create", "sinistres.update", "imports.excel", "imports.guce",
+         "commissions.create", "apporteurs.rattacher", "sinistres.create", "sinistres.update", "imports.excel", "imports.guce",
          "crm.update", "documents.update", "asaci.attestations",
      ]),
     ("AGENT_SAISIE", "Agent de saisie", "Saisie des clients et des devis ; ne valide pas et ne touche pas aux primes.",

@@ -144,7 +144,7 @@ export const ParametragePoolTpvPage = () => {
                   return (
                     <li key={r.Id}>
                       <strong>{r.Libelle}</strong> : {phrase}
-                      <span style={{ color: 'var(--text-muted)' }}> — {titre.toLowerCase()}{compagnie ? `, ${compagnie}` : ''}{r.Categories ? '' : ', toutes catégories'}</span>
+                      <span style={{ color: 'var(--text-muted)' }}> - {titre.toLowerCase()}{compagnie ? `, ${compagnie}` : ''}{r.Categories ? '' : ', toutes catégories'}</span>
                     </li>
                   );
                 })}

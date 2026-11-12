@@ -41,12 +41,15 @@ from rest_framework.response import Response
 from configuration_api.parametrage import valeur_parametre
 
 from .models import BordereauReversement
+from .reste_encaissement import reste_a_encaisser
 from .views_finance import (
     AUTHENTIFICATION,
     ZERO,
     EcrituresAdministrateur,
     ErreurFinance,
+    SQL_ACC_COURTIER,
     SQL_LIGNES_ENCAISSEMENT,
+    SQL_PART_COMPAGNIE,
     _date,
     _entier,
     _erreur,
@@ -57,6 +60,7 @@ from .views_finance import (
     _restes_nets,
     controle_paiement_cabinet,
     debut_reversements,
+    part_compagnie,
 )
 
 REVERSEMENT = BordereauReversement.NATURE_REVERSEMENT
@@ -157,7 +161,7 @@ SQL_QUITTANCES = """
            NULLIF(TRIM(ct.numeroavenantcompagnie), '') AS avenantcompagnie,
            COALESCE(ct.taux_commission, q.taux_commission, 0) AS taux,
            COALESCE(ct.commissionintermediaire, 0) AS commission,
-           COALESCE(ct.accessoireintermediaire, 0) AS acccourtier,
+           """ + SQL_ACC_COURTIER.format(ct="ct") + """ AS acccourtier, """ + SQL_PART_COMPAGNIE.format(ct="ct") + """ AS partcompagnie,
            public.fn_lephare_prime_ht(COALESCE(ct.primenette, q.primenette), COALESCE(ct.accessoire, q.accessoire),
                                       COALESCE(ct.taxe, q.taxe), ct.fga, ct.cedeao, COALESCE(ct.primettc, q.primettc),
                                       ct.primeimposee) AS primeht
@@ -199,7 +203,7 @@ def _infos_quittance(q):
         "DateEffet": _iso(q["dateeffet"]),
         "DateExpiration": _iso(q["dateexpiration"]),
         "PrimeHT": _nombre(round(q["primeht"] or 0)),
-        "PrimeTtc": _nombre(q["primettc"]),
+        "PrimeTtc": _nombre(part_compagnie(q["primettc"], q["partcompagnie"])),
         "AccCourtier": _nombre(q["acccourtier"]),
         "Taux": _nombre(q["taux"]),
         "Commission": _nombre(q["commission"]),
@@ -208,7 +212,8 @@ def _infos_quittance(q):
 
 def _paiements(numeros):
     """Encaissements valides de chaque quittance, dans l'ordre : rang, cumul payé après chacun, statut (comptant,
-    1er acompte…, solde). Un décaissement (DMA) diminue le cumul sans compter comme paiement."""
+    1er acompte…, solde). Un décaissement (DMA) diminue le cumul sans compter comme paiement. Un reliquat de moins de
+    5 F compte comme soldé."""
     if not numeros:
         return {}
     lignes = _lignes(
@@ -232,7 +237,7 @@ def _paiements(numeros):
         cumul = precedent["Cumul"] + (-l["montant_encaissement"] if decaissement else l["montant_encaissement"])
         rang = precedent["Rang"] + (0 if decaissement else 1)
         ttc = l["primettc"] or ZERO
-        if ttc > 0 and cumul >= ttc:
+        if ttc > 0 and reste_a_encaisser(ttc, cumul) == 0:
             code = "COMPTANT" if rang == 1 else "SOLDE"
         else:
             code = "ACOMPTE"
@@ -257,8 +262,10 @@ SQL_REGLEMENTS = """
     SELECT e.idencaissement, e.idmodepaiement, UPPER(TRIM(COALESCE(m.abregereglement, ''))) AS abrege,
            m.libellemodepaiement AS mode, e.dateencaissement::date AS dateencaissement, e.datecheque,
            -- Espèces : transmises directement à la compagnie (réclamation de commission), sans reversement par le
-           -- cabinet (demande du 2026-10-20), quel que soit l'ordre saisi auparavant
-           CASE WHEN e.idmodepaiement = %s OR e.ordrereglement = 'COMPAGNIE'
+           -- cabinet (demande du 2026-10-20), quel que soit l'ordre saisi auparavant. Package Oreole Santé : l'argent reste au
+           -- cabinet, qui garde ses frais courtiers et reverse à chaque compagnie sa part, quel que soit le mode (décision du 2026-11-05)
+           CASE WHEN pk.package THEN 'CABINET'
+                WHEN e.idmodepaiement = %s OR e.ordrereglement = 'COMPAGNIE'
                      OR UPPER(TRIM(COALESCE(m.abregereglement, ''))) = 'ESP' THEN 'COMPAGNIE' ELSE 'CABINET' END AS ordre,
            NULLIF(TRIM(e.numerocheque), '') AS numerocheque, NULLIF(TRIM(e.numerobordereau), '') AS numerobordereau,
            NULLIF(TRIM(e.numerorecuoperateur), '') AS recu, NULLIF(TRIM(e.compte_compensation), '') AS compensation,
@@ -270,6 +277,10 @@ SQL_REGLEMENTS = """
     LEFT JOIN stdbanque b ON b.idbanque = e.idbanque
     LEFT JOIN LATERAL (SELECT c.montantinitial FROM stdchequeoperation op JOIN stdcheque c ON c.idcheque = op.idcheque
                        WHERE op.idencaissement = e.idencaissement ORDER BY op.idoperation LIMIT 1) ch ON TRUE
+    CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM stddetailencaissement dx JOIN stdquittance qx ON qx.numeroquittance = dx.numeroquittance
+                                       JOIN stdcontrat cx ON cx.idquittance = qx.idquittance
+                                       JOIN lephare_oreole_package px ON cx.iddevis IN (px.iddevis_sante, px.iddevis_ia, px.iddevis_afa)
+                                       WHERE dx.idencaissement = e.idencaissement) AS package) pk
     WHERE e.idencaissement = ANY(%s)
 """
 
@@ -382,7 +393,7 @@ def a_transmettre(request):
             "Montant": _nombre(l["montant_encaissement"]),
             "ResteAReverser": _nombre(reste),
             "CumulEncaisse": _nombre(p["Cumul"] if p else cumul_total),
-            "Arriere": _nombre(max((q["primettc"] or ZERO) - cumul_total, ZERO)),
+            "Arriere": _nombre(part_compagnie(max((q["primettc"] or ZERO) - cumul_total, ZERO), q["partcompagnie"])),
             "StatutPaiement": p["Code"] if p else "",
             "LibelleStatutPaiement": _libelle_paiement(p["Code"], p["Rang"]) if p else "",
         })
@@ -497,15 +508,15 @@ def lire_bordereau(id_reversement):
         dernier = siens[-1]
         p = _paiement_de(paiements, numero, dernier["iddetailencaissement"]) or {"Cumul": ZERO, "Rang": 0, "Code": "ACOMPTE"}
         ttc = q["primettc"] or ZERO
-        reste = max(ttc - p["Cumul"], ZERO)
+        reste = reste_a_encaisser(ttc, p["Cumul"])
         lignes.append({
             **_infos_quittance(q),
             "Avenant": _avenant(q),
-            "Encaissement": _nombre(p["Cumul"]),
+            "Encaissement": _nombre(part_compagnie(p["Cumul"], q["partcompagnie"])),
             "FraisGestion": 0.0, "ComDeduite": 0.0, "AccDeduits": 0.0,
             "MontantReverse": _nombre(sum((d["montantreverse"] for d in siens), ZERO)),
             "Soldee": reste <= 0,
-            "ResteDu": _nombre(reste),
+            "ResteDu": _nombre(part_compagnie(reste, q["partcompagnie"])),
             "StatutPaiement": p["Code"],
             "RangPaiement": p["Rang"],
             "LibelleStatutPaiement": _libelle_paiement(p["Code"], p["Rang"]),
@@ -958,8 +969,8 @@ def tableau_reversement(id_compagnie, du, au):
             banque = f"{c['banque']} " if c["banque"] else ""
             cheques_commission[c["id"]] = (f"{'CHQ' if c['mode_paiement'] == 'CHQ' else 'VIR'} {banque}N°{c['reference_paiement']} "
                                            f"du {_jma(c['date_paiement'])} de FCFA {_f(c['montant_total'])}")
-        ttc = q["primettc"] or ZERO
-        reste = max(ttc - reverse, ZERO)
+        ttc = part_compagnie(q["primettc"] or ZERO, q["partcompagnie"])
+        reste = reste_a_encaisser(ttc, reverse)
         observations = []
         if reste > 0:
             observations.append(f"Reste à encaisser : {_f(reste)}")
@@ -977,7 +988,7 @@ def tableau_reversement(id_compagnie, du, au):
             "CommissionPercue": _nombre(percue),
             "SoldeCommission": _nombre(a_percevoir - percue),
             "ChequesCommission": " ; ".join(cheques_commission.values()),
-            "Observation": " — ".join(observations),
+            "Observation": " - ".join(observations),
             "Soldee": reste <= 0,
             "ResteAEncaisser": _nombre(reste),
             "Reversements": sous_lignes,
@@ -1278,7 +1289,7 @@ def _classeur_reclamation(rc, nom_compagnie):
         ws.column_dimensions[get_column_letter(i)].width = largeur
 
     ws.merge_cells("C2:N2")
-    cellule(ws, 2, 3, f"BORDEREAU RECAPITULATIF DE REVERSEMENT — RECLAMATION DE COMMISSIONS {nom_compagnie}",
+    cellule(ws, 2, 3, f"BORDEREAU RECAPITULATIF DE REVERSEMENT - RECLAMATION DE COMMISSIONS {nom_compagnie}",
             gras=True, taille=16, fond=gris)
     for colonne in range(4, 15):
         ws.cell(row=2, column=colonne).border = cadre
@@ -1397,9 +1408,9 @@ def _situation_commission(l):
         return f"Payée ({l['Reclamation']})" if l["Reclamation"] else "Payée"
     reference = f"{l['Reclamation']} du {_jma(date.fromisoformat(l['DateReclamation']))}" if l["DateReclamation"] else l["Reclamation"]
     if l["Statut"] == "PARTIELLE":
-        return f"Payée en partie — {reference}"
+        return f"Payée en partie - {reference}"
     if l["Statut"] == "RECLAMEE":
-        return f"Réclamée — {reference}"
+        return f"Réclamée - {reference}"
     return "À réclamer"
 
 
@@ -1457,7 +1468,7 @@ def _classeur_recapitulatif_commissions(r, nom):
         n = len(largeurs)
         fusion(ws, 2, 1, n, titre, gras=True, taille=15, fond=gris)
         ws.row_dimensions[2].height = 34
-        fusion(ws, 3, 1, n, f"{titre_cie} — PRIMES REVERSEES {periode}", gras=True)
+        fusion(ws, 3, 1, n, f"{titre_cie} - PRIMES REVERSEES {periode}", gras=True)
         fusion(ws, 4, 1, n, f"Situation au {situation}", gauche=False)
         return ws
 
@@ -1522,7 +1533,7 @@ def _classeur_recapitulatif_commissions(r, nom):
 
     # ---- 2. commissions payées : règlements reçus des assureurs
     ws = feuille("COMMISSIONS PAYEES", [15, 30, 21, 21, 12, 22, 22, 12, 18, 20],
-                 "ETAT DES COMMISSIONS PAYEES — REGLEMENTS RECUS DES ASSUREURS")
+                 "ETAT DES COMMISSIONS PAYEES - REGLEMENTS RECUS DES ASSUREURS")
     entetes(ws, 6, ["DATE DU REGLEMENT", "COMPAGNIE", "N° DU REGLEMENT", "BORDEREAU DE RECLAMATION", "MODE",
                     "N° DU CHEQUE / DU VIREMENT", "BANQUE", "QUITTANCES", "MONTANT DU REGLEMENT",
                     "COMMISSIONS REGLEES (PERIODE)"])
@@ -1675,7 +1686,7 @@ def _classeur_recapitulatif_encaissements(etat, nom, filtres_texte):
         ws.column_dimensions[get_column_letter(i)].width = largeur
     fusion(ws, 2, 1, 11, "BORDEREAU RECAPITULATIF DES ENCAISSEMENTS", gras=True, taille=15, fond=gris)
     ws.row_dimensions[2].height = 32
-    fusion(ws, 3, 1, 11, f"{nom or 'TOUTES LES COMPAGNIES'} — ENCAISSEMENTS {_periode_texte(etat['Du'], etat['Au'])}", gras=True)
+    fusion(ws, 3, 1, 11, f"{nom or 'TOUTES LES COMPAGNIES'} - ENCAISSEMENTS {_periode_texte(etat['Du'], etat['Au'])}", gras=True)
     fusion(ws, 4, 1, 11, filtres_texte or "Tous les modes et tous les statuts")
 
     entetes = ["N° DU BORDEREAU D'ENCAISSEMENT", "DATE DE SAISIE", "NOM DU CLIENT", "COMPAGNIE", "ASSURANCE", "N° POLICE",
@@ -1686,7 +1697,7 @@ def _classeur_recapitulatif_encaissements(etat, nom, filtres_texte):
     rangee = 6
     for l in etat["Lignes"]:
         rangee += 1
-        reference = " — ".join(x for x in (l["Reference"], l["Banque"]) if x)
+        reference = " - ".join(x for x in (l["Reference"], l["Banque"]) if x)
         valeurs = [(l["NumeroPiece"], None), (datetime.fromisoformat(l["DateEncaissement"]) if l["DateEncaissement"] else None, JOUR),
                    (l["Client"], None), (l["Compagnie"], None), (_branche(None, l["Branche"]), None), (l["NumeroPolice"], None),
                    (l["NumeroQuittance"], None), (l["Mode"], None), (reference, None), (l["Montant"], MONTANT),
@@ -1764,7 +1775,7 @@ def recapitulatif_encaissements_excel(request):
         filtres.append(f"Mode : {etat['Lignes'][0]['Mode']}" if etat["Lignes"] else "Mode choisi")
     if request.query_params.get("statut") in LIBELLES_STATUT:
         filtres.append(f"Statut : {LIBELLES_STATUT[request.query_params['statut']]}")
-    reponse = HttpResponse(_classeur_recapitulatif_encaissements(etat, nom, " — ".join(filtres)),
+    reponse = HttpResponse(_classeur_recapitulatif_encaissements(etat, nom, " - ".join(filtres)),
                            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     fichier = f"BORDEREAU RECAPITULATIF DES ENCAISSEMENTS {nom or 'TOUTES COMPAGNIES'} {_periode_texte(etat['Du'], etat['Au'])}"
     reponse["Content-Disposition"] = f'attachment; filename="{fichier.replace("/", "-").replace(chr(39), " ")}.xlsx"'

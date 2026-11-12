@@ -1,18 +1,23 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Bell, CheckCircle2, Info, Landmark, XCircle } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, FileClock, FileX, Info, Landmark, XCircle } from 'lucide-react';
 import { useJournalMessages } from '../../context/ToastContext';
+import { MODULES_EDITION_COMPLETE } from '../../utils/quoteRegistry';
+import { moduleDuProduit, moduleOuvert } from '../../utils/parametrage';
 
 /* =========================================================================
    CLOCHE DE LA BARRE DU HAUT
-   Badge = messages non lus de la session (chaque notification affichée l'incrémente, voir
-   ToastContext) + chèques de l'échéancier à déposer pour les utilisateurs de la caisse.
-   Le panneau liste les messages récents (les ouvrir les marque comme lus) et l'alerte des chèques.
-   Animations (cloche qui s'agite à un nouveau message, badge, panneau) : index.css « CLOCHE ».
+   Alertes à suivre (consigne du 2026-10-26) : devis non confirmés arrivant à échéance ou échus depuis peu
+   (GET /api/alertes/, délai « Alerte des devis à échéance » d'Administration > Le cabinet) et, pour la caisse,
+   chèques de l'échéancier à déposer. Badge = nombre de ces alertes (+ messages consignés sur demande, option
+   { cloche: true } de useToast). Les messages des opérations (devis, contrat enregistrés…) s'affichent sans
+   passer par la cloche. Animations (cloche qui s'agite quand les alertes augmentent, badge, panneau) :
+   index.css « CLOCHE ».
    ========================================================================= */
 
 const ICONES = { success: CheckCircle2, error: XCircle, warning: AlertTriangle, info: Info };
 const CLASSES = { success: 'succes', error: 'erreur', warning: 'attention', info: 'info' };
+const PAR_GROUPE = 6;
 
 const depuis = (instant) => {
   const secondes = Math.round((Date.now() - instant) / 1000);
@@ -24,29 +29,40 @@ const depuis = (instant) => {
   return new Date(instant).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
 };
 
-export const ClocheNotifications = ({ alertesCheques = 0, voitCaisse = false }) => {
+const dateFr = (iso) => (iso ? iso.slice(0, 10).split('-').reverse().join('/') : '');
+const francs = (n) => `${Math.round(Number(n) || 0).toLocaleString('fr-FR')} F TTC`;
+const echeance = (d) => {
+  if (d.Jours === 0) return "Échéance aujourd'hui";
+  if (d.Jours > 0) return `Échéance dans ${d.Jours} jour${d.Jours > 1 ? 's' : ''}, le ${dateFr(d.DateExpiration)}`;
+  return `Échu depuis ${-d.Jours} jour${d.Jours < -1 ? 's' : ''}, le ${dateFr(d.DateExpiration)}`;
+};
+
+export const ClocheNotifications = ({ alertesCheques = 0, voitCaisse = false, alertesDevis = null }) => {
   const navigate = useNavigate();
   const { messages, nonLus, marquerLus, effacer } = useJournalMessages();
   const [ouvert, setOuvert] = useState(false);
   const idPanneau = useId();
   const zone = useRef(null);
-  const total = nonLus + (voitCaisse ? alertesCheques : 0);
+  const aEcheance = alertesDevis?.AEcheance || [];
+  const echus = alertesDevis?.Echus || [];
+  const nombreDevis = aEcheance.length + echus.length;
+  const total = nonLus + (voitCaisse ? alertesCheques : 0) + nombreDevis;
 
-  // La cloche s'agite quand le nombre de messages non lus augmente
+  // La cloche s'agite quand le nombre d'alertes augmente
   const [agite, setAgite] = useState(false);
-  const precedent = useRef(nonLus);
+  const precedent = useRef(total);
   useEffect(() => {
-    if (nonLus > precedent.current) {
+    if (total > precedent.current) {
       setAgite(true);
       const minuterie = setTimeout(() => setAgite(false), 700);
-      precedent.current = nonLus;
+      precedent.current = total;
       return () => clearTimeout(minuterie);
     }
-    precedent.current = nonLus;
+    precedent.current = total;
     return undefined;
-  }, [nonLus]);
+  }, [total]);
 
-  // Panneau ouvert : les messages non lus sont mis en évidence (nouveaux) puis marqués comme lus
+  // Panneau ouvert : les messages consignés non lus sont mis en évidence puis marqués comme lus
   const [nouveaux, setNouveaux] = useState(() => new Set());
   useEffect(() => {
     if (!ouvert) {
@@ -72,7 +88,45 @@ export const ClocheNotifications = ({ alertesCheques = 0, voitCaisse = false }) 
     };
   }, [ouvert]);
 
-  const libelle = total > 0 ? `Notifications : ${total} non lue${total > 1 ? 's' : ''}` : 'Notifications';
+  // Devis : son écran de saisie s'il sait le rouvrir, sinon le registre (onglet Expirés pour un devis échu)
+  const ouvrirDevis = (d) => {
+    setOuvert(false);
+    const module = moduleDuProduit(d.IdProduit);
+    if (module && MODULES_EDITION_COMPLETE.includes(module) && moduleOuvert(module)) {
+      navigate(`/user/quotes/${module}?edit=${d.IdDevis}`);
+    } else {
+      navigate(d.Jours < 0 ? '/user/quotes?onglet=EXPIRED' : '/user/quotes');
+    }
+  };
+
+  const groupeDevis = (titre, liste, Icone, classe, lienTous) => liste.length > 0 && (
+    <>
+      <div className="cloche-section">
+        <span>{titre} - {liste.length}</span>
+        {liste.length > PAR_GROUPE && (
+          <button type="button" className="cloche-lien" onClick={() => { setOuvert(false); navigate(lienTous); }}>Tout voir</button>
+        )}
+      </div>
+      <ul className="cloche-liste">
+        {liste.slice(0, PAR_GROUPE).map((d) => (
+          <li key={d.IdDevis}>
+            <button type="button" className="cloche-element cloche-action" onClick={() => ouvrirDevis(d)}
+              title={`Ouvrir le devis ${d.NumeroDevis}`}>
+              <span className={`cloche-icone ${classe}`} aria-hidden="true"><Icone size={15} /></span>
+              <span className="cloche-texte">
+                <span className="cloche-titre">{d.NumeroDevis}{d.Produit ? ` - ${d.Produit}` : ''}</span>
+                <span className="cloche-message">{d.Client || 'Client non renseigné'} • {francs(d.PrimeTtc)}</span>
+                <span className="cloche-heure">{echeance(d)}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+
+  const libelle = total > 0 ? `Notifications : ${total} alerte${total > 1 ? 's' : ''}` : 'Notifications';
+  const rien = nombreDevis === 0 && messages.length === 0 && !(voitCaisse && alertesCheques > 0);
 
   return (
     <div className="cloche" ref={zone}>
@@ -94,44 +148,57 @@ export const ClocheNotifications = ({ alertesCheques = 0, voitCaisse = false }) 
           <div className="cloche-entete">
             <strong>Notifications</strong>
             {messages.length > 0 && (
-              <button type="button" className="cloche-lien" onClick={effacer}>Effacer</button>
+              <button type="button" className="cloche-lien" onClick={effacer}>Effacer les messages</button>
             )}
           </div>
 
-          {voitCaisse && alertesCheques > 0 && (
-            <button type="button" className="cloche-element cloche-cheques" onClick={() => { setOuvert(false); navigate('/user/cheques'); }}>
-              <span className="cloche-icone attention"><Landmark size={15} /></span>
-              <span className="cloche-texte">
-                <span className="cloche-titre">Échéancier des chèques</span>
-                <span className="cloche-message">
-                  {alertesCheques} chèque{alertesCheques > 1 ? 's' : ''} à déposer (un mois avant l'échéance ou échu).
+          <div className="cloche-defilement">
+            {voitCaisse && alertesCheques > 0 && (
+              <button type="button" className="cloche-element cloche-cheques" onClick={() => { setOuvert(false); navigate('/user/cheques'); }}>
+                <span className="cloche-icone attention"><Landmark size={15} /></span>
+                <span className="cloche-texte">
+                  <span className="cloche-titre">Échéancier des chèques</span>
+                  <span className="cloche-message">
+                    {alertesCheques} chèque{alertesCheques > 1 ? 's' : ''} à déposer (un mois avant l'échéance ou échu).
+                  </span>
                 </span>
-              </span>
-            </button>
-          )}
+              </button>
+            )}
 
-          {messages.length === 0 ? (
-            <p className="cloche-vide">Aucun message pour le moment. Les confirmations, alertes et erreurs de vos opérations s'afficheront ici.</p>
-          ) : (
-            <ul className="cloche-liste">
-              {messages.map((m) => {
-                const Icone = ICONES[m.type] || Info;
-                return (
-                  <li key={m.id} className={`cloche-element${nouveaux.has(m.id) ? ' non-lu' : ''}`}>
-                    <span className={`cloche-icone ${CLASSES[m.type] || 'info'}`} aria-hidden="true"><Icone size={15} /></span>
-                    <span className="cloche-texte">
-                      <span className="cloche-titre">
-                        {m.titre}
-                        {m.compte > 1 && <span className="cloche-compte">×{m.compte}</span>}
-                      </span>
-                      <span className="cloche-message">{m.texte}</span>
-                      <span className="cloche-heure">{depuis(m.instant)}</span>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+            {groupeDevis('Devis à échéance', aEcheance, FileClock, 'attention', '/user/quotes')}
+            {groupeDevis('Devis échus récemment', echus, FileX, 'erreur', '/user/quotes?onglet=EXPIRED')}
+
+            {messages.length > 0 && (
+              <>
+                <div className="cloche-section"><span>Messages</span></div>
+                <ul className="cloche-liste">
+                  {messages.map((m) => {
+                    const Icone = ICONES[m.type] || Info;
+                    return (
+                      <li key={m.id} className={`cloche-element${nouveaux.has(m.id) ? ' non-lu' : ''}`}>
+                        <span className={`cloche-icone ${CLASSES[m.type] || 'info'}`} aria-hidden="true"><Icone size={15} /></span>
+                        <span className="cloche-texte">
+                          <span className="cloche-titre">
+                            {m.titre}
+                            {m.compte > 1 && <span className="cloche-compte">×{m.compte}</span>}
+                          </span>
+                          <span className="cloche-message">{m.texte}</span>
+                          <span className="cloche-heure">{depuis(m.instant)}</span>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+
+            {rien && (
+              <p className="cloche-vide">
+                Aucune alerte. La cloche signale les devis qui arrivent à échéance ou viennent d'expirer
+                {voitCaisse ? ' et les chèques à déposer' : ''} ; les messages de vos opérations s'affichent à l'écran sans s'y ajouter.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>

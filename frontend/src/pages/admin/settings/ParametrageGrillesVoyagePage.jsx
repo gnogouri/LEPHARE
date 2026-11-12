@@ -185,8 +185,8 @@ export const ParametrageGrillesVoyagePage = () => {
                 <label className="form-label" htmlFor="gv-filtre">{parOffre ? 'Offre' : 'Zone de destination'}</label>
                 <select id="gv-filtre" className="form-control" value={filtre ?? ''} onChange={(e) => setFiltre(Number(e.target.value))}>
                   {parOffre
-                    ? offres.map((o) => <option key={o.IdOffre} value={o.IdOffre}>{o.Libelle}{o.Actif ? '' : ' — inactive'}</option>)
-                    : zones.map((z) => <option key={z.IdZone} value={z.IdZone}>{z.Libelle} — {z.Pays} pays</option>)}
+                    ? offres.map((o) => <option key={o.IdOffre} value={o.IdOffre}>{o.Libelle}{o.Actif ? '' : ' - inactive'}</option>)
+                    : zones.map((z) => <option key={z.IdZone} value={z.IdZone}>{z.Libelle} - {z.Pays} pays</option>)}
                 </select>
               </div>
               <button type="button" className="btn btn-primary" disabled={!filtre} onClick={() => ouvrirSaisie(null)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginLeft: 'auto' }}>
@@ -246,7 +246,7 @@ export const ParametrageGrillesVoyagePage = () => {
       {param && onglet === 'pays' && <PaysZones param={param} idCompagnie={idCompagnie} setParam={setParam} />}
 
       <Modal isOpen={!!edition} onClose={() => setEdition(null)} title={edition?.Id ? 'Modifier la ligne de grille' : 'Ajouter une ligne de grille'}
-        subtitle={`${param?.RaisonSociale || ''} — ${formule?.Libelle || ''} — ${libelleFiltre || ''}`} size="medium">
+        subtitle={`${param?.RaisonSociale || ''} - ${formule?.Libelle || ''} - ${libelleFiltre || ''}`} size="medium">
         {edition && (
           <form onSubmit={enregistrerLigne}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.9rem' }}>
@@ -539,7 +539,7 @@ const PaysZones = ({ param, idCompagnie, setParam }) => {
                 <td>{p.Libelle}</td>
                 <td style={{ minWidth: 260 }}>
                   <select className="form-control" aria-label={`Zone de ${p.Libelle}`} value={p.IdZone ?? ''} onChange={(e) => changer(p, e.target.value)}>
-                    <option value="">— Non couvert —</option>
+                    <option value="">Non couvert</option>
                     {param.Zones.map((z) => <option key={z.IdZone} value={z.IdZone}>{z.Libelle}</option>)}
                   </select>
                 </td>

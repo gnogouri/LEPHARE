@@ -218,9 +218,9 @@ export const ClientDetailPage = () => {
           vide="Aucun contrat pour ce client."
           colonnes={[
             { titre: 'N° police', rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{l.numero_police}</strong> },
-            { titre: 'Mouvement', rendu: (l) => l.avenant || '—' },
-            { titre: 'Branche', rendu: (l) => `${l.branche || '—'}${l.flotte ? ' (flotte)' : ''}` },
-            { titre: 'Compagnie', rendu: (l) => l.compagnie || '—' },
+            { titre: 'Mouvement', rendu: (l) => l.avenant || '-' },
+            { titre: 'Branche', rendu: (l) => `${l.branche || '-'}${l.flotte ? ' (flotte)' : ''}` },
+            { titre: 'Compagnie', rendu: (l) => l.compagnie || '-' },
             { titre: 'Émis le', rendu: (l) => formatDate(l.date_emission) },
             { titre: 'Période', rendu: (l) => `${formatDate(l.date_effet)} au ${formatDate(l.date_expiration)}` },
             { titre: 'Prime TTC', droite: true, rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{montant(l.prime_ttc)}</strong> },
@@ -228,7 +228,7 @@ export const ClientDetailPage = () => {
               titre: 'Encaissement',
               rendu: (l) => (
                 <span title={l.numero_quittance ? `Quittance ${l.numero_quittance} : ${montant(l.encaissement?.montant)} encaissés` : undefined}>
-                  <StatusBadge label={l.encaissement?.statut || '—'} color={COULEUR_ENCAISSEMENT[l.encaissement?.statut]} />
+                  <StatusBadge label={l.encaissement?.statut || '-'} color={COULEUR_ENCAISSEMENT[l.encaissement?.statut]} />
                 </span>
               ),
             },
@@ -248,8 +248,8 @@ export const ClientDetailPage = () => {
           vide="Aucun devis en cours pour ce client."
           colonnes={[
             { titre: 'N° devis', rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{l.numero}</strong> },
-            { titre: 'Branche', rendu: (l) => `${l.branche || '—'}${l.flotte ? ' (flotte)' : ''}` },
-            { titre: 'Compagnie', rendu: (l) => l.compagnie || '—' },
+            { titre: 'Branche', rendu: (l) => `${l.branche || '-'}${l.flotte ? ' (flotte)' : ''}` },
+            { titre: 'Compagnie', rendu: (l) => l.compagnie || '-' },
             { titre: 'Émis le', rendu: (l) => formatDate(l.date_emission) },
             { titre: 'Période', rendu: (l) => `${formatDate(l.date_effet)} au ${formatDate(l.date_expiration)}` },
             { titre: 'Prime TTC', droite: true, rendu: (l) => <strong style={{ fontFamily: 'var(--font-mono)' }}>{montant(l.prime_ttc)}</strong> },

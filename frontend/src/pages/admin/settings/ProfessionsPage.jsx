@@ -159,7 +159,7 @@ export const ProfessionsPage = () => {
             borderRadius: '5px',
           }}
         >
-          {r.CodeProfession || '—'}
+          {r.CodeProfession || '-'}
         </span>
       ),
     },

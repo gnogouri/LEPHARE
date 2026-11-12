@@ -157,7 +157,7 @@ export const ParametrageGarantiesPage = () => {
       {SAISIE_FLAGS.filter(([key]) => r[key]).map(([key, label]) => (
         <StatusBadge key={key} label={label} color="sky" />
       ))}
-      {SAISIE_FLAGS.every(([key]) => !r[key]) && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>}
+      {SAISIE_FLAGS.every(([key]) => !r[key]) && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>}
     </div>
   );
 
@@ -178,7 +178,7 @@ export const ParametrageGarantiesPage = () => {
     },
     {
       header: 'Sinistre bloquant',
-      render: (r) => <span style={{ fontSize: '0.8rem' }}>{r.SinBloquant ? `Oui (délai ${r.SinDelai ?? '—'}j)` : 'Non'}</span>
+      render: (r) => <span style={{ fontSize: '0.8rem' }}>{r.SinBloquant ? `Oui (délai ${r.SinDelai ?? '-'}j)` : 'Non'}</span>
     },
     {
       header: 'Statut',
@@ -235,7 +235,7 @@ export const ParametrageGarantiesPage = () => {
     },
     {
       header: 'Garantie Parente',
-      render: (r) => <span style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: 600 }}>{r.IdGarantie ? garantieLibelle(r.IdGarantie) : '—'}</span>
+      render: (r) => <span style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: 600 }}>{r.IdGarantie ? garantieLibelle(r.IdGarantie) : '-'}</span>
     },
     { header: 'Produits (saisie)', render: flagBadges },
     {

@@ -368,7 +368,6 @@ class RequestDataLoader:
         finally:
             if connection:
                 cursor.close()
-                connection.close()
 
         return (msg, demande_dict)
 

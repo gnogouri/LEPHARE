@@ -9,6 +9,9 @@ Réglages Individuelle Accidents dans l'admin (Réglages par branche > Individue
   partagé à moitié entre la compagnie et le cabinet par fn_get_accessoire.
 - Accessoires forfaitaires des offres (lephare_ia_accessoire_offre : CGA, CI-ÉNERGIES…), montant total partagé
   selon la part du cabinet de la compagnie (fiche compagnie > Reversements), lus par fn_get_accessoire.
+- Primes et capitaux des offres forfaitaires (ia.forfait.<offre>.*) et barème des compagnies autres que NSIA
+  (ia.autres.* : taux par classe, majorations d'âge, frais de traitement), lephare_parametre lu par
+  fn_garantie_offre_ia (v3), fn_calcul_prime_ia_by_age et fn_web_calcul_taux_classe (v2).
 - Clauses NSIA (âge, indemnité maximale) et réduction maximale : paramètres ia.* et devis.reduction_max_ia,
   route générale des paramètres (parametrage.py).
 Lecture pour tout utilisateur connecté, modification réservée aux administrateurs (droit tarifs.update), chaque
@@ -22,11 +25,13 @@ from rest_framework import permissions, status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 
-from .models import CompagnieDocument, IaAccessoireOffre, IaAccessoireTranche, IaTauxClasse
-from .parametrage import ErreurParametrage, _auteur, _journal, _reponse_erreur, _texte
+from .models import CompagnieDocument, IaAccessoireOffre, IaAccessoireTranche, IaTauxClasse, ParametreGeneral
+from .parametrage import ErreurParametrage, _auteur, _cache, _journal, _parametre_json, _reponse_erreur, _texte, _valider_parametre
 from .views_grilles_voyage import AUTHENTIFICATION, EstAdministrateur
 
 ID_COMPAGNIE_NSIA = 1
+# Réglages lephare_parametre du calcul IA : offres forfaitaires, barème des autres compagnies
+PREFIXES_REGLAGES = ("ia.forfait.", "ia.autres.")
 
 
 def _nombre(valeur):
@@ -116,7 +121,42 @@ def ia(request):
         "Tranches": [_tranche_json(t) for t in _tranches()],
         "Offres": _offres(),
         "Parts": _parts(),
+        "Reglages": _reglages(),
     })
+
+
+def _reglages():
+    """Réglages ia.forfait.* (avec le libellé de l'offre) et ia.autres.*."""
+    lignes = [p for p in ParametreGeneral.objects.filter(Cle__startswith="ia.").order_by("Ordre", "Cle") if p.Cle.startswith(PREFIXES_REGLAGES)]
+    offres = sorted({int(p.Cle.split(".")[2]) for p in lignes if p.Cle.startswith("ia.forfait.")})
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT idoffre, libelleoffre FROM stdoffre WHERE idoffre = ANY(%s)", [offres])
+        libelles = dict(cursor.fetchall())
+    return {
+        "Offres": [{"IdOffre": o, "Libelle": libelles.get(o, f"Offre {o}")} for o in offres],
+        "Parametres": [_parametre_json(p) for p in lignes],
+    }
+
+
+@api_view(["PATCH"])
+@authentication_classes(AUTHENTIFICATION)
+@permission_classes([permissions.IsAuthenticated, EstAdministrateur])
+def reglage(request, cle):
+    """PATCH /api/parametrage/ia/reglages/<cle>/ {Valeur} ou {Retablir: true} (clés ia.forfait.* et ia.autres.*)."""
+    parametre_ = ParametreGeneral.objects.filter(Cle=cle).first() if cle.startswith(PREFIXES_REGLAGES) else None
+    if not parametre_:
+        return Response({"error": f"Réglage {cle} inconnu."}, status=status.HTTP_404_NOT_FOUND)
+    avant = parametre_.Valeur
+    try:
+        parametre_.Valeur = parametre_.ValeurOrigine if request.data.get("Retablir") else _valider_parametre(parametre_, request.data.get("Valeur"))
+    except ErreurParametrage as erreur:
+        return _reponse_erreur(erreur)
+    parametre_.ModifiePar = _auteur(request)
+    parametre_.save()
+    _cache.pop(cle, None)
+    contexte = f"offre {cle.split('.')[2]}" if cle.startswith("ia.forfait.") else "barème des autres compagnies"
+    _journal(request, f"Individuelle Accidents ({contexte}) : « {parametre_.Libelle} » modifié", {"cle": cle, "avant": avant, "apres": parametre_.Valeur})
+    return Response(_parametre_json(parametre_))
 
 
 @api_view(["PATCH"])

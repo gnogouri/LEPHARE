@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { demanderMotif } from '../utils/motif';
+import { contientDetailTechnique, messageErreurLisible } from '../utils/messageUtilisateur';
 
 // Client de l'API : jeton de la session ouverte par POST /api/users/login (aucun jeton par défaut :
 // sans connexion, le serveur répond 401 et l'écran revient à la page de connexion).
@@ -47,6 +48,12 @@ apiClient.interceptors.response.use(
   async (error) => {
     const requete = error.config || {};
     const statut = error.response?.status;
+    if (error.response && (statut >= 500 || contientDetailTechnique(error.response.data))) {
+      error.response.data = {
+        detail: messageErreurLisible(error.response.data?.detail || error.response.data?.error || error.message, statut),
+        error: messageErreurLisible(error.response.data?.detail || error.response.data?.error || error.message, statut),
+      };
+    }
     if (!requete.sansSignalement && !axios.isCancel(error) && (!error.response || statut >= 500)) {
       window.dispatchEvent(new Event(EVENEMENT_ERREUR_API));
     }
@@ -74,5 +81,75 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+/* -------------------------------------------------------------------------
+   Lectures économisées
+   1. Deux écrans (ou deux effets du même écran) qui demandent la même lecture au même moment
+      partagent une seule requête : la liste des clients, par exemple, était téléchargée deux fois
+      à l'ouverture du répertoire.
+   2. Les tables de référence qui ne changent presque jamais (villes, marques, professions…) sont
+      gardées quelques minutes : elles étaient rechargées à chaque ouverture de formulaire. Toute
+      écriture (création, modification, suppression) vide cette réserve, pour qu'une valeur ajoutée
+      apparaisse aussitôt dans les listes.
+   Chaque appelant reçoit sa propre copie des données : aucun écran ne modifie celles d'un autre.
+   ------------------------------------------------------------------------- */
+const REFERENTIELS_STABLES = new Set([
+  '/ville/', '/profession/', '/qualite/', '/statutjuridique/', '/secteuractivite/', '/energie/', '/carrosserie/',
+  '/marque/', '/genrevehicule/', '/typevehicule/', '/usage/', '/categoriepermis/', '/typesouscripteur/',
+  '/typeassure/', '/terme/', '/banque/', '/modeencaissement/', '/avenant/', '/branche/',
+]);
+const DUREE_REFERENTIELS = 5 * 60 * 1000;
+const lecturesEnCours = new Map();
+const referentielsGardes = new Map();
+
+const copier = (donnees) => {
+  if (donnees === null || typeof donnees !== 'object') return donnees;
+  try {
+    return typeof structuredClone === 'function' ? structuredClone(donnees) : JSON.parse(JSON.stringify(donnees));
+  } catch {
+    return donnees;
+  }
+};
+
+const lireApi = apiClient.get.bind(apiClient);
+apiClient.get = (url, config) => {
+  const options = config || {};
+  // Téléchargements, requêtes annulables ou suivies : jamais partagés
+  const partageable = typeof url === 'string'
+    && (!options.responseType || options.responseType === 'json')
+    && !options.signal && !options.cancelToken && !options.onDownloadProgress;
+  if (!partageable) return lireApi(url, config);
+  let cle;
+  try {
+    // Jeton, adresse et toutes les options (paramètres, délai, en-têtes) : seules des lectures identiques se partagent
+    cle = `${lireJeton() || ''}|${url}|${JSON.stringify(options)}`;
+  } catch {
+    return lireApi(url, config);
+  }
+  const stable = REFERENTIELS_STABLES.has(url) && !options.params;
+  if (stable) {
+    const garde = referentielsGardes.get(cle);
+    if (garde && Date.now() - garde.date < DUREE_REFERENTIELS) {
+      return Promise.resolve({ ...garde.reponse, data: copier(garde.reponse.data) });
+    }
+  }
+  let lecture = lecturesEnCours.get(cle);
+  if (!lecture) {
+    lecture = lireApi(url, config)
+      .then((reponse) => {
+        if (stable) referentielsGardes.set(cle, { date: Date.now(), reponse });
+        return reponse;
+      })
+      .finally(() => lecturesEnCours.delete(cle));
+    lecturesEnCours.set(cle, lecture);
+  }
+  return lecture.then((reponse) => ({ ...reponse, data: copier(reponse.data) }));
+};
+
+// Une écriture peut changer un référentiel : la réserve est vidée, les listes se rechargent
+apiClient.interceptors.request.use((config) => {
+  if (!['get', 'head', 'options'].includes(String(config.method || 'get').toLowerCase())) referentielsGardes.clear();
+  return config;
+});
 
 export default apiClient;

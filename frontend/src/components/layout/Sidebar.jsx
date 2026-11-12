@@ -11,6 +11,7 @@ import {
   Shield,
   ShieldCheck,
   RefreshCw,
+  History,
   CreditCard,
   Car,
   KeyRound,
@@ -47,7 +48,7 @@ import {
   UserPlus,
   Wallet,
   Archive,
-  ListChecks,
+  ListChecks, SearchCheck, HeartPulse, HeartHandshake,
 } from 'lucide-react';
 
 // Repère d'un menu déroulant : nombre de pages et chevron dans une pastille, qui se teinte et pivote à l'ouverture
@@ -227,10 +228,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
               <span>Gestion Opérationnelle</span>
             </div>
 
-            <NavLink to="/user/dashboard" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
-              <LayoutDashboard size={16} className="nav-icon" />
-              <span>Cockpit Opérationnel</span>
-            </NavLink>
+            {peut('cockpit.view') && (
+              <NavLink to="/user/dashboard" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
+                <LayoutDashboard size={16} className="nav-icon" />
+                <span>Cockpit Opérationnel</span>
+              </NavLink>
+            )}
 
             {peut(['crm.view', 'clients.view']) && <div>
               <div
@@ -280,6 +283,17 @@ export const Sidebar = ({ isOpen, onClose }) => {
               <span>Avenants</span>
             </NavLink>}
 
+            {peut('contrats.view') && <NavLink to="/user/reprises" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
+              <History size={16} className="nav-icon" />
+              <span>Affaires antérieures</span>
+            </NavLink>}
+
+            {/* Régimes autofinancés d'assurance santé : conventions, fonds, dépenses du gestionnaire */}
+            {peut('rafas.view') && <NavLink to="/user/rafas" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
+              <HeartHandshake size={16} className="nav-icon" />
+              <span>RAFAS</span>
+            </NavLink>}
+
             {/* Grisé en attendant l'ouverture des e-attestations */}
             <span className="sidebar-nav-item disabled" aria-disabled="true" title="Module indisponible pour le moment">
               <Car size={16} className="nav-icon" />
@@ -309,11 +323,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
                   </NavLink>
                   <NavLink to="/user/cheques" className={({ isActive }) => `sidebar-sublink-item ${isActive ? 'active' : ''}`}>
                     <Banknote size={14} className="nav-icon" />
-                    <span>Portefeuille Chèques</span>
+                    <span>Portefeuille des règlements</span>
                   </NavLink>
                   <NavLink to="/user/cash/etat" className={({ isActive }) => `sidebar-sublink-item ${isActive ? 'active' : ''}`}>
                     <ListChecks size={14} className="nav-icon" />
                     <span>État des encaissements</span>
+                  </NavLink>
+                  <NavLink to="/user/cash/recherche" className={({ isActive }) => `sidebar-sublink-item ${isActive ? 'active' : ''}`}>
+                    <SearchCheck size={14} className="nav-icon" />
+                    <span>Rechercher un règlement</span>
                   </NavLink>
                 </div>
               )}
@@ -329,15 +347,20 @@ export const Sidebar = ({ isOpen, onClose }) => {
               <span>Suivi des sinistres</span>
             </NavLink>}
 
+            {peut('consommations.view') && <NavLink to="/user/sante/consommations" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
+              <HeartPulse size={16} className="nav-icon" />
+              <span>Consommations santé</span>
+            </NavLink>}
+
             {peut('documents.view') && <NavLink to="/user/documents" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
               <FolderOpen size={16} className="nav-icon" />
               <span>Documents (GED)</span>
             </NavLink>}
 
-            <NavLink to="/user/derogations" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
+            {peut('approbations.view') && <NavLink to="/user/derogations" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
               <KeyRound size={16} className="nav-icon" />
               <span>Workflows & Dérogations</span>
-            </NavLink>
+            </NavLink>}
 
             {peut('devis.view') && <NavLink to="/user/archives" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
               <Archive size={16} className="nav-icon" />

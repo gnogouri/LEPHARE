@@ -39,6 +39,8 @@ from configuration_api.parametrage import valeur_parametre
 from institutionnel.authentication import KnoxOrDemoTokenAuthentication
 from autorisations.permissions import DroitDeLaRoute
 
+from .reste_encaissement import reste_a_encaisser
+
 AUTHENTIFICATION = [KnoxOrDemoTokenAuthentication, BasicAuthentication]
 # Premier jour des encaissements saisis dans LE PHARE (avant : reprise d'URANUS) ; réglable dans
 # l'admin (Le cabinet > Règles de gestion, paramètre « finance.debut_reversements »)
@@ -140,12 +142,16 @@ SQL_LIGNES_ENCAISSEMENT = """
            COALESCE(ct.accessoireintermediaire, 0) AS acccourtier,
            cie.idcompagnie, cie.raisonsociale AS compagnie, p.libelleproduit AS branche,
            TRIM(cl.nom || ' ' || COALESCE(cl.prenoms, '')) AS client,
-           ch.statut AS statutcheque, e.datecheque, e.datereceptioncheque
+           ch.statut AS statutcheque, e.datecheque, e.datereceptioncheque,
+           CASE WHEN op.iddevis_sante IS NOT NULL AND COALESCE(q.primettc, 0) > 0
+                THEN LEAST((COALESCE(ct.primenette, 0) + COALESCE(ct.accessoirecompagnie, 0)) / q.primettc, 1) END AS partcompagnie
     FROM stddetailencaissement de
     JOIN stdencaissement e ON e.idencaissement = de.idencaissement
     JOIN stdquittance q ON q.numeroquittance = de.numeroquittance
-    LEFT JOIN LATERAL (SELECT c.idcontrat, c.numeroavenant, c.commissionintermediaire, c.accessoireintermediaire, c.idcompagnie
+    LEFT JOIN LATERAL (SELECT c.idcontrat, c.iddevis, c.numeroavenant, c.commissionintermediaire, c.accessoireintermediaire, c.idcompagnie,
+                              c.primenette, c.accessoirecompagnie
                        FROM stdcontrat c WHERE c.idquittance = q.idquittance ORDER BY c.idcontrat LIMIT 1) ct ON TRUE
+    LEFT JOIN lephare_oreole_package op ON op.iddevis_sante = ct.iddevis
     LEFT JOIN stdcompagnie cie ON cie.idcompagnie = COALESCE(ct.idcompagnie, q.idaperiteur)
     LEFT JOIN stdproduit p ON p.idproduit = q.idproduit
     LEFT JOIN stdclient cl ON cl.idclient = q.idclient
@@ -175,6 +181,27 @@ def _est_decaissement(ligne):
     return ligne["abrege"] in MODES_DECAISSEMENT
 
 
+# Oreole Santé : la compagnie ne connaît que sa part (prime HT + accessoires) ; les frais courtiers restent au cabinet, ils
+# ne se reversent pas et ne se réclament pas. {ct} : contrat de la quittance q.
+SQL_EST_OREOLE = "EXISTS (SELECT 1 FROM lephare_oreole_package opk WHERE opk.iddevis_sante = {ct}.iddevis)"
+SQL_ACC_COURTIER = "CASE WHEN " + SQL_EST_OREOLE + " THEN 0 ELSE COALESCE({ct}.accessoireintermediaire, 0) END"
+SQL_PART_COMPAGNIE = ("CASE WHEN " + SQL_EST_OREOLE + " AND COALESCE(q.primettc, 0) > 0 "
+                      "THEN LEAST((COALESCE({ct}.primenette, 0) + COALESCE({ct}.accessoirecompagnie, 0)) / q.primettc, 1) END")
+
+
+def part_compagnie(montant, part):
+    """Part d'un montant de quittance revenant à la compagnie : tout, sauf en Oreole Santé (SQL_PART_COMPAGNIE)."""
+    if part is None or montant is None:
+        return montant
+    return (montant * part).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+
+
+def _a_reverser(ligne):
+    """Part de l'encaissement due à la compagnie : tout, sauf en Oreole Santé où le cabinet garde ses frais courtiers (prime HT +
+    accessoires à MCI, au prorata de l'encaissement)."""
+    return part_compagnie(ligne["montant_encaissement"], ligne.get("partcompagnie"))
+
+
 def _restes_nets(numeros_quittance):
     """Reste à reverser de chaque ligne d'encaissement, décaissements de la quittance déduits :
     reste net de la quittance = encaissé − reversé − décaissé (au moins 0), réparti sur ses
@@ -194,9 +221,9 @@ def _restes_nets(numeros_quittance):
     for lignes in par_quittance.values():
         encaissements = [l for l in lignes if not _est_decaissement(l)]
         decaisse = sum((l["montant_encaissement"] for l in lignes if _est_decaissement(l)), ZERO)
-        net = max(sum((max(l["montant_encaissement"] - l["montantreverse"], ZERO) for l in encaissements), ZERO) - decaisse, ZERO)
+        net = max(sum((max(_a_reverser(l) - l["montantreverse"], ZERO) for l in encaissements), ZERO) - decaisse, ZERO)
         for l in encaissements:
-            part = min(max(l["montant_encaissement"] - l["montantreverse"], ZERO), net)
+            part = min(max(_a_reverser(l) - l["montantreverse"], ZERO), net)
             restes[l["iddetailencaissement"]] = part
             net -= part
     return restes
@@ -207,7 +234,7 @@ def _statut_encaissement(ligne, reste_net=None):
         return "IMPAYE" if ligne["statutcheque"] in ("IMPAYE", "REENCAISSE") else "ANNULE"
     if _est_decaissement(ligne):
         return "DECAISSEMENT"
-    if ligne["montantreverse"] >= ligne["montant_encaissement"] > 0:
+    if ligne["montantreverse"] >= _a_reverser(ligne) > 0:
         return "REVERSE"
     if ligne["dateencaissement"] and ligne["dateencaissement"] < debut_reversements() and ligne["montantreverse"] == 0:
         return "REPRIS"
@@ -245,7 +272,7 @@ def _ligne_encaissement(ligne, restes=None):
     reste_net = (restes or {}).get(ligne["iddetailencaissement"]) if restes is not None else None
     statut = _statut_encaissement(ligne, reste_net)
     if statut in ("A_REVERSER", "PARTIEL"):
-        reste = reste_net if reste_net is not None else max(ligne["montant_encaissement"] - ligne["montantreverse"], ZERO)
+        reste = reste_net if reste_net is not None else max(_a_reverser(ligne) - ligne["montantreverse"], ZERO)
     else:
         reste = ZERO
     signe = -1 if statut == "DECAISSEMENT" else 1
@@ -269,6 +296,146 @@ def _ligne_encaissement(ligne, restes=None):
         "LibelleStatut": LIBELLES_STATUT[statut],
         "MotifAnnulation": (ligne["motifannulation"] or "").strip(),
     }
+
+
+def encaissements_a_reverser():
+    """Lignes d'encaissement encore à reverser, toutes compagnies, décaissements déduits : celles de l'écran des
+    reversements (cockpit, conventions, tableau de bord)."""
+    lignes = _lignes(
+        SQL_LIGNES_ENCAISSEMENT + """
+        WHERE NOT COALESCE(e.piece_annulee, FALSE) AND de.montant_encaissement > COALESCE(de.montantreglement, 0)
+          AND e.dateencaissement::date >= %s
+        """,
+        [debut_reversements()],
+    )
+    restes = _restes_nets({l["numeroquittance"] for l in lignes})
+    return [l for l in (_ligne_encaissement(l, restes) for l in lignes if not _est_decaissement(l)) if l["ResteAReverser"] > 0]
+
+
+# ------------------------------------------------------------------ recherche d'un règlement
+# Référence du règlement : numéro du chèque, du virement ou de la traite, bordereau d'espèces, reçu de l'opérateur, compensation, transaction
+SQL_REFERENCE_REGLEMENT = """COALESCE(NULLIF(TRIM(e.numerocheque), ''), NULLIF(TRIM(e.numerobordereau), ''), NULLIF(TRIM(e.numerorecuoperateur), ''),
+    NULLIF(TRIM(e.compte_compensation), ''), e.referencetransaction::text, '')"""
+MAX_REGLEMENTS_TROUVES = 60
+
+
+def rechercher_reglements(parametres):
+    """À quoi a servi un règlement, quel qu'en soit le mode (demande du 2026-11-05) : recherche par référence, pièce, émetteur, quittance,
+    police, client ou montant ; chaque règlement revient avec toutes les quittances qu'il a payées, même si une seule correspond."""
+    texte = " ".join(str(parametres.get("q") or "").split())
+    mode = _entier(parametres.get("mode"), "Mode", obligatoire=False)
+    du = _date(parametres.get("du"), "Du", obligatoire=False)
+    au = _date(parametres.get("au"), "Au", obligatoire=False)
+    if len(texte) < 2 and not mode:
+        raise ErreurFinance("Saisissez au moins 2 caractères : numéro du chèque ou du virement, police, quittance, client, émetteur.")
+    conditions, params = [], []
+    if len(texte) >= 2:
+        motif = "%" + texte.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        champs = ["e.numerocheque", "e.numerobordereau", "e.numerorecuoperateur", "e.compte_compensation", "e.numeropiece", "e.referencetransaction::text",
+                  "e.nomtireurcheque", "de.numeroquittance", "q.numeropolice", "TRIM(COALESCE(cl.nom, '') || ' ' || COALESCE(cl.prenoms, ''))"]
+        possibles = [f"{champ} ILIKE %s" for champ in champs]
+        params += [motif] * len(champs)
+        chiffres = texte.replace(" ", "")
+        if chiffres.isdigit():
+            possibles.append("de.montant_encaissement = %s")
+            params.append(int(chiffres))
+        conditions.append("(" + " OR ".join(possibles) + ")")
+    if mode:
+        conditions.append("e.idmodepaiement = %s")
+        params.append(mode)
+    if du:
+        conditions.append("e.dateencaissement::date >= %s")
+        params.append(du)
+    if au:
+        conditions.append("e.dateencaissement::date <= %s")
+        params.append(au)
+    trouves = _lignes(
+        f"""SELECT e.idencaissement, e.idmodepaiement, e.idbanque, {SQL_REFERENCE_REGLEMENT} AS reference, e.dateencaissement
+            FROM stdencaissement e
+            LEFT JOIN stddetailencaissement de ON de.idencaissement = e.idencaissement
+            LEFT JOIN stdquittance q ON q.numeroquittance = de.numeroquittance
+            LEFT JOIN stdclient cl ON cl.idclient = q.idclient
+            WHERE {" AND ".join(conditions)}
+            GROUP BY e.idencaissement ORDER BY e.dateencaissement DESC, e.idencaissement DESC LIMIT %s""",
+        params + [MAX_REGLEMENTS_TROUVES * 3],
+    )
+
+    def cle(ligne):
+        # Un même chèque, virement ou bordereau peut servir plusieurs fois : c'est un seul règlement
+        return (ligne["idmodepaiement"], ligne["idbanque"], ligne["reference"]) if ligne["reference"] else ("PIECE", ligne["idencaissement"])
+
+    cles = list(OrderedDict.fromkeys(cle(t) for t in trouves))
+    tronque = len(cles) > MAX_REGLEMENTS_TROUVES
+    cles = cles[:MAX_REGLEMENTS_TROUVES]
+    ids = {c[1] for c in cles if c[0] == "PIECE"}
+    instruments = [c for c in cles if c[0] != "PIECE"]
+    if instruments:
+        for autre in _lignes(
+            f"""SELECT e.idencaissement, e.idmodepaiement, e.idbanque, {SQL_REFERENCE_REGLEMENT} AS reference FROM stdencaissement e
+                WHERE e.idmodepaiement = ANY(%s) AND {SQL_REFERENCE_REGLEMENT} = ANY(%s)""",
+            [list({c[0] for c in instruments}), list({c[2] for c in instruments})],
+        ):
+            if cle(autre) in instruments:
+                ids.add(autre["idencaissement"])
+    if not ids:
+        return {"Reglements": [], "Tronque": False}
+    ids = list(ids)
+    # Contre-passations d'une annulation écartées : la ligne d'origine porte le statut « Annulé »
+    brutes = _lignes(SQL_LIGNES_ENCAISSEMENT + """ WHERE e.idencaissement = ANY(%s) AND de.montant_encaissement > 0
+                     ORDER BY e.dateencaissement, e.idencaissement, de.iddetailencaissement""", [ids])
+    restes = _restes_nets({l["numeroquittance"] for l in brutes})
+    complements = {c["idencaissement"]: c for c in _lignes(
+        f"""SELECT e.idencaissement, e.idmodepaiement, e.idbanque, {SQL_REFERENCE_REGLEMENT} AS reference, NULLIF(TRIM(e.nomtireurcheque), '') AS emetteur,
+                   u.name AS operateur, e.datecheque, e.datereceptioncheque
+            FROM stdencaissement e LEFT JOIN account_uranususer u ON u.id = e.idutilisateur WHERE e.idencaissement = ANY(%s)""", [ids])}
+    cheques = {c["idencaissement"]: c for c in _lignes(
+        """SELECT op.idencaissement, c.montantinitial, c.soldedisponible, c.statut, c.datedepot
+           FROM stdchequeoperation op JOIN stdcheque c ON c.idcheque = op.idcheque WHERE op.idencaissement = ANY(%s)""", [ids])}
+    encaisses = {q["numeroquittance"]: q["encaisse"] for q in _lignes(
+        "SELECT numeroquittance, COALESCE(mt_encaisse, 0) AS encaisse FROM stdquittance WHERE numeroquittance = ANY(%s)", [list({l["numeroquittance"] for l in brutes})])}
+    libelles_cheque = {"A_DEPOSER": "À déposer", "ENCAISSE": "Encaissé", "IMPAYE": "Impayé", "REENCAISSE": "Réencaissé"}
+    groupes = OrderedDict((c, None) for c in cles)
+    for brute in brutes:
+        complement = complements[brute["idencaissement"]]
+        groupe = groupes.get(cle(complement))
+        if groupe is None:
+            if cle(complement) not in groupes:
+                continue
+            groupe = groupes[cle(complement)] = {
+                "Cle": "-".join(str(x) for x in cle(complement)), "Mode": brute["mode"] or "", "Reference": brute["reference"] or "", "Banque": brute["banque"] or "",
+                "Emetteur": complement["emetteur"] or "", "DateCheque": _iso(complement["datecheque"]), "DateReception": _iso(complement["datereceptioncheque"]),
+                "Cheque": None, "Montant": 0.0, "MontantReverse": 0.0, "Pieces": [], "Lignes": [],
+            }
+        cheque = cheques.get(brute["idencaissement"])
+        if cheque and not groupe["Cheque"]:
+            groupe["Cheque"] = {"MontantInitial": _nombre(cheque["montantinitial"]), "SoldeDisponible": _nombre(cheque["soldedisponible"]), "Statut": cheque["statut"],
+                                "LibelleStatut": libelles_cheque.get(cheque["statut"], cheque["statut"] or ""), "DateDepot": _iso(cheque["datedepot"])}
+        ligne = _ligne_encaissement(brute, restes)
+        ligne.update({"IdContrat": brute["idcontrat"], "Operateur": complement["operateur"] or "",
+                      "ResteDuQuittance": _nombre(reste_a_encaisser(brute["primettc"], encaisses.get(brute["numeroquittance"])))})
+        groupe["Lignes"].append(ligne)
+        if ligne["NumeroPiece"] and ligne["NumeroPiece"] not in groupe["Pieces"]:
+            groupe["Pieces"].append(ligne["NumeroPiece"])
+        if ligne["Statut"] not in ("ANNULE", "IMPAYE"):
+            groupe["Montant"] += ligne["Montant"]
+            groupe["MontantReverse"] += ligne["MontantReverse"]
+    reglements = [g for g in groupes.values() if g]
+    for groupe in reglements:
+        groupe["NombrePolices"] = len({l["NumeroPolice"] for l in groupe["Lignes"]})
+        groupe["NombreQuittances"] = len({l["NumeroQuittance"] for l in groupe["Lignes"]})
+        groupe["Annule"] = all(l["Statut"] in ("ANNULE", "IMPAYE") for l in groupe["Lignes"])
+    return {"Reglements": reglements, "Tronque": tronque}
+
+
+@api_view(["GET"])
+@authentication_classes(AUTHENTIFICATION)
+@permission_classes([permissions.IsAuthenticated])
+def recherche_reglements(request):
+    """GET /api/finance/encaissements/recherche/?q=&mode=&du=&au= : à quoi a servi un règlement."""
+    try:
+        return Response(rechercher_reglements(request.query_params))
+    except ErreurFinance as erreur:
+        return _erreur(erreur)
 
 
 @api_view(["GET"])
@@ -310,7 +477,7 @@ def donnees_etat_encaissements(parametres):
         for l in lignes:
             if l["Statut"] in ("ANNULE", "IMPAYE"):
                 continue
-            groupe = resultat.setdefault(l[cle] or "—", {"Libelle": l[cle] or "—", "Nombre": 0, "Montant": 0.0, "Reverse": 0.0})
+            groupe = resultat.setdefault(l[cle] or "-", {"Libelle": l[cle] or "-", "Nombre": 0, "Montant": 0.0, "Reverse": 0.0})
             groupe["Nombre"] += 1
             groupe["Montant"] += l["Montant"]
             groupe["Reverse"] += l["MontantReverse"]
@@ -390,7 +557,8 @@ COMMISSION_DUE = """CASE WHEN {d}.iddetailreversement = (
         JOIN stdreversementcompagnie r1 ON r1.idreversement = d1.idreversement AND NOT COALESCE(r1.pieceannulee, FALSE)
         JOIN stddetailencaissement de1 ON de1.iddetailencaissement = d1.iddetailencaissement
         WHERE de1.numeroquittance = {de}.numeroquittance)
-    THEN COALESCE({ct}.commissionintermediaire, 0) + COALESCE({ct}.accessoireintermediaire, 0) ELSE 0 END"""
+    THEN COALESCE({ct}.commissionintermediaire, 0) + """ + SQL_ACC_COURTIER + """
+    ELSE 0 END"""
 
 
 SQL_REVERSEMENTS = """
@@ -402,7 +570,7 @@ SQL_REVERSEMENTS = """
             FROM stddetailreversement d
             JOIN stddetailencaissement de ON de.iddetailencaissement = d.iddetailencaissement
             JOIN stdquittance q ON q.numeroquittance = de.numeroquittance
-            LEFT JOIN LATERAL (SELECT c.commissionintermediaire, c.accessoireintermediaire FROM stdcontrat c
+            LEFT JOIN LATERAL (SELECT c.iddevis, c.commissionintermediaire, c.accessoireintermediaire FROM stdcontrat c
                                WHERE c.idquittance = q.idquittance ORDER BY c.idcontrat LIMIT 1) ct ON TRUE
             WHERE d.idreversement = r.idreversement) AS commissions
     FROM stdreversementcompagnie r
@@ -578,7 +746,7 @@ SQL_COMMISSIONS = """
            CASE WHEN UPPER(TRIM(COALESCE(ct.numeropolicecompagnie, ''))) IN ('', 'RAS', 'NEANT') THEN NULL
                 ELSE TRIM(ct.numeropolicecompagnie) END AS policecompagnie,
            COALESCE(ct.taux_commission, 0) AS taux, COALESCE(ct.commissionintermediaire, 0) AS commissionht,
-           COALESCE(ct.accessoireintermediaire, 0) AS acccourtier,
+           """ + SQL_ACC_COURTIER.format(ct="ct") + """ AS acccourtier, """ + SQL_PART_COMPAGNIE.format(ct="ct") + """ AS partcompagnie,
            public.fn_lephare_prime_ht(ct.primenette, ct.accessoire, ct.taxe, ct.fga, ct.cedeao, ct.primettc, ct.primeimposee) AS primeht,
            bo.numero AS numerobordereau, COALESCE(bo.datebordereau, r.datereversement) AS datebordereau,
            """ + COMMISSION_DUE.format(d="d", de="de", ct="ct") + """ AS commissiondue,
@@ -648,7 +816,7 @@ def _ligne_commission(l):
         "DateBordereau": _iso(l["datebordereau"]),
         "PrimeNette": _nombre(l["primenette"]),
         "PrimeHT": _nombre(round(l["primeht"] or 0)),
-        "PrimeTtc": _nombre(l["primettc"]),
+        "PrimeTtc": _nombre(part_compagnie(l["primettc"], l["partcompagnie"])),
         "Taux": _nombre(l["taux"]),
         "CommissionHT": _nombre(l["commissionht"]),
         "AccCourtier": _nombre(l["acccourtier"]),

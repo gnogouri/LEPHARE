@@ -142,7 +142,7 @@ export const ProfileManagementPage = () => {
               <SectionParametrage
                 icone={UserCog}
                 titre={saisie.id ? saisie.libelle || 'Rôle' : 'Nouveau rôle'}
-                description={saisie.id ? `Modifié le ${original?.date_modification ? new Date(original.date_modification).toLocaleString('fr-FR') : '—'}${original?.modifie_par ? ` par ${original.modifie_par}` : ''}.` : 'Choisissez un code, un libellé et les droits accordés.'}
+                description={saisie.id ? `Modifié le ${original?.date_modification ? new Date(original.date_modification).toLocaleString('fr-FR') : '-'}${original?.modifie_par ? ` par ${original.modifie_par}` : ''}.` : 'Choisissez un code, un libellé et les droits accordés.'}
                 actions={gerer && (
                   <div style={{ display: 'flex', gap: '0.35rem' }}>
                     {saisie.id && !utilisateurs.length && <button type="button" className="btn btn-secondary" title="Supprimer ce rôle" onClick={supprimer} style={{ padding: '0.3rem 0.5rem', color: 'var(--accent-rose)' }}><Trash2 size={14} /></button>}

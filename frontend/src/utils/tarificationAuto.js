@@ -167,8 +167,41 @@ export const taxeGarantie = (g) => {
   return taxe;
 };
 
+// Affaire à tarif forfaitaire (incorporation dans une flotte) : la prime nette du fichier Excel est reprise telle
+// quelle, sans prorata. Elle est répartie sur les garanties acquises hors CEDEAO au prorata de leurs primes nettes du
+// barème (plus forts restes) ; prime annuelle = prime nette. Taxe et FGA suivent (taxeGarantie, 2 % de la RC).
+export const ventilerPrimeFichier = (garanties, primeNetteFichier) => {
+  const total = Math.round(Number(primeNetteFichier) || 0);
+  const lignes = (garanties || []).map((g) => ({ ...g }));
+  const cibles = lignes.filter((g) => g.acquise && !estGarantieCedeao(g));
+  if (!(total > 0) || !cibles.length) return lignes;
+  let poids = cibles.map((g) => Math.max(0, Number(g.primeNette) || 0));
+  if (!poids.some((p) => p > 0)) poids = cibles.map((g) => (estGarantieRc(g) ? 1 : 0));
+  if (!poids.some((p) => p > 0)) poids = cibles.map(() => 1);
+  const somme = poids.reduce((s, p) => s + p, 0);
+  const brutes = poids.map((p) => (total * p) / somme);
+  const parts = brutes.map((b) => Math.floor(b));
+  let reste = total - parts.reduce((s, p) => s + p, 0);
+  brutes
+    .map((b, i) => [b - parts[i], i])
+    .sort((a, b) => b[0] - a[0])
+    .forEach(([, i]) => {
+      if (reste > 0) {
+        parts[i] += 1;
+        reste -= 1;
+      }
+    });
+  cibles.forEach((g, i) => {
+    if (poids[i] > 0) {
+      g.primeNette = parts[i];
+      g.primeAnnuelle = parts[i];
+    }
+  });
+  return lignes;
+};
+
 // Base de l'accessoire (fn_get_accessoire) : prime nette des garanties acquises, CEDEAO comprise,
-// plus le FGA — comme prime_nette_totale du moteur et stddevis.primenette à l'enregistrement
+// plus le FGA - comme prime_nette_totale du moteur et stddevis.primenette à l'enregistrement
 export const baseAccessoireAuto = (garanties) => {
   const totaux = calculerTotauxDevisAuto({ garanties });
   return totaux.pn + totaux.cedeao + totaux.fga;

@@ -550,7 +550,8 @@ def _sections(reponses):
     for r in reponses:
         if not groupes or groupes[-1]["titre"] != r["section"]:
             groupes.append({"titre": r["section"] or "Réponses", "reponses": []})
-        groupes[-1]["reponses"].append({"libelle": r["libelle"], "valeur": r["valeur"], "genre": r["genre"]})
+        # Séparateur interne « — » (question — colonne) affiché « - »
+        groupes[-1]["reponses"].append({"libelle": r["libelle"].replace(" — ", " - "), "valeur": r["valeur"], "genre": r["genre"]})
     return groupes
 
 
@@ -643,7 +644,7 @@ def _lire_bulletin(reponses):
         if r["genre"] == "texte" and re.match(r"^oui\b", _norme(r["valeur"])) and " — " in r["libelle"]:
             question, colonne = r["libelle"].rsplit(" — ", 1)
             if colonne in colonnes:
-                declarations.append(f"{colonnes[colonne]} : OUI à « {question} »")
+                declarations.append(f"{colonnes[colonne]} : OUI à « {question.replace(' — ', ' - ')} »")
     personnes = []
     if adherent["nom"]:
         personnes.append({"lien": "A", **adherent})
@@ -686,7 +687,7 @@ def _lire_cotation_sante(reponses):
     return {
         "souscripteur": {
             "nom": nom, "type": "Entreprise",
-            "adresse": " — ".join(x for x in (adresse, _cherche(reponses, r"situation geographique")) if x), "telephone": _cherche(reponses, r"cellulaire", r"telephone"),
+            "adresse": " - ".join(x for x in (adresse, _cherche(reponses, r"situation geographique")) if x), "telephone": _cherche(reponses, r"cellulaire", r"telephone"),
             "email": _cherche(reponses, r"mail"), "contact": _cherche(reponses, r"personne a contacter"),
             "activite": _cherche(reponses, r"activites professionnelles")},
         "devis": {"genre": "sante_cotation", "adultes": adultes, "enfants": enfants,

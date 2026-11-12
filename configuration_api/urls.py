@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework import routers
 
-from . import parametrage, parametrage_auto, parametrage_dommages, parametrage_ia, parametrage_mrh, parametrage_sante, parametrage_transport, views_grilles_voyage
+from . import parametrage, parametrage_auto, parametrage_dommages, parametrage_ia, parametrage_mrh, parametrage_oreole, parametrage_sante, parametrage_transport, parametrage_vie, views_grilles_voyage
 from .views import (
     AccessoireCourtierParCompagnieViewSet,
     AccessoireViewSet,
@@ -186,6 +186,10 @@ urlpatterns = [
     path("parametrage/ia/classes/<str:classe>/", parametrage_ia.classe, name="parametrage-ia-classe"),
     path("parametrage/ia/tranches/", parametrage_ia.tranches, name="parametrage-ia-tranches"),
     path("parametrage/ia/offres/", parametrage_ia.offres, name="parametrage-ia-offres"),
+    # Réglages Vie : offres commerciales de la liste déroulante du devis Vie (AFA, Retraite complémentaire, Temporaire décès…)
+    path("parametrage/vie/offres/", parametrage_vie.offres, name="parametrage-vie-offres"),
+    path("parametrage/vie/offres/<int:id_offre>/", parametrage_vie.offre, name="parametrage-vie-offre"),
+    path("parametrage/ia/reglages/<str:cle>/", parametrage_ia.reglage, name="parametrage-ia-reglage"),
     path("parametrage/mrh/", parametrage_mrh.mrh, name="parametrage-mrh"),
     path("parametrage/mrh/usages/<str:code>/", parametrage_mrh.usage, name="parametrage-mrh-usage"),
     path("parametrage/mrh/options/<str:code>/", parametrage_mrh.option, name="parametrage-mrh-option"),
@@ -203,10 +207,15 @@ urlpatterns = [
     path("parametrage/auto/tarifs-directs/grilles/", parametrage_auto.tarifs_directs_grilles, name="parametrage-auto-tarifs-directs-grilles"),
     path("parametrage/auto/tarifs-directs/grilles/<int:id_tarif>/", parametrage_auto.tarifs_directs_grille, name="parametrage-auto-tarifs-directs-grille"),
     path("parametrage/auto/tarifs-directs/parametres/<str:cle>/", parametrage_auto.tarifs_directs_parametre, name="parametrage-auto-tarifs-directs-parametre"),
+    path("parametrage/auto/moteur/", parametrage_auto.moteur, name="parametrage-auto-moteur"),
+    path("parametrage/auto/moteur/<str:cle>/", parametrage_auto.moteur_parametre, name="parametrage-auto-moteur-parametre"),
     path("auto/valeur-venale/", parametrage_auto.valeur_venale, name="auto-valeur-venale"),
     path("auto/prime-garantie/", parametrage_auto.prime_garantie, name="auto-prime-garantie"),
     path("auto/tarif-direct/", parametrage_auto.tarif_direct, name="auto-tarif-direct"),
     # Réglages Santé MINENE (formules, paramètres, répartition de la prime) : configuration_api/parametrage_sante.py
+    path("parametrage/oreole/", parametrage_oreole.oreole, name="parametrage-oreole"),
+    path("parametrage/oreole/offres/<int:id_offre>/", parametrage_oreole.offre, name="parametrage-oreole-offre"),
+    path("parametrage/oreole/parametres/<str:cle>/", parametrage_oreole.parametre, name="parametrage-oreole-parametre"),
     path("parametrage/sante/", parametrage_sante.sante, name="parametrage-sante"),
     path("parametrage/sante/formules/<int:id_offre>/", parametrage_sante.formule, name="parametrage-sante-formule"),
     path("parametrage/sante/parametres/<str:cle>/", parametrage_sante.parametre, name="parametrage-sante-parametre"),

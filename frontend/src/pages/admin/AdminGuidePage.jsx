@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Compass, Search } from 'lucide-react';
 import { ADMIN_MENU } from '../../components/layout/adminMenu';
+import { useAuth } from '../../context/AuthContext';
 
 // Recherche sans tenir compte des accents ni des majuscules
 const normaliser = (texte) => String(texte || '')
@@ -14,21 +15,22 @@ const normaliser = (texte) => String(texte || '')
  * avec ce que contient chaque écran (même source que le menu latéral).
  */
 export const AdminGuidePage = () => {
+  const { peut } = useAuth();
   const [recherche, setRecherche] = useState('');
 
   const groupes = useMemo(() => {
     const termes = normaliser(recherche).split(/\s+/).filter(Boolean);
-    if (!termes.length) return ADMIN_MENU;
     return ADMIN_MENU
       .map((groupe) => ({
         ...groupe,
         items: groupe.items.filter((item) => {
+          if (item.droit && !peut(item.droit)) return false;
           const texte = normaliser(`${groupe.titre} ${item.branche || ''} ${item.label} ${item.description}`);
-          return termes.every((t) => texte.includes(t));
+          return termes.length === 0 || termes.every((t) => texte.includes(t));
         }),
       }))
       .filter((groupe) => groupe.items.length > 0);
-  }, [recherche]);
+  }, [peut, recherche]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '1200px', margin: '0 auto', paddingBottom: '3rem' }}>
@@ -38,7 +40,7 @@ export const AdminGuidePage = () => {
           Guide de l'administration
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', maxWidth: '760px' }}>
-          L'espace administration est rangé en {ADMIN_MENU.length} groupes, dans le même ordre que le menu de gauche.
+          L'espace administration est rangé en {groupes.length} groupes, dans le même ordre que le menu de gauche.
           Chaque carte explique ce que contient l'écran ; cliquez dessus pour l'ouvrir.
         </p>
       </div>

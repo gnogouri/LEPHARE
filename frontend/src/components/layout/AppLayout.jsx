@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Navbar from './Navbar';
 import Sidebar from './Sidebar';
@@ -70,7 +70,9 @@ export const AppLayout = () => {
             <div className="content-body">
               {/* Un conteneur par écran : apparition douce à chaque changement d'écran (index.css) */}
               <div key={location.pathname} className="page-transition">
-                {peut(droitEcran) ? <Outlet /> : <AccesRefuse droit={droitEcran} />}
+                {peut(droitEcran)
+                  ? <Suspense fallback={<div className="page-container" role="status">Chargement de la page…</div>}><Outlet /></Suspense>
+                  : <AccesRefuse droit={droitEcran} />}
               </div>
             </div>
           </main>

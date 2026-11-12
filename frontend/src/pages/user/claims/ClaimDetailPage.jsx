@@ -33,7 +33,7 @@ export const ClaimDetailPage = () => {
 
   const [claim, setClaim] = useState({
     numero_sinistre: claimId,
-    assure_nom: 'Client Uranus',
+    assure_nom: 'Client',
     police_num: 'POL-2026-0001',
     compagnie: 'NSIA Assurances CI',
     nature: 'Matériel',

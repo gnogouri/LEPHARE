@@ -7,9 +7,9 @@ from .views_devis_ia import (
     garanties_devis_ia,
     taux_taxe_devis_ia,
 )
-from .views_devis_risques_divers import lire_devis_risques_divers
+from .views_devis_risques_divers import garanties_ajoutables, lire_devis_risques_divers, valeurs_usuelles
 from .import_flotte import analyser_import_flotte
-from . import documents_dommages
+from . import documents_dommages, import_mrh, imposition_garanties
 from .views_devis_dommages import (
     calcul_dommages,
     catalogue_dommages,
@@ -23,10 +23,18 @@ from .views_devis_voyage import (
     ligne_tarif_voyage_vue,
     lire_devis_voyage,
 )
-from . import views_bordereaux, views_finance
+from . import apporteurs, decaissements, views_bordereaux, views_cockpit, views_conventions, views_finance, views_reprise
+from . import corrections_encaissement
+from . import views_suivi_commercial, views_tableau_de_bord
 from . import views_transport_hors_guce as transport_hors_guce
 from . import renouvellement as renouvellement_views
 from . import minene_connexes
+from . import incorporation as incorporation_views
+from . import suppression as suppression_views
+from . import views_archives
+from . import periode_contrat as periode_contrat_views
+from . import afa as afa_views
+from . import vie_retraite as vie_retraite_views
 from .views_transport_guce import (
     analyser_bordereau,
     certificats_transport,
@@ -34,6 +42,7 @@ from .views_transport_guce import (
     importer_bordereau,
     liste_bordereaux,
 )
+from .views_attestation import telecharger_demande_edition_attestation_auto
 from .importation_views import (
     ImportAssuresAPIView,
     ImportsHistoriqueDetailAPIView,
@@ -193,6 +202,11 @@ router.register(
 urlpatterns = [
     path("", include(router.urls)),
     path(
+        "devis/<int:iddevis>/demande-edition-attestation/",
+        telecharger_demande_edition_attestation_auto,
+        name="demande_edition_attestation_auto",
+    ),
+    path(
         r"enregistrementdevis",
         create_quotation,
         name="enregistrement_devis_auto",
@@ -248,6 +262,16 @@ urlpatterns = [
         lire_devis_risques_divers,
         name="lecture_devis_risques_divers",
     ),
+    # Garanties que l'on peut ajouter à un devis RC / MRP (taxe réglée pour le produit), comme l'Automobile
+    path(
+        r"devisrisquesdivers/garanties/<int:idproduit>/",
+        garanties_ajoutables,
+        name="garanties_ajoutables_risques_divers",
+    ),
+    # RC et MRH saisis à la main : valeurs habituelles proposées dans les listes déroulantes des montants et taux
+    path(r"valeursusuelles/", valeurs_usuelles, name="valeurs_usuelles"),
+    # Imposition des primes garantie par garantie, toutes branches hors Auto (fiche devis « Imposer la prime »)
+    path(r"devis/<int:pk>/imposition-garanties/", imposition_garanties.imposition_garanties, name="imposition_garanties"),
     # Devis IA complet (création / « Modifier ») en une transaction
     path(
         r"devisia/enregistrement/",
@@ -300,7 +324,36 @@ urlpatterns = [
          name="transport_hors_guce_contrat"),
     # Flux financiers (Code CIMA) : état des encaissements, reversements aux compagnies (prime
     # entière), réclamation et encaissement des commissions
+    # Cockpit opérationnel : chiffres du tableau de bord, chaque bloc selon les droits (production/views_cockpit.py)
+    path("cockpit/", views_cockpit.cockpit, name="cockpit"),
+    # Tableau de bord de la direction : production, encaissements, résultats et conformité d'un exercice
+    # (production/views_tableau_de_bord.py)
+    path("tableau-de-bord/", views_tableau_de_bord.tableau_de_bord, name="tableau-de-bord"),
+    # Suivi commercial : devis émis et transformés, relances, renouvellements (production/views_suivi_commercial.py)
+    path("suivi-commercial/", views_suivi_commercial.suivi_commercial, name="suivi-commercial"),
+    # Conventions avec les compagnies : données réelles par compagnie et conditions saisies (production/views_conventions.py)
+    path("conventions-compagnies/", views_conventions.conventions_compagnies, name="conventions-compagnies"),
+    path("conventions-compagnies/<int:id_compagnie>/", views_conventions.convention_compagnie, name="convention-compagnie"),
+    # Cloche de la barre du haut : devis arrivant à échéance ou échus récemment, selon les droits
+    path("alertes/", views_cockpit.alertes, name="alertes-cloche"),
+    # Suppression définitive d'un devis ou d'un contrat, par habilitation (production/suppression.py)
+    path("devis/<int:iddevis>/suppression/", suppression_views.suppression_devis, name="suppression_devis"),
+    path("contrat/<int:idcontrat>/suppression/", suppression_views.suppression_contrat, name="suppression_contrat"),
+    # Reprise des affaires antérieures (production/views_reprise.py)
+    path("reprise/", views_reprise.reprises, name="reprise_liste"),
+    path("reprise/referentiels/", views_reprise.referentiels, name="reprise_referentiels"),
+    path("reprise/modele/", views_reprise.modele, name="reprise_modele"),
+    path("reprise/import/analyse/", views_reprise.import_analyse, name="reprise_import_analyse"),
+    path("reprise/import/", views_reprise.import_fichier, name="reprise_import"),
+    # Affaire saisie dans les écrans de devis, ouverts depuis Affaires antérieures, puis finalisée en affaire antérieure
+    path("reprise/devis/", views_reprise.devis_en_attente, name="reprise_devis_en_attente"),
+    path("reprise/devis/<int:id_devis>/", views_reprise.devis, name="reprise_devis"),
+    path("reprise/devis/<int:id_devis>/attente/", views_reprise.devis_attente, name="reprise_devis_attente"),
+    path("reprise/contrat/<int:id_contrat>/", views_reprise.reprise_du_contrat, name="reprise_contrat"),
+    path("reprise/<int:pk>/", views_reprise.reprise, name="reprise_detail"),
+    path("archives/<str:type_objet>/<int:pk>/restauration/", views_archives.restauration, name="archives_restauration"),
     path("finance/encaissements/", views_finance.etat_encaissements, name="finance_etat_encaissements"),
+    path("finance/encaissements/recherche/", views_finance.recherche_reglements, name="finance_recherche_reglements"),
     # Bordereau récapitulatif des encaissements d'une période (Excel ; impression dans l'application)
     path("finance/encaissements/recapitulatif/excel/", views_bordereaux.recapitulatif_encaissements_excel, name="finance_recapitulatif_encaissements_excel"),
     path("finance/reversements/a-reverser/", views_finance.lignes_a_reverser, name="finance_a_reverser"),
@@ -315,6 +368,19 @@ urlpatterns = [
     path("finance/bordereaux/<int:id_reversement>/annuler/", views_bordereaux.annuler_bordereau, name="finance_bordereau_annuler"),
     path("finance/tableau-reversement/", views_bordereaux.tableau, name="finance_tableau_reversement"),
     path("finance/tableau-reversement/excel/", views_bordereaux.tableau_excel, name="finance_tableau_reversement_excel"),
+    # Apporteurs d'affaires : rattachement aux affaires, commissions, règlements (production/apporteurs.py)
+    path("finance/apporteurs/affaire/", apporteurs.vue_affaire, name="apporteurs_affaire"),
+    path("finance/apporteurs/affaires/", apporteurs.vue_affaires, name="apporteurs_affaires"),
+    path("finance/apporteurs/affaires/recherche/", apporteurs.vue_recherche_affaires, name="apporteurs_recherche_affaires"),
+    path("finance/apporteurs/synthese/", apporteurs.vue_synthese, name="apporteurs_synthese"),
+    path("finance/apporteurs/rattachements/", apporteurs.vue_rattachements, name="apporteurs_rattachements"),
+    path("finance/apporteurs/rattachements/<int:id_rattachement>/", apporteurs.vue_rattachement, name="apporteurs_rattachement"),
+    path("finance/apporteurs/rattachements/<int:id_rattachement>/retrait/", apporteurs.vue_retrait, name="apporteurs_retrait"),
+    path("finance/apporteurs/commissions/", apporteurs.vue_commissions, name="apporteurs_commissions"),
+    path("finance/apporteurs/commissions/<int:id_commission>/", apporteurs.vue_commission, name="apporteurs_commission"),
+    path("finance/apporteurs/commissions/<int:id_commission>/annulation/", apporteurs.vue_annulation_commission, name="apporteurs_annulation_commission"),
+    path("finance/apporteurs/reglements/", apporteurs.vue_reglements, name="apporteurs_reglements"),
+    path("finance/apporteurs/reglements/<int:id_reglement>/annulation/", apporteurs.vue_annulation_reglement, name="apporteurs_annulation_reglement"),
     path("finance/commissions/", views_finance.etat_commissions, name="finance_commissions"),
     # État récapitulatif des commissions payées et en attente de paiement (écran, impression, Excel 4 feuilles)
     path("finance/commissions/recapitulatif/", views_finance.etat_recapitulatif_commissions, name="finance_commissions_recapitulatif"),
@@ -598,6 +664,26 @@ urlpatterns = [
     ),
     # Renouvellement LE PHARE : préparation (GET) et devis de renouvellement sous la même police (POST)
     path("renouvellement/<int:pk>/", renouvellement_views.renouvellement, name="renouvellement-contrat"),
+    # Incorporation Automobile flotte : date d'effet distincte, échéance du contrat conservée
+    path("incorporation/<int:pk>/", incorporation_views.incorporation, name="incorporation-flotte"),
+    # Période et mode de tarification (prorata ou forfaitaire) d'un devis d'incorporation, pour l'écran Auto
+    path("incorporation/devis/<int:iddevis>/", incorporation_views.devis_incorporation, name="incorporation-devis"),
+    # Période d'un contrat, ses avenants et ses primes : documents du contrat à jour des incorporations
+    path("contrat/<int:idcontrat>/periode/", periode_contrat_views.periode, name="contrat-periode"),
+    # Branche Vie : devis AFA (assurés, bénéficiaires), import de la liste Excel, modèle vierge
+    path("afa/referentiels/", afa_views.referentiels, name="afa-referentiels"),
+    path("afa/import/analyse/", afa_views.analyse_import, name="afa-import-analyse"),
+    path("afa/modele/", afa_views.modele, name="afa-modele"),
+    # Vie, offre Retraite complémentaire : état mensuel des cotisations (analyse sans écriture), dernier état du souscripteur, modèle
+    path("afa/retraite/analyse/", vie_retraite_views.analyse_import, name="vie-retraite-analyse"),
+    path("afa/retraite/etat-precedent/", vie_retraite_views.precedent, name="vie-retraite-precedent"),
+    path("afa/retraite/renouveler/<int:idcontrat>/", vie_retraite_views.renouveler, name="vie-retraite-renouveler"),
+    path("afa/retraite/modele/", vie_retraite_views.modele, name="vie-retraite-modele"),
+    # MRH : import Excel des maisons d'un devis ou d'une incorporation (lecture et contrôle sans écriture), modèle vierge
+    path("mrh/import/analyse/", import_mrh.analyse_import, name="mrh-import-analyse"),
+    path("mrh/import/modele/", import_mrh.modele, name="mrh-import-modele"),
+    path("afa/devis/", afa_views.devis, name="afa-devis"),
+    path("afa/devis/<int:iddevis>/", afa_views.lecture, name="afa-devis-lecture"),
     # IA et RC MINENE rattachées à la police Santé MINENE d'un contrat
     path("minene/<int:pk>/connexes/", minene_connexes.connexes, name="minene-connexes"),
     path("minene/ia/apercu/", minene_connexes.apercu_ia, name="minene-ia-apercu"),
@@ -795,6 +881,17 @@ urlpatterns = [
     path("cheques/echeancier/", ChequeEcheancierView.as_view(), name="cheque-echeancier"),
     # Chèque à déposer retiré de l'échéancier (DELETE)
     path("cheques/<int:id_cheque>/", ChequeSuppressionView.as_view(), name="cheque-suppression"),
+    # Tout autre règlement (espèces, virement, paiement mobile...) : décaissement, puis réencaissement (production/decaissements.py)
+    path("caisse/reglements/", decaissements.vue_reglements, name="caisse-reglements"),
+    path("caisse/reglements/<int:id_encaissement>/decaissement/", decaissements.vue_decaissement, name="caisse-reglement-decaissement"),
+    path("caisse/decaissements/", decaissements.vue_decaissements, name="caisse-decaissements"),
+    # Correction d'un encaissement saisi par erreur : références, annulation, annulation et réaffectation
+    path("caisse/encaissements/du-jour/", corrections_encaissement.vue_du_jour, name="caisse-encaissements-du-jour"),
+    path("caisse/encaissements/<int:id_encaissement>/correction/", corrections_encaissement.vue_fiche, name="caisse-encaissement-correction"),
+    path("caisse/encaissements/<int:id_encaissement>/correction/references/", corrections_encaissement.vue_references,
+         name="caisse-encaissement-correction-references"),
+    path("caisse/encaissements/<int:id_encaissement>/correction/annulation/", corrections_encaissement.vue_annulation,
+         name="caisse-encaissement-correction-annulation"),
     # Chèque impayé : décaissement, puis quittances à réencaisser
     path(
         "cheques/<int:id_cheque>/decaissement/",

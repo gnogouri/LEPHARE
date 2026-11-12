@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Loader2, CalendarRange, ListChecks, AlertTriangle, ExternalLink, Info } from 'lucide-react';
+import { useNavigate, useParams, Link, useLocation } from 'react-router-dom';
+import { ArrowLeft, RefreshCw, Loader2, CalendarRange, ListChecks, AlertTriangle, ExternalLink, Info, FileSpreadsheet } from 'lucide-react';
 import { contractApi } from '../../../api/endpoints';
 import { AmountInput } from '../../../components/common/AmountInput';
 import { messageErreurApi } from '../../../utils/financeUtils';
@@ -10,8 +10,8 @@ import { useToast } from '../../../context/ToastContext';
 // puis devis de renouvellement sous la même police, ouvert ensuite dans son écran de saisie pour les ajouts,
 // les garanties et la tarification. production/renouvellement.py
 
-const montant = (v) => (v === null || v === undefined ? '—' : `${Math.round(Number(v) || 0).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`);
-const dateFr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—');
+const montant = (v) => (v === null || v === undefined ? '-' : `${Math.round(Number(v) || 0).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} F`);
+const dateFr = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-');
 const ageTexte = (mois) => (mois === null || mois === undefined ? '' : `${Math.floor(mois / 12)} an${Math.floor(mois / 12) > 1 ? 's' : ''}${mois % 12 ? ` ${mois % 12} mois` : ''}`);
 const LIBELLE_AVENANT = { AFN: 'Affaire nouvelle', REN: 'Renouvellement', INC: 'Incorporation', MOD: 'Modification', RET: 'Retrait', ANL: 'Annulation', ANP: 'Annulation' };
 const cellule = { padding: '0.55rem 0.6rem', borderTop: '1px solid var(--border-subtle)', verticalAlign: 'top', fontSize: '0.84rem' };
@@ -20,6 +20,8 @@ const entete = { padding: '0.55rem 0.6rem', fontSize: '0.7rem', textTransform: '
 export const RenouvellementPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  // Ouvert depuis les Affaires antérieures : Retour ramène à cette liste
+  const retour = useLocation().state?.retour;
   const { success, error: toastError } = useToast();
   const [donnees, setDonnees] = useState(null);
   const [erreur, setErreur] = useState('');
@@ -49,6 +51,8 @@ export const RenouvellementPage = () => {
   useEffect(() => { charger(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const contrat = donnees?.Contrat;
+  // Retraite complémentaire (Vie) : chaque mois se renouvelle avec l'état des cotisations du souscripteur, importé dans l'écran Vie
+  const etatMensuel = donnees?.EtatMensuel || null;
   const auto = contrat?.IdProduit === 1;
   const objets = donnees?.Objets || [];
   // Santé : une ligne par famille (adhérent et ayants droit), reconduite avec sa couverture
@@ -82,15 +86,17 @@ export const RenouvellementPage = () => {
 
   return (
     <div style={{ padding: '1.5rem', maxWidth: 1400, margin: '0 auto' }}>
-      <button type="button" className="btn btn-secondary" onClick={() => navigate(`/user/contracts/${id}`)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
-        <ArrowLeft size={15} /> Retour au contrat
+      <button type="button" className="btn btn-secondary" onClick={() => navigate(retour || `/user/contracts/${id}`)} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
+        <ArrowLeft size={15} /> {retour ? 'Retour aux affaires antérieures' : 'Retour au contrat'}
       </button>
       <h1 style={{ fontSize: '1.35rem', fontWeight: 800, margin: '0 0 0.3rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <RefreshCw size={20} /> Renouvellement {contrat ? `de la police ${contrat.NumeroPolice}` : ''}
       </h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem', margin: '0 0 1.25rem', maxWidth: 900 }}>
-        La police garde son numéro. Préparez la nouvelle période et la liste des {auto ? 'véhicules' : 'assurés'} (incorporations et retraits de l'année déjà pris en compte),
-        puis créez le devis de renouvellement : il s'ouvre dans l'écran de saisie pour les ajouts, les garanties et la tarification, avant sa confirmation en contrat.
+        {etatMensuel
+          ? "La police garde son numéro et se renouvelle chaque mois avec l'état des cotisations envoyé par le souscripteur : importez le fichier du mois, vérifiez-le, puis confirmez-le en contrat."
+          : `La police garde son numéro. Préparez la nouvelle période et la liste des ${auto ? 'véhicules' : 'assurés'} (incorporations et retraits de l'année déjà pris en compte),
+        puis créez le devis de renouvellement : il s'ouvre dans l'écran de saisie pour les ajouts, les garanties et la tarification, avant sa confirmation en contrat.`}
       </p>
 
       {erreur && (
@@ -119,10 +125,38 @@ export const RenouvellementPage = () => {
                   n° {d.NumeroDevis} (effet {dateFr(d.DateEffet)}) <ExternalLink size={13} />
                 </Link>
               ))}
-              <span style={{ color: 'var(--text-muted)' }}>— reprenez-le plutôt que d'en créer un autre.</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {etatMensuel
+                  ? "- ouvrez-le pour y importer ou vérifier l'état du mois, puis confirmez-le : chaque mois renouvelle la police."
+                  : "- reprenez-le plutôt que d'en créer un autre."}
+              </span>
             </div>
           )}
 
+          {etatMensuel && (
+            <div className="glass-panel" style={{ padding: '1.1rem 1.25rem', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center',
+              flexWrap: 'wrap', borderLeft: '4px solid #7c3aed', animation: 'mouvement-apparait 0.35s ease-out both' }}>
+              <FileSpreadsheet size={28} color="#7c3aed" style={{ flexShrink: 0 }} />
+              <div style={{ flex: '1 1 420px' }}>
+                <div style={{ fontWeight: 800, marginBottom: '0.25rem' }}>
+                  {etatMensuel.Offre} : état des cotisations de {etatMensuel.LibelleMoisSuivant}
+                </div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                  Dernier mois enregistré : {etatMensuel.LibelleDernierMois}. Le mois suivant se crée avec le fichier des cotisations mensuelles des salariés,
+                  jamais en recopiant le mois précédent. Un salarié qui ne cotise pas ce mois peut être absent du fichier ou y figurer à 0 F : il reste suivi
+                  par son matricule et reprend ses cotisations à son retour.
+                </div>
+              </div>
+              <button type="button" className="btn btn-primary" disabled={(donnees.DevisEnCours || []).length > 0}
+                onClick={() => navigate(`/user/quotes/afa?renouveler=${etatMensuel.IdContrat}`)}
+                title={(donnees.DevisEnCours || []).length ? "Confirmez d'abord le mois en cours" : undefined}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, padding: '0.6rem 1.2rem', background: '#7c3aed', borderColor: '#7c3aed' }}>
+                <FileSpreadsheet size={16} /> Importer l'état de {etatMensuel.LibelleMoisSuivant}
+              </button>
+            </div>
+          )}
+
+          {!etatMensuel && (<>
           <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1rem' }}>
             <h2 style={{ fontSize: '1rem', fontWeight: 700, margin: '0 0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}><CalendarRange size={17} /> Nouvelle période</h2>
             <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -181,11 +215,11 @@ export const RenouvellementPage = () => {
                     return (
                       <tr key={o.Matricule} style={{ opacity: retenu ? 1 : 0.5 }}>
                         <td style={cellule}><input type="checkbox" checked={retenu} onChange={() => basculer(o.Matricule)} aria-label={`Renouveler ${o.Matricule}`} /></td>
-                        <td style={{ ...cellule, fontWeight: 700 }}>{familles ? (o.NumeroAdherent || '—') : o.Matricule}</td>
+                        <td style={{ ...cellule, fontWeight: 700 }}>{familles ? (o.NumeroAdherent || '-') : o.Matricule}</td>
                         {familles && (
                           <>
                             <td style={cellule}>{o.Assure}</td>
-                            <td style={cellule}>{o.Categorie || '—'}</td>
+                            <td style={cellule}>{o.Categorie || '-'}</td>
                             <td style={cellule}>{o.Personnes}</td>
                             <td style={cellule}>{dateFr(o.DateNaissance)}</td>
                           </>
@@ -230,6 +264,7 @@ export const RenouvellementPage = () => {
               {envoi ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} Créer le devis de renouvellement
             </button>
           </div>
+          </>)}
         </>
       )}
     </div>

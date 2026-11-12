@@ -166,6 +166,8 @@ SIMPLE_JWT = {
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # Réponses JSON compressées (listes de 1 à 3 Mo) : core/compression.py
+    "core.compression.CompressionReponses",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.locale.LocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -240,6 +242,11 @@ DATABASES = {
         "PORT": DB_PORT,
         # Base injoignable (Smart App Control, service arrêté) : échec en 5 s au lieu d'attendre
         "OPTIONS": {"connect_timeout": 5},
+        # Connexion gardée ouverte d'une requête à l'autre (ouvrir une connexion PostgreSQL coûte
+        # environ 40 ms, payés sinon à chaque appel de l'API). Vérifiée avant réemploi : une base
+        # redémarrée ne provoque pas d'erreur. DB_CONN_MAX_AGE=0 dans .env revient à l'ancien réglage.
+        "CONN_MAX_AGE": int(uranus_backend_config.get("DB_CONN_MAX_AGE", 60)),
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 

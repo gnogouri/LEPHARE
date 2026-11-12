@@ -53,7 +53,7 @@ export const EndorsementPage = () => {
               id: a.id || a.idavenant || idx + 1,
               numero_avenant: a.numeroavenant || a.code_avenant || `AVN-2026-${String(idx + 1).padStart(4, '0')}`,
               contrat_police: a.police || a.contrat_police || (ctrs[0]?.numeropolice || 'POL-2026-0001'),
-              client_nom: a.client_nom || a.client || (ctrs[0]?.client_nom || 'Client Uranus'),
+              client_nom: a.client_nom || a.client || (ctrs[0]?.client_nom || 'Client'),
               type_mouvement: a.libelle_avenant || a.libelle || a.type_mouvement || 'Renouvellement',
               date_effet: a.date_effet || a.dateeffet || new Date().toISOString().split('T')[0],
               date_echeance: a.date_echeance || a.dateexpiration || new Date().toISOString().split('T')[0],

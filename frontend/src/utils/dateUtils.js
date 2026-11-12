@@ -1,10 +1,10 @@
 /**
  * Formate une date en jj/mm/aaaa, quel que soit le format reçu (ISO, timestamp...).
- * Utilisé pour tout affichage de date en lecture seule dans l'application — jamais
+ * Utilisé pour tout affichage de date en lecture seule dans l'application - jamais
  * pour la valeur d'un <input type="date">, qui doit rester au format aaaa-mm-jj.
  */
 export const formatDate = (value) => {
-  if (!value) return '—';
+  if (!value) return '-';
   const d = new Date(value);
   if (isNaN(d.getTime())) return String(value);
   const pad = (n) => String(n).padStart(2, '0');
@@ -25,7 +25,7 @@ const versDateLocale = (value) => {
  */
 export const formatDateLisible = (value, { moisLong = false, jourSemaine = false } = {}) => {
   const d = versDateLocale(value);
-  if (!d) return value ? String(value) : '—';
+  if (!d) return value ? String(value) : '-';
   return d.toLocaleDateString('fr-FR', {
     ...(jourSemaine ? { weekday: 'long' } : {}),
     day: 'numeric',
@@ -43,6 +43,20 @@ export const joursJusquA = (value) => {
   return Math.round((d - aujourdhui) / 86400000);
 };
 
+/** Jours couverts entre deux dates AAAA-MM-JJ, bornes comprises (0 sans date ou si la fin précède le début). */
+export const joursInclusifs = (debut, fin) => (
+  debut && fin ? Math.max(0, Math.round((new Date(`${fin}T00:00:00`) - new Date(`${debut}T00:00:00`)) / 86400000) + 1) : 0
+);
+
+/** Jours de l'année qui commence à la date (365 ou 366), base du prorata d'une incorporation (fn_get_duree_annuelle_contrat). */
+export const joursAnneeDepuis = (debut) => {
+  if (!debut) return 365;
+  const depart = new Date(`${debut}T00:00:00`);
+  const fin = new Date(depart);
+  fin.setFullYear(depart.getFullYear() + 1);
+  return Math.round((fin - depart) / 86400000);
+};
+
 /** Échéance en clair : « aujourd'hui », « demain », « dans 5 jours », « hier », « il y a 10 jours ». */
 export const echeanceEnClair = (value) => {
   const jours = joursJusquA(value);
@@ -55,7 +69,7 @@ export const echeanceEnClair = (value) => {
 
 /** Formate une date avec l'heure, en jj/mm/aaaa hh:mm. */
 export const formatDateTime = (value) => {
-  if (!value) return '—';
+  if (!value) return '-';
   const d = new Date(value);
   if (isNaN(d.getTime())) return String(value);
   const pad = (n) => String(n).padStart(2, '0');

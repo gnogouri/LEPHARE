@@ -18,6 +18,7 @@
  */
 
 import apiClient from './apiClient';
+import { estSolde } from '../utils/resteEncaissement';
 
 /* =========================================================================
    HELPER : Extraction standard des résultats paginés ou bruts
@@ -306,18 +307,18 @@ export const configRefApi = {
    3b. SECTEURS D'ACTIVITÉ ÉCONOMIQUE - API CRUD (configuration_api)
    ========================================================================= */
 export const secteurActiviteApi = {
-  // GET /api/secteuractivite/ — Liste complète avec client_count
+  // GET /api/secteuractivite/ - Liste complète avec client_count
   getAll: async () => extractData(await apiClient.get('/secteuractivite/')),
-  // POST /api/secteuractivite/ — Créer un nouveau secteur
+  // POST /api/secteuractivite/ - Créer un nouveau secteur
   create: (data) => apiClient.post('/secteuractivite/', data),
-  // PUT /api/secteuractivite/{id}/ — Modifier un secteur
+  // PUT /api/secteuractivite/{id}/ - Modifier un secteur
   update: (id, data) => apiClient.put(`/secteuractivite/${id}/`, data),
-  // DELETE /api/secteuractivite/{id}/ — Supprimer (bloqué si clients liés)
+  // DELETE /api/secteuractivite/{id}/ - Supprimer (bloqué si clients liés)
   delete: (id) => apiClient.delete(`/secteuractivite/${id}/`),
 };
 
 /* =========================================================================
-   3c. TYPE DE SOUSCRIPTEUR (stdtypesouscripteur) — CRUD
+   3c. TYPE DE SOUSCRIPTEUR (stdtypesouscripteur) - CRUD
    ========================================================================= */
 export const typeSouscripteurApi = {
   // GET /api/typesouscripteur/
@@ -331,7 +332,7 @@ export const typeSouscripteurApi = {
 };
 
 /* =========================================================================
-   3d. TYPE D'ASSURÉ (stdtypeassure) — CRUD
+   3d. TYPE D'ASSURÉ (stdtypeassure) - CRUD
    ========================================================================= */
 export const typeAssureApi = {
   // GET /api/typeassure/
@@ -345,7 +346,7 @@ export const typeAssureApi = {
 };
 
 /* =========================================================================
-   3e. PROFESSION / MÉTIER (stdprofession) — CRUD
+   3e. PROFESSION / MÉTIER (stdprofession) - CRUD
    ========================================================================= */
 export const professionApi = {
   // GET /api/profession/
@@ -456,15 +457,45 @@ export const conditionsParticulieresMonoApi = {
   },
 };
 
+// Contrat de base d'une période qui a des avenants (incorporations…) : ses documents décrivent la police à jour, primes
+// de la période (contrat et avenants) à la place de celles de sa seule quittance (production/periode_contrat.py)
+const periodeAvecAvenants = (periode) => Boolean(periode?.EstBase && periode.Mouvements?.length);
+const primesDeLaPeriode = (quittance, periode) => (periodeAvecAvenants(periode) ? {
+  ...quittance,
+  PrimeNette: periode.Totaux.PrimeNette, PrimeNetteHorsFga: periode.Totaux.PrimeNetteHorsFga, Fga: periode.Totaux.Fga,
+  Cedeao: periode.Totaux.Cedeao, Accessoire: periode.Totaux.Accessoire, TaxeEnregistrement: periode.Totaux.TaxeEnregistrement,
+  FraisGestion: periode.Totaux.FraisGestion, PrimeTtc: periode.Totaux.PrimeTtc,
+} : quittance);
+const lirePeriode = async (idContrat) => (await apiClient.get(`/contrat/${idContrat}/periode/`).catch(() => ({ data: null }))).data;
+
 // Conditions Particulières d'une flotte auto (« Liste des véhicules en Automobile », modèle NSIA) :
 // quittance du devis / contrat et véhicules avec l'état, le capital et la prime de chaque garantie
 export const conditionsParticulieresFlotteApi = {
+  // Contrat de base d'une période avec avenants : véhicules à jour (incorporés compris, retirés écartés, côté serveur)
+  // et primes de la période
   get: async (id, { contrat = false } = {}) => {
-    const [q, v] = await Promise.all([
+    const [q, v, periode] = await Promise.all([
       apiClient.get(contrat ? `/quittancecontrat/${id}` : `/quittanceproposition/${id}`),
       apiClient.get(contrat ? `/contrat/${id}/vehicules-flotte/` : `/devis/${id}/vehicules-flotte/`),
+      contrat ? lirePeriode(id) : Promise.resolve(null),
     ]);
-    return { quittance: donneesEntete(q) || {}, vehicules: Array.isArray(v.data) ? v.data : [] };
+    return {
+      quittance: primesDeLaPeriode(donneesEntete(q) || {}, periode),
+      vehicules: Array.isArray(v.data) ? v.data : [],
+      periode: periodeAvecAvenants(periode) ? periode : null,
+    };
+  },
+};
+
+// Conditions Particulières MRH « Liste des garanties MRH multisites » (modèle NSIA) : quittance du
+// devis ou du contrat et données des CP (souscripteur, maisons et garanties de chaque maison)
+export const conditionsParticulieresMrhApi = {
+  get: async (id, { contrat = false } = {}) => {
+    const [q, cp] = await Promise.all([
+      apiClient.get(contrat ? `/quittancecontrat/${id}` : `/quittanceproposition/${id}`).catch(() => ({ data: [] })),
+      apiClient.get(contrat ? `/contrat/${id}/conditions-particulieres/` : `/devis/${id}/conditions-particulieres/`),
+    ]);
+    return { quittance: donneesEntete(q) || {}, cp: cp.data || {} };
   },
 };
 
@@ -494,9 +525,14 @@ export const impressionIaApi = {
 // du contrat ({ idcontrat }), saisie Santé du devis (couvertures, adhérents), liste des affiliés et,
 // pour un contrat, ayants droit de l'IA MINENE rattachée à la police
 export const impressionSanteApi = {
+  // Contrat : familles en vigueur de sa période (incorporations comprises) pour le contrat de base, primes de la période
   get: async ({ iddevis, idcontrat }) => {
-    const quittance = donneesEntete(await apiClient.get(idcontrat ? `/quittancecontrat/${idcontrat}` : `/quittanceproposition/${iddevis}`)) || {};
-    const idDevis = Number(quittance.IdDevis || iddevis) || 0;
+    const [entete, periode] = await Promise.all([
+      apiClient.get(idcontrat ? `/quittancecontrat/${idcontrat}` : `/quittanceproposition/${iddevis}`),
+      idcontrat ? lirePeriode(idcontrat) : Promise.resolve(null),
+    ]);
+    const quittance = primesDeLaPeriode(donneesEntete(entete) || {}, periode);
+    const idDevis = Number((periode?.EstBase && periode.IdDevisComposition) || quittance.IdDevis || iddevis) || 0;
     const [s, a, ad] = await Promise.all([
       apiClient.get(`/devissante/${idDevis}/`).catch(() => ({ data: {} })),
       apiClient.get(`/listeaffiliesante/${idDevis}`).catch(() => ({ data: [] })),
@@ -504,8 +540,22 @@ export const impressionSanteApi = {
         ? apiClient.get(`/ayantdroitminene/${encodeURIComponent(quittance.NumeroPolice)}`).catch(() => ({ data: {} }))
         : Promise.resolve({ data: {} }),
     ]);
-    return { quittance, saisie: s.data || {}, affilies: donneesListe(a), ayantsDroit: ad.data?.ayantdroits || [] };
+    return { quittance, saisie: s.data || {}, affilies: donneesListe(a), ayantsDroit: ad.data?.ayantdroits || [], periode };
   },
+  // GET /api/devissante/:iddevis/bordereau/ : primes par assuré (prime de base, surprimes, réduction ou majoration) ;
+  // contrat : GET /api/devissante/contrat/:id/bordereau/?document= (période à jour ; facture MINENE : toute la période)
+  bordereau: async (idDevis, { idcontrat, document } = {}) => (await apiClient.get(
+    idcontrat ? `/devissante/contrat/${idcontrat}/bordereau/` : `/devissante/${idDevis}/bordereau/`,
+    { params: idcontrat && document ? { document } : undefined },
+  )).data,
+};
+
+// Facture de prime RC (modèle OREOLE, comme la facture OREOLE d'URANUS) : quittance du contrat ({ idcontrat }) ou
+// de la proposition ({ iddevis })
+export const impressionRcApi = {
+  get: async ({ iddevis, idcontrat }) => donneesEntete(
+    await apiClient.get(idcontrat ? `/quittancecontrat/${idcontrat}` : `/quittanceproposition/${iddevis}`),
+  ) || {},
 };
 
 // Proposition MRH (gabarit URANUS) : quittance de la proposition et garanties de chaque maison
@@ -583,7 +633,7 @@ export const normalizeDevis = (bq) => {
   const id = bq.iddevis || bq.id;
   const clientNom = bq.client && typeof bq.client === 'object'
     ? `${bq.client.Nom || ''} ${bq.client.Prenoms || ''}`.trim()
-    : (bq.nomassure || bq.client_nom || bq.souscripteur || 'Client Uranus');
+    : (bq.nomassure || bq.client_nom || bq.souscripteur || 'Client');
   
   const produitNom = bq.produit && typeof bq.produit === 'object'
     ? (bq.produit.LibelleProduit || bq.produit.libelle_produit)
@@ -797,13 +847,17 @@ export const quoteApi = {
     return normalizeDevis(res.data);
   },
   // GET /api/devisdetail/:iddevis (détail véhicule + devis imbriqué, pour préremplir
-  // le formulaire d'édition Auto — cf. bouton « Modifier » du Registre des Devis)
+  // le formulaire d'édition Auto - cf. bouton « Modifier » du Registre des Devis)
   getDevisDetailAuto: async (iddevis) => (await quoteApi.getDevisDetailsAuto(iddevis))[0] || null,
   // Tous les véhicules du devis (une ligne stddevisdetail par véhicule d'une flotte)
   getDevisDetailsAuto: async (iddevis) => {
     const res = await apiClient.get(`/devisdetail/${iddevis}`);
     return Array.isArray(res.data) ? res.data : [];
   },
+  telechargerDemandeEditionAttestationAuto: (iddevis) => apiClient.get(
+    `/devis/${iddevis}/demande-edition-attestation/`,
+    { responseType: 'blob' },
+  ),
   // POST /api/enregistrementdevis (Auto CIMA)
   createAutoQuote: (data) => {
     const payload = formatAutoQuoteForApi(data);
@@ -836,9 +890,13 @@ export const quoteApi = {
   // POST /api/correctiondevis/ (Enregistrement des primes & garanties imposées / modifiées)
   correctQuote: (payload) => apiClient.post('/correctiondevis/', payload),
   // POST /api/majrecapprimes/ (Mise à jour manuelle du récapitulatif des primes d'un devis
-  // déjà enregistré, via sp_maj_manuelle_primes — utilisé par « Modifier » sur le Registre des Devis
+  // déjà enregistré, via sp_maj_manuelle_primes - utilisé par « Modifier » sur le Registre des Devis
   // et par « Imposer les primes du récapitulatif » de la fiche d'un devis flotte)
   updateQuotePrimes: (payload) => apiClient.post('/majrecapprimes/', payload),
+  // GET / POST /api/devis/:id/imposition-garanties/ : primes du devis garantie par garantie (toutes branches hors Auto),
+  // lues puis imposées (« Imposer la prime » de la fiche devis)
+  getImpositionGaranties: async (iddevis) => (await apiClient.get(`/devis/${iddevis}/imposition-garanties/`)).data,
+  imposerGaranties: async (iddevis, payload) => (await apiClient.post(`/devis/${iddevis}/imposition-garanties/`, payload)).data,
   // POST /api/finalisationdevisauto (Finalisation devis flotte)
   finalizeFlotteQuote: (payload) => apiClient.post('/finalisationdevisauto', payload),
   // POST /api/annulationsaisievehicule (Suppression d'un véhicule de flotte)
@@ -962,6 +1020,12 @@ export const quoteApi = {
   // GET /api/mrh/devis/:devis_id/resume-financier/
   getFinancialSummary: (devisId) => apiClient.get(`/mrh/devis/${devisId}/resume-financier/`),
   // POST /api/annulationsaisiedevis
+  // Suppression définitive, par habilitation (production/suppression.py) : ce qui serait supprimé ou ce qui l'empêche, puis
+  // suppression ; motif saisi dans la fenêtre, envoyé d'emblée (en-tête X-Motif de la garde)
+  preparerSuppression: async (id) => (await apiClient.get(`/devis/${id}/suppression/`)).data,
+  supprimer: async (id, motif) => (await apiClient.delete(`/devis/${id}/suppression/`, {
+    headers: { 'X-Motif': encodeURIComponent(motif) }, motifEnvoye: true,
+  })).data,
   archiveQuote: (id) => apiClient.post('/annulationsaisiedevis', { IdDevis: id }),
   // POST /api/desarchivagedevis
   unarchiveQuote: (id) => apiClient.post('/desarchivagedevis', { IdDevis: id }),
@@ -1057,6 +1121,15 @@ export const iaApi = {
 const multipart = { headers: { 'Content-Type': 'multipart/form-data' } };
 
 export const santeApi = {
+  // Avenant de modification d'un contrat en cours (changement de formule, incorporation) : préparation, puis devis d'avenant
+  // { DateEffet, IdAdherent, IdOffre, Membre? } ouvert dans l'écran Santé (sante/avenant.py) ; Membre { Lien, Nom, Prenom,
+  // DateNaissance, Sexe, Certificat, NombrePathologie } incorporé dans la famille, qui change de formule si elle est complète
+  preparerAvenant: async (idContrat, dateEffet) => (await apiClient.get(`/devissante/avenant/${idContrat}/`, {
+    params: dateEffet ? { date_effet: dateEffet } : {},
+  })).data,
+  creerAvenant: async (idContrat, donnees) => (await apiClient.post(`/devissante/avenant/${idContrat}/`, donnees)).data,
+  // Un collègue continue une saisie commencée par un autre : elle passe au compte connecté (droit devis.update, tracé au journal)
+  continuerSaisie: async (idDevis) => (await apiClient.post(`/devissante/${idDevis}/continuer/`)).data,
   // GET /api/tarifparproduit/5 : « Offre commerciale » d'URANUS (catégories Santé)
   getTarifs: async () => extractData(await apiClient.get('/tarifparproduit/5')),
   // GET /api/typecontratsante/ : CONTRAT PARTICULIER, CONTRAT SOCIETE
@@ -1082,12 +1155,19 @@ export const santeApi = {
   // POST /api/devissante/importation/ (multipart : devis, filiale, date_effet, fichier_excel) : adhérents et affiliés d'un fichier
   // Excel dans une couverture ; compte rendu par ligne (importé, dérogation à la limite d'âge, refusé, ignoré)
   importerAffilies: async (formData) => (await apiClient.post('/devissante/importation/', formData, multipart)).data,
+  // Import Santé classique (modèle d'OREOLE) : couvertures, familles, dates et primes déduites du fichier ;
+  // analyser=1 : contrôle sans écriture (sante/import_classique.py)
+  importerClassique: async (formData) => (await apiClient.post('/devissante/importation/classique/', formData, multipart)).data,
+  modeleImportClassique: async () => (await apiClient.get('/devissante/importation/classique/modele/', { responseType: 'blob' })).data,
   // Même import, personnes lues dans les bulletins d'adhésion reçus (questionnaires prospects) et vérifiées à l'écran
   importerPersonnes: async ({ devis, filiale, dateEffet, personnes }) => (await apiClient.post('/devissante/importation/', {
     devis, filiale, date_effet: dateEffet, personnes,
   })).data,
   // POST /api/devissante/enregistrement/ : « Enregistrer le devis » (sp_creation_devis_sante)
   enregistrerDevis: async (payload) => (await apiClient.post('/devissante/enregistrement/', payload)).data,
+  // POST /api/devissante/apercu/ : mêmes données ; primes calculées par la base sans rien enregistrer (totaux,
+  // garanties, détail par famille MINENE : formule, prime de base, surprimes d'âge et d'affection, accessoire)
+  apercu: async (payload) => (await apiClient.post('/devissante/apercu/', payload)).data,
   // GET /api/devissante/:iddevis/ : tout ce qui a été saisi sur le devis
   lireDevis: async (idDevis) => (await apiClient.get(`/devissante/${idDevis}/`)).data,
 };
@@ -1099,6 +1179,12 @@ export const santeApi = {
 const CHEMINS_RISQUES_DIVERS = {
   7: { garanties: '/offregarantiemrp', enregistrement: '/enregistrementdevismrp' },
   8: { garanties: '/offregarantierc', enregistrement: '/enregistrementdevisrc' },
+};
+
+// GET /api/valeursusuelles/?produit= : valeurs habituelles des devis du produit (accessoire, réduction, taux de prime,
+// capitaux, et par sous-garantie capital, franchises et taux), proposées dans les listes des montants saisis à la main
+export const valeursUsuellesApi = {
+  get: async (idProduit) => (await apiClient.get('/valeursusuelles/', { params: { produit: Number(idProduit) } })).data || {},
 };
 
 export const risquesDiversApi = {
@@ -1125,6 +1211,11 @@ export const risquesDiversApi = {
   },
   // GET /api/devisrisquesdivers/:iddevis/ : tout ce qui a été saisi sur la ligne du devis
   lireDevis: async (idDevis) => (await apiClient.get(`/devisrisquesdivers/${idDevis}/`)).data,
+  // GET /api/devisrisquesdivers/garanties/:idproduit/ : garanties que l'on peut ajouter au devis (catalogue « risques
+  // divers » d'URANUS, TauxTaxe vide sans taux réglé pour le produit), « Ajouter une garantie » comme l'Automobile
+  garantiesAjoutables: async (idProduit, dateEffet) => (
+    await apiClient.get(`/devisrisquesdivers/garanties/${idProduit}/`, { params: { date: dateEffet || undefined } })
+  ).data,
   // POST /api/enregistrementdevis{rc|mrp} : création (IdDevis 0) ou modification du devis
   enregistrer: async (idProduit, payload) => {
     const res = await apiClient.post(CHEMINS_RISQUES_DIVERS[idProduit].enregistrement, payload);
@@ -1161,6 +1252,132 @@ export const risquesDiversApi = {
    4.0 ter DOMMAGES (produit 9) : Caution, Tous Risques Informatiques, Chantiers, Bris de Machines…
    Toutes catégories, garanties réglées dans l'admin (production/views_devis_dommages.py)
    ========================================================================= */
+// Branche Vie, devis AFA (production/afa.py) : assurés avec capital, prime et bénéficiaires ; import de la liste Excel
+export const afaApi = {
+  referentiels: async (idClient) => (await apiClient.get('/afa/referentiels/', { params: { client: idClient || undefined } })).data,
+  analyserImport: async (fichier) => {
+    const formulaire = new FormData();
+    formulaire.append('fichier_excel', fichier);
+    return (await apiClient.post('/afa/import/analyse/', formulaire, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })).data;
+  },
+  modele: async () => (await apiClient.get('/afa/modele/', { responseType: 'blob' })).data,
+  enregistrer: async (donnees) => (await apiClient.post('/afa/devis/', donnees, { timeout: 120000 })).data,
+  lire: async (idDevis) => (await apiClient.get(`/afa/devis/${idDevis}/`)).data,
+  // Offre Retraite complémentaire (production/vie_retraite.py) : état mensuel des cotisations, dernier état du souscripteur, modèle
+  analyserRetraite: async (fichier) => {
+    const formulaire = new FormData();
+    formulaire.append('fichier_excel', fichier);
+    return (await apiClient.post('/afa/retraite/analyse/', formulaire, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })).data;
+  },
+  etatPrecedent: async (idClient, avant, idDevis) => (await apiClient.get('/afa/retraite/etat-precedent/', {
+    params: { client: idClient, avant: avant || undefined, devis: idDevis || undefined },
+  })).data,
+  modeleRetraite: async () => (await apiClient.get('/afa/retraite/modele/', { responseType: 'blob' })).data,
+  // Mois suivant d'une police d'état des cotisations (page Renouvellement) : souscripteur, compagnie, offre et mois à importer
+  renouvelerRetraite: async (idContrat) => (await apiClient.get(`/afa/retraite/renouveler/${idContrat}/`)).data,
+};
+
+// Réglages Vie (configuration_api/parametrage_vie.py) : offres commerciales de la liste déroulante du devis Vie
+export const vieOffresApi = {
+  lister: async () => (await apiClient.get('/parametrage/vie/offres/')).data,
+  creer: async (offre) => (await apiClient.post('/parametrage/vie/offres/', offre)).data,
+  modifier: async (idOffre, offre) => (await apiClient.put(`/parametrage/vie/offres/${idOffre}/`, offre)).data,
+  supprimer: async (idOffre) => (await apiClient.delete(`/parametrage/vie/offres/${idOffre}/`)).data,
+};
+
+// Branche Oreole Santé (sante/oreole.py) : package Santé + IA + AFA, classeur des effectifs
+export const oreoleApi = {
+  referentiels: async () => (await apiClient.get('/oreole/referentiels/')).data,
+  apercu: async (donnees) => (await apiClient.post('/oreole/apercu/', donnees)).data,
+  enregistrer: async (donnees) => (await apiClient.post('/oreole/devis/', donnees, { timeout: 300000 })).data,
+  lire: async (idDevis) => (await apiClient.get(`/oreole/devis/${idDevis}/`)).data,
+  lien: async (idDevis) => (await apiClient.get(`/oreole/lien/${idDevis}/`)).data,
+  emettre: async (idDevis, produits) => (await apiClient.post(`/oreole/devis/${idDevis}/emission/`, { Produits: produits }, { timeout: 300000 })).data,
+  polices: async (q) => (await apiClient.get('/oreole/polices/', { params: { q: q || undefined } })).data,
+  // Caisse : packages à encaisser, et règlement unique que le serveur répartit entre les quittances (mêmes champs que collectPremium)
+  caisse: async () => (await apiClient.get('/oreole/caisse/')).data,
+  encaisser: (idDevis, donnees) => apiClient.post(`/oreole/devis/${idDevis}/encaissement/`, donnees),
+  contrat: async (idContrat) => (await apiClient.get(`/oreole/contrat/${idContrat}/`)).data,
+  emettreLie: async (idContrat, produit) => (await apiClient.post(`/oreole/contrat/${idContrat}/emission/`, { Produit: produit }, { timeout: 300000 })).data,
+  preparation: async (idContrat, acte) => (await apiClient.get(`/oreole/contrat/${idContrat}/preparation/`, { params: { acte } })).data,
+  // Cartes d'assurance : historique des personnes saisies (sans écriture), cartes d'une police, facturation après émission, registre complet
+  verifierCartes: async (donnees) => (await apiClient.post('/oreole/cartes/verification/', donnees)).data,
+  cartesContrat: async (idContrat) => (await apiClient.get(`/oreole/contrat/${idContrat}/cartes/`)).data,
+  facturerCartes: async (idContrat, donnees) => (await apiClient.post(`/oreole/contrat/${idContrat}/cartes/`, donnees, { timeout: 300000 })).data,
+  registreCartes: async (q) => (await apiClient.get('/oreole/cartes/', { params: { q: q || undefined } })).data,
+  analyserImport: async (fichier) => {
+    const formulaire = new FormData();
+    formulaire.append('fichier', fichier);
+    return (await apiClient.post('/oreole/import/analyse/', formulaire, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })).data;
+  },
+  modele: async () => (await apiClient.get('/oreole/modele/', { responseType: 'blob' })).data,
+};
+
+// Suivi des consommations santé (sante/consommations.py) : relevés du gestionnaire, droits et soldes, statistiques, contrôles, fraude
+const fichierConsommations = (fichier, champs = {}) => {
+  const formulaire = new FormData();
+  formulaire.append('fichier', fichier);
+  Object.entries(champs).forEach(([cle, valeur]) => { if (valeur) formulaire.append(cle, valeur); });
+  return formulaire;
+};
+const sansVide = (params) => Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v !== '' && v !== null && v !== undefined));
+
+export const consommationsApi = {
+  analyser: async (fichier, exercice) => (await apiClient.post('/consommations/import/analyse/', fichierConsommations(fichier, { exercice }), { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })).data,
+  importer: async (fichier, situation, exercice) => (await apiClient.post('/consommations/import/', fichierConsommations(fichier, { situation, exercice }), { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })).data,
+  // Tableau de bord (contrôle de gestion, dépenses, entreprises à risque), lien entreprise de l'état / police du gestionnaire, rapport Word (seul export)
+  tableauDeBord: async (params) => (await apiClient.get('/consommations/tableau-de-bord/', { params: sansVide(params), timeout: 120000 })).data,
+  // Analyse complète d'une période (sante/consommations_analyse.py) : synthèse, projection, compagnies, entreprises, familles, profil, foyers, prestataires, délais
+  analyse: async (params) => (await apiClient.get('/consommations/analyse/', { params: sansVide(params), timeout: 120000 })).data,
+  lier: async (entreprise, police) => (await apiClient.post('/consommations/entreprises/lien/', { Entreprise: entreprise, Police: police })).data,
+  // Effectif complété par les souscriptions Oreole Santé de LE PHARE : aperçu sans écriture, puis ajout
+  souscriptions: async () => (await apiClient.get('/consommations/souscriptions/', { timeout: 120000 })).data,
+  ajouterSouscriptions: async () => (await apiClient.post('/consommations/souscriptions/', {}, { timeout: 120000 })).data,
+  rapport: async (params) => apiClient.get('/consommations/rapport/', { params: sansVide(params), responseType: 'blob', timeout: 300000 }),
+  synthese: async (params) => (await apiClient.get('/consommations/synthese/', { params: sansVide(params) })).data,
+  rechercher: async (q) => (await apiClient.get('/consommations/recherche/', { params: { q } })).data,
+  famille: async (matricule) => (await apiClient.get(`/consommations/famille/${matricule}/`)).data,
+  entreprises: async (params) => (await apiClient.get('/consommations/entreprises/', { params: sansVide(params) })).data,
+  plafonds: async (params) => (await apiClient.get('/consommations/plafonds/', { params: sansVide(params) })).data,
+  controles: async (code) => (await apiClient.get('/consommations/controles/', { params: sansVide({ code }) })).data,
+  fraude: async (params) => (await apiClient.get('/consommations/fraude/', { params: sansVide(params) })).data,
+  fraudeBeneficiaire: async (matricule) => (await apiClient.get(`/consommations/fraude/${matricule}/`)).data,
+  instruire: async (matricule, donnees) => (await apiClient.post(`/consommations/fraude/${matricule}/instruction/`, donnees)).data,
+};
+
+// Branche RAFAS, régime autofinancé d'assurance santé (sante/rafas.py) : conventions, exercices, collèges, fichiers du gestionnaire, analyse, fonds
+const multipartRafas = { headers: { 'Content-Type': 'multipart/form-data' } };
+export const rafasApi = {
+  conventions: async () => (await apiClient.get('/rafas/conventions/', { timeout: 120000 })).data,
+  creer: async (donnees) => (await apiClient.post('/rafas/conventions/', donnees)).data,
+  // Nouvelle convention proposée d'après un fichier du gestionnaire (souscripteur, polices, période, collèges, familles), sans écriture
+  proposerConvention: async (fichier) => (await apiClient.post('/rafas/conventions/proposition/', fichierConsommations(fichier), { ...multipartRafas, timeout: 300000 })).data,
+  lire: async (id) => (await apiClient.get(`/rafas/conventions/${id}/`, { timeout: 120000 })).data,
+  modifier: async (id, convention) => (await apiClient.put(`/rafas/conventions/${id}/`, { Convention: convention })).data,
+  ajouterExercice: async (id, exercice) => (await apiClient.post(`/rafas/conventions/${id}/exercices/`, exercice)).data,
+  renouveler: async (id, familles) => (await apiClient.post(`/rafas/conventions/${id}/exercices/`, { renouvellement: true, familles })).data,
+  modifierExercice: async (id, idExercice, exercice) => (await apiClient.put(`/rafas/conventions/${id}/exercices/${idExercice}/`, exercice)).data,
+  supprimerExercice: async (id, idExercice) => (await apiClient.delete(`/rafas/conventions/${id}/exercices/${idExercice}/`)).data,
+  enregistrerLiens: async (id, liens) => (await apiClient.put(`/rafas/conventions/${id}/colleges-gestionnaire/`, { Liens: liens })).data,
+  // Fichier du gestionnaire : lecture sans écriture, puis import des feuilles choisies (relevés et effectifs)
+  analyserFichier: async (id, fichier) => (await apiClient.post(`/rafas/conventions/${id}/import/analyse/`, fichierConsommations(fichier), { ...multipartRafas, timeout: 300000 })).data,
+  importer: async (id, fichier, choix) => (await apiClient.post(`/rafas/conventions/${id}/import/`, fichierConsommations(fichier, { choix: JSON.stringify(choix) }), { ...multipartRafas, timeout: 600000 })).data,
+  supprimerImport: async (id, idImport) => (await apiClient.delete(`/rafas/conventions/${id}/imports/${idImport}/`)).data,
+  analyse: async (id, params) => (await apiClient.get(`/rafas/conventions/${id}/analyse/`, { params: sansVide(params), timeout: 180000 })).data,
+  effectif: async (id, params) => (await apiClient.get(`/rafas/conventions/${id}/effectif/`, { params: sansVide(params), timeout: 120000 })).data,
+  famille: async (id, matricule) => (await apiClient.get(`/rafas/conventions/${id}/famille/${matricule}/`)).data,
+  fonds: async (id, exercice) => (await apiClient.get(`/rafas/conventions/${id}/fonds/`, { params: sansVide({ exercice }), timeout: 120000 })).data,
+  creerAppel: async (idExercice, appel) => (await apiClient.post(`/rafas/exercices/${idExercice}/appels/`, appel)).data,
+  supprimerAppel: async (idAppel) => (await apiClient.delete(`/rafas/appels/${idAppel}/`)).data,
+  creerVersement: async (idExercice, versement) => (await apiClient.post(`/rafas/exercices/${idExercice}/versements/`, versement)).data,
+  supprimerVersement: async (idVersement) => (await apiClient.delete(`/rafas/versements/${idVersement}/`)).data,
+  creerHonoraire: async (idExercice, facture) => (await apiClient.post(`/rafas/exercices/${idExercice}/honoraires/`, facture)).data,
+  reglerHonoraire: async (idHonoraire, reglement) => (await apiClient.put(`/rafas/honoraires/${idHonoraire}/`, reglement)).data,
+  supprimerHonoraire: async (idHonoraire) => (await apiClient.delete(`/rafas/honoraires/${idHonoraire}/`)).data,
+  // Rapport Word de la période (seul export, journalisé)
+  rapport: async (id, params) => apiClient.get(`/rafas/conventions/${id}/rapport/`, { params: sansVide(params), responseType: 'blob', timeout: 300000 }),
+};
+
 export const dommagesApi = {
   // GET /api/dommages/catalogue/?compagnie= : catégories ouvertes, garanties et taxes de la compagnie
   getCatalogue: async (idCompagnie) => (await apiClient.get('/dommages/catalogue/', { params: { compagnie: idCompagnie || undefined } })).data,
@@ -1195,17 +1412,25 @@ export const mrhApi = {
   // POST /api/mrh/calcul/maison/
   calculerPrimeMaison: async (data) => (await apiClient.post('/mrh/calcul/maison/', data)).data,
   // POST /api/mrh/devis/
-  creerDevis: async (data) => (await apiClient.post('/mrh/devis/', data)).data,
+  creerDevis: async (data) => (await apiClient.post('/mrh/devis/', data, { timeout: 300000 })).data,
   // GET /api/mrh/devis/:id/
   getDevis: async (id) => (await apiClient.get(`/mrh/devis/${id}/`)).data,
   // PATCH /api/mrh/devis/:id/
   updateDevis: async (id, data) => (await apiClient.patch(`/mrh/devis/${id}/`, data)).data,
-  // PUT /api/mrh/devis/:id/ — « Modifier » : en-tête + toutes les maisons recalculées d'un bloc
-  modifierDevis: async (id, data) => (await apiClient.put(`/mrh/devis/${id}/`, data)).data,
-  // GET /api/mrh/devis/:id/maisons/ — maisons enregistrées (valeurs, options, garanties choisies)
+  // PUT /api/mrh/devis/:id/ - « Modifier » : en-tête + toutes les maisons recalculées d'un bloc
+  modifierDevis: async (id, data) => (await apiClient.put(`/mrh/devis/${id}/`, data, { timeout: 300000 })).data,
+  // GET /api/mrh/devis/:id/maisons/ - maisons enregistrées (valeurs, options, garanties choisies)
   getMaisons: async (idDevis) => (await apiClient.get(`/mrh/devis/${idDevis}/maisons/`)).data,
-  // POST /api/mrh/devis/accessoire/ — accessoire du barème pour une prime nette totale
+  // POST /api/mrh/devis/accessoire/ - accessoire du barème pour une prime nette totale
   getAccessoire: async (data) => (await apiClient.post('/mrh/devis/accessoire/', data)).data,
+  // POST /api/mrh/import/analyse/ - maisons d'un fichier Excel lues et contrôlées par le moteur, rien n'est enregistré
+  analyserImport: async (fichier) => {
+    const formulaire = new FormData();
+    formulaire.append('fichier_excel', fichier);
+    return (await apiClient.post('/mrh/import/analyse/', formulaire, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })).data;
+  },
+  // GET /api/mrh/import/modele/ - modèle vierge (liste déroulante des usages, feuille Usages)
+  modeleImport: async () => (await apiClient.get('/mrh/import/modele/', { responseType: 'blob' })).data,
   // DELETE /api/mrh/devis/:id/
   supprimerDevis: async (id) => (await apiClient.delete(`/mrh/devis/${id}/`)).data,
   // POST /api/mrh/devis/:id/maisons/
@@ -1322,6 +1547,10 @@ export const parametrageApi = {
   ).data,
   // Réglages Santé MINENE : formules, paramètres sante.minene.*, répartition de la prime
   // (configuration_api/parametrage_sante.py)
+  getOreole: async () => (await apiClient.get('/parametrage/oreole/')).data,
+  modifierOffreOreole: async (idOffre, donnees) => (await apiClient.patch(`/parametrage/oreole/offres/${idOffre}/`, donnees)).data,
+  modifierParametreOreole: async (cle, valeur) => (await apiClient.patch(`/parametrage/oreole/parametres/${cle}/`, { Valeur: valeur })).data,
+  retablirParametreOreole: async (cle) => (await apiClient.patch(`/parametrage/oreole/parametres/${cle}/`, { Retablir: true })).data,
   getSante: async () => (await apiClient.get('/parametrage/sante/')).data,
   modifierFormuleSante: async (idOffre, donnees) => (await apiClient.patch(`/parametrage/sante/formules/${idOffre}/`, donnees)).data,
   modifierParametreSante: async (cle, valeur) => (await apiClient.patch(`/parametrage/sante/parametres/${cle}/`, { Valeur: valeur })).data,
@@ -1336,6 +1565,9 @@ export const parametrageApi = {
   modifierClasseIa: async (classe, donnees) => (await apiClient.patch(`/parametrage/ia/classes/${classe}/`, donnees)).data,
   modifierTranchesIa: async (tranches) => (await apiClient.put('/parametrage/ia/tranches/', { Tranches: tranches })).data,
   modifierOffresIa: async (offres) => (await apiClient.put('/parametrage/ia/offres/', { Offres: offres })).data,
+  // PATCH /api/parametrage/ia/reglages/:cle/ : offres forfaitaires (ia.forfait.*) et barème des autres compagnies (ia.autres.*)
+  modifierReglageIa: async (cle, valeur) => (await apiClient.patch(`/parametrage/ia/reglages/${cle}/`, { Valeur: valeur })).data,
+  retablirReglageIa: async (cle) => (await apiClient.patch(`/parametrage/ia/reglages/${cle}/`, { Retablir: true })).data,
   getMrh: async () => (await apiClient.get('/parametrage/mrh/')).data,
   modifierUsageMrh: async (code, donnees) => (await apiClient.patch(`/parametrage/mrh/usages/${code}/`, donnees)).data,
   modifierOptionMrh: async (code, donnees) => (await apiClient.patch(`/parametrage/mrh/options/${code}/`, donnees)).data,
@@ -1357,6 +1589,10 @@ export const parametrageApi = {
   supprimerTarifDirect: async (id) => apiClient.delete(`/parametrage/auto/tarifs-directs/grilles/${id}/`),
   modifierParametreTarifsDirects: async (cle, valeur) => (await apiClient.patch(`/parametrage/auto/tarifs-directs/parametres/${cle}/`, { Valeur: valeur })).data,
   retablirParametreTarifsDirects: async (cle) => (await apiClient.patch(`/parametrage/auto/tarifs-directs/parametres/${cle}/`, { Retablir: true })).data,
+  // GET /api/parametrage/auto/moteur/ : montants et taux du moteur Auto (auto.moteur.<compagnie>.<groupe>.<code>)
+  getMoteurAuto: async () => (await apiClient.get('/parametrage/auto/moteur/')).data,
+  modifierMoteurAuto: async (cle, valeur) => (await apiClient.patch(`/parametrage/auto/moteur/${cle}/`, { Valeur: valeur })).data,
+  retablirMoteurAuto: async (cle) => (await apiClient.patch(`/parametrage/auto/moteur/${cle}/`, { Retablir: true })).data,
   // Pool TPV (catégorie 204) : tarif, paramètres, primes dues au Pool
   getPoolTpv: async ({ du, au } = {}) => (await apiClient.get('/parametrage/auto/pool-tpv/', { params: { du: du || undefined, au: au || undefined } })).data,
   modifierTranchesPoolTpv: async (tranches) => (await apiClient.put('/parametrage/auto/pool-tpv/tranches/', { Tranches: tranches })).data,
@@ -1478,7 +1714,8 @@ export const normalizeContrat = (bc) => {
   const primeNette = Number(bc.primenette || bc.prime_nette || 0);
   const primeTotale = Number(bc.primettc || bc.prime_totale || primeNette);
   const montantEncaisse = Number(bc.montant_encaisse || (bc.idquittance && typeof bc.idquittance === 'object' ? bc.idquittance.mt_encaisse : 0));
-  const isSolde = montantEncaisse >= primeTotale && primeTotale > 0;
+  // Reliquat de moins de 5 F compté comme nul (utils/resteEncaissement.js)
+  const isSolde = estSolde(primeTotale, montantEncaisse) && primeTotale > 0;
 
   return {
     id,
@@ -1522,6 +1759,59 @@ export const normalizeContrat = (bc) => {
   };
 };
 
+// Cockpit opérationnel (production/views_cockpit.py) : chiffres réels du tableau de bord, chaque bloc selon les droits
+export const cockpitApi = {
+  lire: async () => (await apiClient.get('/cockpit/')).data,
+  // Cloche : devis arrivant à échéance ou échus récemment, selon les droits (production/views_cockpit.alertes)
+  alertes: async () => (await apiClient.get('/alertes/')).data,
+  // Tableau de bord de la direction : exercice choisi (production/views_tableau_de_bord.py, droit reporting.view)
+  tableauDeBord: async (exercice) => (await apiClient.get('/tableau-de-bord/', { params: exercice ? { exercice } : {} })).data,
+  // Suivi commercial : devis émis et transformés, relances, renouvellements (production/views_suivi_commercial.py, droit crm.view)
+  suiviCommercial: async () => (await apiClient.get('/suivi-commercial/')).data,
+};
+
+// Pièce jointe d'un devis ou d'un contrat (type 'devis' ou 'contrat') : fichier téléversé à l'enregistrement (MRH, RC, MRP),
+// recopié sur le contrat à la confirmation (production/pieces_jointes.py)
+export const piecesJointesApi = {
+  // Fiche : Presente, Nom, Type, Taille, Date, Disponible (fichier sur le serveur), Origine, Message
+  fiche: async (type, id) => (await apiClient.get(`/${type}/${id}/piece-jointe/`)).data,
+  // Le fichier lui-même (Blob), pour l'afficher dans l'application
+  fichier: async (type, id) => (await apiClient.get(`/${type}/${id}/piece-jointe/fichier/`, { responseType: 'blob', timeout: 120000 })).data,
+  telecharger: async (type, id, nom) => enregistrerFichier(await piecesJointesApi.fichier(type, id), nom),
+  // POST /api/devis/:id/attacher_piece_jointe/ : remplace la pièce du devis
+  attacher: async (type, id, fichier) => {
+    const formulaire = new FormData();
+    formulaire.append('fichier', fichier);
+    return (await apiClient.post(`/${type}/${id}/attacher_piece_jointe/`, formulaire, { headers: { 'Content-Type': 'multipart/form-data' } })).data;
+  },
+};
+
+// Reprise des affaires antérieures (production/views_reprise.py) : contrats et quittances des années passées
+export const repriseApi = {
+  lister: async (filtres = {}) => (await apiClient.get('/reprise/', { params: filtres })).data,
+  referentiels: async () => (await apiClient.get('/reprise/referentiels/')).data,
+  creer: async (donnees) => (await apiClient.post('/reprise/', donnees)).data,
+  // Devis saisis dans les écrans de devis depuis Affaires antérieures : en attente, lecture, finalisation, marquage
+  devisEnAttente: async () => (await apiClient.get('/reprise/devis/')).data,
+  lireDevis: async (idDevis) => (await apiClient.get(`/reprise/devis/${idDevis}/`)).data,
+  finaliserDevis: async (idDevis, donnees) => (await apiClient.post(`/reprise/devis/${idDevis}/`, donnees)).data,
+  marquerDevis: async (idDevis) => (await apiClient.post(`/reprise/devis/${idDevis}/attente/`)).data,
+  // Fiche contrat : reprise du contrat (404 si le contrat n'est pas une affaire antérieure reprise)
+  duContrat: async (idContrat) => (await apiClient.get(`/reprise/contrat/${idContrat}/`)).data,
+  supprimer: async (id) => (await apiClient.delete(`/reprise/${id}/`)).data,
+  modele: async () => (await apiClient.get('/reprise/modele/', { responseType: 'blob' })).data,
+  analyser: async (fichier) => {
+    const fd = new FormData();
+    fd.append('fichier', fichier);
+    return (await apiClient.post('/reprise/import/analyse/', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })).data;
+  },
+  importer: async (fichier) => {
+    const fd = new FormData();
+    fd.append('fichier', fichier);
+    return (await apiClient.post('/reprise/import/', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })).data;
+  },
+};
+
 export const contractApi = {
   // GET /api/contrat/stats/ (Totaux réels par branche en BDD)
   getStats: async () => {
@@ -1544,7 +1834,7 @@ export const contractApi = {
     return list.map(normalizeContrat);
   },
   // GET /api/contrat/ paginé pour le Portefeuille des Contrats : une page de contrats et le total.
-  // Paramètres serveur : page, page_size, idproduit, statut, recherche, effet_du/au, echeance_du/au, ordre
+  // Paramètres serveur : page, page_size, idproduit, statut, recherche, effet_du/au, echeance_du/au, emission_du/au, ordre
   getPortefeuille: async (params = {}) => {
     const res = await apiClient.get('/contrat/', { params });
     return { contrats: extractData(res).map(normalizeContrat), total: Number(res?.data?.count ?? 0) };
@@ -1560,6 +1850,18 @@ export const contractApi = {
     const res = await apiClient.get(`/contrat/${id}/`);
     return normalizeContrat(res.data);
   },
+  getAdministrationContracts: async (params = {}) => (
+    await apiClient.get('/contrat/administration/', { params })
+  ).data,
+  getAdministrationContract: async (id) => (
+    await apiClient.get(`/contrat/${id}/administration/`)
+  ).data,
+  // Motif saisi dans l'écran : envoyé d'emblée (en-tête X-Motif de la garde), sans la fenêtre de saisie de la réponse 428
+  updateAdministrationContract: async (id, data, motif) => (
+    await apiClient.patch(`/contrat/${id}/administration/`, data, motif
+      ? { headers: { 'X-Motif': encodeURIComponent(motif) }, motifEnvoye: true }
+      : undefined)
+  ).data,
   // POST /api/confirmationdevis (Validation et conversion d'un devis en contrat définitif)
   createContractFromQuote: (data) => {
     const devisId = typeof data === 'object' ? (data.IdDevis || data.iddevis || data.id) : data;
@@ -1579,6 +1881,15 @@ export const contractApi = {
     params: { date_effet: dateEffet || undefined, date_expiration: dateExpiration || undefined },
   })).data,
   creerRenouvellement: async (idContrat, donnees) => (await apiClient.post(`/renouvellement/${idContrat}/`, donnees)).data,
+  // Suppression définitive, par habilitation (production/suppression.py) ; avecDevis : le devis part aussi
+  preparerSuppression: async (id) => (await apiClient.get(`/contrat/${id}/suppression/`)).data,
+  supprimer: async (id, motif, { avecDevis = false } = {}) => (await apiClient.delete(`/contrat/${id}/suppression/`, {
+    params: avecDevis ? { avec_devis: 1 } : undefined, headers: { 'X-Motif': encodeURIComponent(motif) }, motifEnvoye: true,
+  })).data,
+  preparerIncorporation: async (idContrat) => (await apiClient.get(`/incorporation/${idContrat}/`)).data,
+  creerIncorporation: async (idContrat, donnees) => (await apiClient.post(`/incorporation/${idContrat}/`, donnees)).data,
+  // Période et mode (prorata / forfaitaire) d'un devis d'incorporation ; { Incorporation: false } pour un autre devis
+  lireDevisIncorporation: async (idDevis) => (await apiClient.get(`/incorporation/devis/${idDevis}/`)).data,
   // IA et RC MINENE rattachées à la police Santé MINENE du contrat (production/minene_connexes.py)
   getMineneConnexes: async (idContrat) => (await apiClient.get(`/minene/${idContrat}/connexes/`)).data,
   // Police Santé MINENE par son numéro (client, période, durée, IA et RC liées) ; recherche par numéro ou client
@@ -1612,6 +1923,16 @@ export const cashApi = {
   // GET /api/listedetailencaissement/:idencaissement (lignes d'un encaissement, une par quittance)
   getDetailsEncaissement: async (idencaissement) =>
     extractData(await apiClient.get(`/listedetailencaissement/${idencaissement}`)),
+  // Correction d'un encaissement saisi par erreur (production/corrections_encaissement.py) : pièces du jour, fiche, références,
+  // annulation (doublon) ou annulation et réaffectation ; motif aussi en en-tête X-Motif pour le journal
+  encaissementsDuJour: async (tous = false) => (await apiClient.get('/caisse/encaissements/du-jour/', { params: tous ? { tous: 1 } : undefined })).data,
+  ficheCorrection: async (id) => (await apiClient.get(`/caisse/encaissements/${id}/correction/`)).data,
+  corrigerReferences: async (id, donnees) => (await apiClient.post(`/caisse/encaissements/${id}/correction/references/`, donnees, {
+    headers: { 'X-Motif': encodeURIComponent(donnees.motif || '') }, motifEnvoye: true,
+  })).data,
+  annulerEncaissement: async (id, donnees) => (await apiClient.post(`/caisse/encaissements/${id}/correction/annulation/`, donnees, {
+    headers: { 'X-Motif': encodeURIComponent(donnees.motif || '') }, motifEnvoye: true,
+  })).data,
   // GET /api/detailencaissement/?numeroquittance= (dernier règlement non annulé d'une quittance)
   getDernierReglementQuittance: async (numeroquittance) =>
     extractData(await apiClient.get('/detailencaissement/', { params: { numeroquittance, page_size: 1 } }))[0] || null,
@@ -1632,6 +1953,12 @@ export const cashApi = {
   supprimerCheque: (id) => apiClient.delete(`/cheques/${id}/`),
   // POST /api/cheques/:id/decaissement/ : chèque impayé, ses encaissements sont annulés
   decaisserCheque: (id, data) => apiClient.post(`/cheques/${id}/decaissement/`, data),
+  // Tout autre règlement : liste des règlements décaissables, décaissement (motif envoyé une fois), historique et quittances à réencaisser
+  getReglementsDecaissables: async (params) => (await apiClient.get('/caisse/reglements/', { params })).data,
+  decaisserReglement: (id, data) => apiClient.post(`/caisse/reglements/${id}/decaissement/`, data, {
+    headers: { 'X-Motif': encodeURIComponent(data.motif) }, motifEnvoye: true,
+  }),
+  getDecaissements: async (params) => (await apiClient.get('/caisse/decaissements/', { params })).data,
   // GET /api/cheques/:id/quittances/ : quittances réglées par le chèque (à réencaisser)
   getQuittancesCheque: async (id) => extractData(await apiClient.get(`/cheques/${id}/quittances/`)),
 };
@@ -1704,11 +2031,18 @@ export const remittanceApi = {
 /* =========================================================================
    10. COMMISSIONS APPORTEURS (commissions)
    ========================================================================= */
+// Restauration d'un élément archivé (droit archives.restore) ; le devis garde sa route, quoteApi.unarchiveQuote
+export const archivesApi = {
+  restaurer: (type, id) => apiClient.post(`/archives/${type}/${id}/restauration/`),
+};
+
 // Flux financiers (Code CIMA) : état des encaissements, reversements aux compagnies (prime
 // entière, sans déduction de commission), réclamation et encaissement des commissions
 export const financeApi = {
   // GET /api/finance/encaissements/?du&au&compagnie&mode&statut
   etatEncaissements: async (params) => (await apiClient.get('/finance/encaissements/', { params })).data,
+  // GET /api/finance/encaissements/recherche/?q&mode&du&au : à quoi a servi un chèque ou tout autre règlement
+  rechercherReglements: async (params) => (await apiClient.get('/finance/encaissements/recherche/', { params })).data,
   // GET /api/finance/reversements/a-reverser/?compagnie
   lignesAReverser: async (compagnie) => (await apiClient.get('/finance/reversements/a-reverser/', { params: { compagnie } })).data,
   // GET /api/finance/reversements/?compagnie&du&au
@@ -1763,7 +2097,7 @@ export const financeApi = {
   emettreBordereaux: async (payload) => (await apiClient.post('/finance/bordereaux/', payload)).data,
   dechargeBordereau: async (idReversement, dateDecharge) => (await apiClient.post(`/finance/bordereaux/${idReversement}/decharge/`, { DateDecharge: dateDecharge })).data,
   annulerBordereau: async (idReversement, motif) => (await apiClient.post(`/finance/bordereaux/${idReversement}/annuler/`, { Motif: motif })).data,
-  // Bordereau récapitulatif de reversement — réclamation de commissions, en Excel (présentation COMMI-MOIS)
+  // Bordereau récapitulatif de reversement - réclamation de commissions, en Excel (présentation COMMI-MOIS)
   telechargerReclamationExcel: async (idReclamation, nomFichier) => {
     const res = await apiClient.get(`/finance/commissions/reclamations/${idReclamation}/excel/`, { responseType: 'blob', timeout: 120000 });
     const url = URL.createObjectURL(res.data);
@@ -1796,6 +2130,23 @@ export const apporteurApi = {
   liste: async () => extractData(await apiClient.get('/apporteurs/', { params: { page_size: 1000 } })),
   creer: async (apporteur) => (await apiClient.post('/apporteurs/', apporteur)).data,
   modifier: async (id, apporteur) => (await apiClient.put(`/apporteurs/${id}/`, apporteur)).data,
+  changerEtat: async (id, actif) => (await apiClient.patch(`/apporteurs/${id}/`, { Actif: actif })).data,
+  synthese: async () => (await apiClient.get('/finance/apporteurs/synthese/')).data,
+  // Affaire : apporteurs, taux convenus, commissions générées et état de règlement. params : { devis } ou { contrat }
+  affaire: async (params) => (await apiClient.get('/finance/apporteurs/affaire/', { params })).data,
+  affaires: async (params) => (await apiClient.get('/finance/apporteurs/affaires/', { params })).data,
+  rechercherAffaires: async (q) => (await apiClient.get('/finance/apporteurs/affaires/recherche/', { params: { q } })).data,
+  rattacher: async (donnees) => (await apiClient.post('/finance/apporteurs/rattachements/', donnees)).data,
+  modifierRattachement: async (id, donnees) => (await apiClient.patch(`/finance/apporteurs/rattachements/${id}/`, donnees)).data,
+  retirerRattachement: async (id, motif) => (await apiClient.post(`/finance/apporteurs/rattachements/${id}/retrait/`, { Motif: motif })).data,
+  commissions: async (params) => (await apiClient.get('/finance/apporteurs/commissions/', { params })).data,
+  reglements: async (params) => (await apiClient.get('/finance/apporteurs/reglements/', { params })).data,
+  regler: async (donnees) => (await apiClient.post('/finance/apporteurs/reglements/', donnees)).data,
+  // Motif saisi dans la boîte : envoyé d'emblée (en-tête X-Motif de la garde)
+  // Commission par assuré à payer : nombre d'assurés corrigé (vide : compté sur la police)
+  corrigerAssures: async (id, assures) => (await apiClient.patch(`/finance/apporteurs/commissions/${id}/`, { Assures: assures })).data,
+  annulerCommission: async (id, motif) => (await apiClient.post(`/finance/apporteurs/commissions/${id}/annulation/`, { Motif: motif }, { headers: { 'X-Motif': encodeURIComponent(motif) }, motifEnvoye: true })).data,
+  annulerReglement: async (id, motif) => (await apiClient.post(`/finance/apporteurs/reglements/${id}/annulation/`, { Motif: motif }, { headers: { 'X-Motif': encodeURIComponent(motif) }, motifEnvoye: true })).data,
 };
 
 export const commissionApi = {
@@ -1905,11 +2256,11 @@ export const settingsApi = {
   updateSousGarantie: (id, data) => apiClient.put(`/sousgarantie/${id}/`, data),
   // DELETE /api/sousgarantie/{id}/
   deleteSousGarantie: (id) => apiClient.delete(`/sousgarantie/${id}/`),
-  // GET /api/categorie/ (catégories CIMA en BDD) — branche optionnelle (code stdbranche, ex: '200' = Automobile)
+  // GET /api/categorie/ (catégories CIMA en BDD) - branche optionnelle (code stdbranche, ex: '200' = Automobile)
   getCategories: async (branche) => extractData(await apiClient.get('/categorie/', { params: branche ? { branche } : undefined })),
   // GET /api/tarif/ (26 grilles tarifaires en BDD)
   getTarifs: async () => extractData(await apiClient.get('/tarif/')),
-  // GET /api/tarifdetail/?IdTarif={id} — montants réels (taux, prime forfaitaire,
+  // GET /api/tarifdetail/?IdTarif={id} - montants réels (taux, prime forfaitaire,
   // capital min/max) par grille tarifaire + sous-garantie (stdtarifdetail)
   getTarifDetailsParTarif: async (idTarif) =>
     extractData(await apiClient.get('/tarifdetail/', { params: { IdTarif: idTarif, page_size: 1000 } })),
@@ -1919,8 +2270,16 @@ export const settingsApi = {
   getMarques: async () => extractData(await apiClient.get('/marque/')),
   // POST /api/marque/ (Créer une nouvelle marque de véhicule)
   createMarque: (data) => apiClient.post('/marque/', data),
-  // GET /api/banque/ (44 banques en BDD)
+  // GET /api/banque/ : banques par ordre alphabétique (stdbanque)
   getBanques: async () => extractData(await apiClient.get('/banque/')),
+  // POST /api/banque/ { libelle, code_banque } : nom et code mis en majuscules, doublon refusé (« GT BANK » = « GTBANK ») ;
+  // depuis la caisse (droit encaissements.create) ou l'administration (parametrage.update)
+  createBanque: async (data) => (await apiClient.post('/banque/', data)).data,
+  // PATCH / DELETE /api/banque/{id}/ : administration ; « NEANT » protégée, banque déjà utilisée non supprimable
+  updateBanque: async (id, data) => (await apiClient.patch(`/banque/${id}/`, data)).data,
+  deleteBanque: (id) => apiClient.delete(`/banque/${id}/`),
+  // GET /api/banque/utilisations/ : { idbanque: { Encaissements, Cheques, Reversements, PaiementsCommission } }
+  getUtilisationsBanques: async () => (await apiClient.get('/banque/utilisations/')).data,
   // GET /api/modeencaissement/ (27 modes en BDD)
   getModesEncaissement: async () => extractData(await apiClient.get('/modeencaissement/')),
   // GET /api/usage/ (usages véhicules en BDD)
@@ -1943,7 +2302,7 @@ export const settingsApi = {
   updateRepartitionPrimeSante: (id, data) => apiClient.put(`/repartitionprimesante/${id}/`, data),
   // DELETE /api/repartitionprimesante/{id}/
   deleteRepartitionPrimeSante: (id) => apiClient.delete(`/repartitionprimesante/${id}/`),
-  // POST /api/calculrepartitionprimesante/ — { prime_ht, avec_apporteur } → ventilation NSIA/OREOLE/VITALIS/ADEC
+  // POST /api/calculrepartitionprimesante/ - { prime_ht, avec_apporteur } → ventilation NSIA/OREOLE/VITALIS/ADEC
   calculerRepartitionPrimeSante: async (primeHt, avecApporteur = false) => {
     const res = await apiClient.post('/calculrepartitionprimesante/', {
       prime_ht: primeHt,
@@ -1951,7 +2310,7 @@ export const settingsApi = {
     });
     return res?.data;
   },
-  // GET /api/offre/ — idCompagnie optionnel : ne garde que les offres ayant au
+  // GET /api/offre/ - idCompagnie optionnel : ne garde que les offres ayant au
   // moins une garantie liée à cette compagnie (stdoffregarantie)
   getOffres: async (idCompagnie) =>
     extractData(await apiClient.get('/offre/', { params: idCompagnie ? { idcompagnie: idCompagnie } : undefined })),
@@ -2011,7 +2370,7 @@ export const settingsApi = {
    14. CRM COMMERCIAL & PIPELINE LEADS (institutionnel - Module C)
    ========================================================================= */
 export const crmApi = {
-  // GET /api/crm/leads/ (8 leads réels en BDD)
+  // GET /api/crm/leads/ : prospects du suivi commercial
   getLeads: async () => extractData(await apiClient.get('/crm/leads/')),
   // POST /api/crm/leads/
   createLead: (data) => apiClient.post('/crm/leads/', data),
@@ -2162,6 +2521,11 @@ export const conventionsApi = {
   createConvention: (data) => apiClient.post('/conventions/', data),
   // PATCH /api/conventions/:id/
   updateConvention: (id, data) => apiClient.patch(`/conventions/${id}/`, data),
+  // GET /api/conventions-compagnies/ : une ligne par compagnie du référentiel (code intermédiaire, taux en vigueur,
+  // primes à reverser, commissions, activité, conditions saisies) ; production/views_conventions.py
+  parCompagnie: async () => (await apiClient.get('/conventions-compagnies/')).data,
+  // PUT /api/conventions-compagnies/:idcompagnie/ : conditions de la convention de la compagnie
+  enregistrerConditions: async (idCompagnie, donnees) => (await apiClient.put(`/conventions-compagnies/${idCompagnie}/`, donnees)).data,
 };
 
 /* =========================================================================

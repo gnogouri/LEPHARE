@@ -70,7 +70,7 @@ export const RolesPermissionsPage = () => {
                       <div style={{ fontWeight: 700, fontSize: '0.84rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                         {d.libelle} {d.sensible && <AlertTriangle size={12} style={{ color: 'var(--accent-amber)' }} title="Opération sensible : valeurs avant / après journalisées" />}
                       </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}><code>{d.code}</code>{d.description ? ` — ${d.description}` : ''}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}><code>{d.code}</code>{d.description ? ` - ${d.description}` : ''}</div>
                     </td>
                     <td style={{ padding: '0.5rem 0.4rem' }}>
                       <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>

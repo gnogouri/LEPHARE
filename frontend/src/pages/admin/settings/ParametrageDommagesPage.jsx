@@ -295,8 +295,8 @@ export const ParametrageDommagesPage = () => {
             <div style={{ flex: '3 1 640px', minWidth: 0 }}>
               <SectionParametrage
                 icone={ClipboardList}
-                titre={`${categorie.Libelle} — code ${categorie.CodeCategorie}`}
-                description={`Offre « ${categorie.LibelleOffre || '—'} » (n° ${categorie.IdOffre || '—'}). Description affichée sous la catégorie dans l'écran de devis, rubriques du risque demandées à la saisie et textes de la fiche de cotation imprimée.`}
+                titre={`${categorie.Libelle} - code ${categorie.CodeCategorie}`}
+                description={`Offre « ${categorie.LibelleOffre || '-'} » (n° ${categorie.IdOffre || '-'}). Description affichée sous la catégorie dans l'écran de devis, rubriques du risque demandées à la saisie et textes de la fiche de cotation imprimée.`}
                 actions={categorieModifiee && (
                   <div style={{ display: 'flex', gap: '0.35rem' }}>
                     <button type="button" className="btn btn-secondary" title="Annuler les changements" onClick={() => setCategorieSaisie(copieCategorie(categorie))} style={{ padding: '0.3rem 0.5rem' }}><RotateCcw size={14} /></button>
@@ -326,7 +326,7 @@ export const ParametrageDommagesPage = () => {
                     <label className="form-label">Prime au prorata de la durée</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minHeight: '2.4rem' }}>
                       <Interrupteur actif={categorieSaisie.Prorata} onChange={(v) => changerCategorie('Prorata', v)} />
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{categorieSaisie.Prorata ? 'Jours couverts / 365 si le contrat n\'est pas annuel' : 'Non : prime saisie pour la période (comme URANUS)'}</span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{categorieSaisie.Prorata ? 'Jours couverts / 365 si le contrat n\'est pas annuel' : 'Non : prime saisie pour la période'}</span>
                     </div>
                   </div>
                 </div>
@@ -386,7 +386,7 @@ export const ParametrageDommagesPage = () => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minHeight: '2.4rem' }}>
                       <Interrupteur actif={categorieSaisie.AnnexeCotation} onChange={(v) => changerCategorie('AnnexeCotation', v)} />
                       <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        {categorieSaisie.AnnexeCotation ? 'Oui : page « Annexe — tableau des garanties »' : 'Non : garanties citées dans la cotation (une seule page)'}
+                        {categorieSaisie.AnnexeCotation ? 'Oui : page « Annexe - tableau des garanties »' : 'Non : garanties citées dans la cotation (une seule page)'}
                       </span>
                     </div>
                   </div>

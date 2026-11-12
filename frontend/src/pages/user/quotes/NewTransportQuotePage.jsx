@@ -16,7 +16,7 @@ import {
 // Les affaires hors GUCE se cotent dans NewTransportHorsGucePage (accueil Transport : TransportAccueilPage).
 
 const fcfa = (v) => Math.round(Number(v) || 0).toLocaleString('fr-FR');
-const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '—');
+const dateFr = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '-');
 const deuxChiffres = (n) => String(n).padStart(2, '0');
 
 const messageErreurApi = (err) => {
@@ -119,7 +119,7 @@ const TableauContrats = ({ contrats, prevision }) => (
             <td style={{ ...styles.td, fontWeight: 700 }}>{c.Client}</td>
             <td style={styles.td}>{prevision ? c.NumeroPolice : c.NumeroPoliceGuce}</td>
             <td style={styles.td}>{c.Compagnie || <span style={{ color: 'var(--accent-amber)' }}>{c.Assureur || 'non reconnue'}</span>}</td>
-            {!prevision && <td style={styles.td}>{c.NumeroPolice || '—'}<div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{c.NumeroQuittance ? `Quittance ${c.NumeroQuittance}` : 'Sans quittance'}</div></td>}
+            {!prevision && <td style={styles.td}>{c.NumeroPolice || '-'}<div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{c.NumeroQuittance ? `Quittance ${c.NumeroQuittance}` : 'Sans quittance'}</div></td>}
             <td style={{ ...styles.td, ...styles.num }}>{c.Certificats}</td>
             {prevision && <td style={{ ...styles.td, ...styles.num }}>{fcfa(c.ValeurAssurance)}</td>}
             <td style={{ ...styles.td, ...styles.num }}>{fcfa(c.PrimeNette)}</td>
@@ -323,7 +323,7 @@ export const NewTransportQuotePage = () => {
           <ChevronLeft size={16} /> Transport
         </button>
         <h1 className="title-xl" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: 0 }}>
-          <Ship size={26} style={{ color: 'var(--primary-500)' }} /> Production Transport — bordereaux GUCE
+          <Ship size={26} style={{ color: 'var(--primary-500)' }} /> Production Transport - bordereaux GUCE
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', margin: '0.3rem 0 0' }}>
           Deux bordereaux par mois (du 1er au 15, puis du 16 au dernier jour). Chaque import crée, par client et par police GUCE,
@@ -465,12 +465,12 @@ export const NewTransportQuotePage = () => {
                     </div>
                     <select className="form-control" style={{ marginTop: '0.5rem', maxWidth: 780 }} value={s.IdClient || ''} disabled={analyseEnCours}
                       onChange={(e) => choisirClient(s.NomFichier, e.target.value)}>
-                      <option value="">— Choisir le client —</option>
+                      <option value="">Choisir le client</option>
                       {options.map((c) => (
                         <option key={c.IdClient} value={c.IdClient}>
-                          {c.Nom} — n° {c.IdClient}{precedent.has(c.IdClient) ? ' — retenu lors des imports précédents' : ''}
-                          {titulaire.has(c.IdClient) ? ` — titulaire de la police GUCE ${titulaire.get(c.IdClient).NumeroPoliceGuce}${titulaire.get(c.IdClient).NumeroPolice ? `, police ${titulaire.get(c.IdClient).NumeroPolice}` : ''}` : ''}
-                          {c.Score ? ` — ressemblance ${c.Score} %` : ''}
+                          {c.Nom} - n° {c.IdClient}{precedent.has(c.IdClient) ? ' - retenu lors des imports précédents' : ''}
+                          {titulaire.has(c.IdClient) ? ` - titulaire de la police GUCE ${titulaire.get(c.IdClient).NumeroPoliceGuce}${titulaire.get(c.IdClient).NumeroPolice ? `, police ${titulaire.get(c.IdClient).NumeroPolice}` : ''}` : ''}
+                          {c.Score ? ` - ressemblance ${c.Score} %` : ''}
                         </option>
                       ))}
                     </select>
@@ -607,7 +607,7 @@ export const NewTransportQuotePage = () => {
                     <strong style={{ color: 'var(--text-primary)' }}>{dateFr(b.DebutPeriode)} → {dateFr(b.FinPeriode)}</strong>
                     <span style={styles.pastille(b.Succes ? 'var(--accent-emerald)' : 'var(--accent-rose)')}>{b.Succes ? 'Réussi' : 'Échec'}</span>
                   </div>
-                  <div style={{ color: 'var(--text-secondary)' }}>{b.Souscripteurs || b.Clients || '—'}</div>
+                  <div style={{ color: 'var(--text-secondary)' }}>{b.Souscripteurs || b.Clients || '-'}</div>
                   {b.Clients && b.Clients !== b.Souscripteurs && <div style={{ color: 'var(--accent-amber)', fontSize: '0.72rem' }}>Client rattaché : {b.Clients}</div>}
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
                     <span>{b.Certificats} certificats</span>
@@ -646,7 +646,7 @@ export const NewTransportQuotePage = () => {
                     <tr key={b.IdImportation}>
                       <td style={{ ...styles.td, whiteSpace: 'nowrap', fontWeight: 700 }}>{dateFr(b.DebutPeriode)} → {dateFr(b.FinPeriode)}</td>
                       <td style={styles.td}>
-                        {b.Souscripteurs || b.Clients || '—'}
+                        {b.Souscripteurs || b.Clients || '-'}
                         {b.Clients && b.Clients !== b.Souscripteurs && (
                           <div style={{ color: 'var(--accent-amber)', fontSize: '0.72rem' }} title="Client rattaché aux certificats de ce bordereau">Client rattaché : {b.Clients}</div>
                         )}

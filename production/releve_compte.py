@@ -11,6 +11,8 @@ imprimer. Encaissement = montant encaissé de la quittance (mt_encaisse), comme 
 
 from datetime import datetime
 
+from .reste_encaissement import reste_a_encaisser, sql_reste
+
 ID_PRODUIT_DOMMAGES = 9
 ID_AVENANT_AFFAIRE_NOUVELLE = 1
 
@@ -46,8 +48,9 @@ def releve_compte(cursor, idcontrat):
     client = cursor.fetchone()
     if not client:
         return None
+    # Quittances non soldées : un reliquat de moins de 5 F compte comme soldé
     cursor.execute(
-        """
+        f"""
         SELECT c.idcontrat, c.numeropolice, c.numeropolicecompagnie, c.idproduit, p.libelleproduit, cat.libelle,
                c.idavenant, a.textemouvement, q.idquittance, q.numeroquittance,
                COALESCE(q.dateeffet, c.dateeffet), COALESCE(q.dateexpiration, c.dateexpiration),
@@ -65,7 +68,7 @@ def releve_compte(cursor, idcontrat):
         ) cat ON c.idproduit = %s
         WHERE c.idclient = %s AND COALESCE(c.idcontratannulation, 0) = 0
           AND (c.idcontrat = %s
-               OR (q.idquittance IS NOT NULL AND q.primettc > 0 AND q.primettc - COALESCE(q.mt_encaisse, 0) >= 1))
+               OR (q.idquittance IS NOT NULL AND q.primettc > 0 AND {sql_reste()} > 0))
         ORDER BY COALESCE(q.dateeffet, c.dateeffet), c.idcontrat
         """,
         [ID_PRODUIT_DOMMAGES, client[0], idcontrat],
@@ -78,6 +81,7 @@ def releve_compte(cursor, idcontrat):
         operation = f"Assurance {branche} - Police N°{numero}"
         if id_avenant and id_avenant != ID_AVENANT_AFFAIRE_NOUVELLE and mouvement:
             operation += f" ({str(mouvement).strip().capitalize()})"
+        solde = _montant(reste_a_encaisser(ttc, encaisse))
         ttc, encaisse = _montant(ttc), _montant(encaisse)
         lignes.append({
             "IdContrat": id_contrat,
@@ -92,7 +96,7 @@ def releve_compte(cursor, idcontrat):
             "DateExpiration": _iso(expiration),
             "PrimeTtc": ttc,
             "Encaissement": encaisse,
-            "Solde": ttc - encaisse,
+            "Solde": solde,
             "IdCompagnie": id_compagnie,
             "Compagnie": compagnie or "",
             # « Chèque à l'ordre de » : réglé par compagnie (Compagnies partenaires > Documents imprimés)

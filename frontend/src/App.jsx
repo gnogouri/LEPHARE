@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -7,84 +7,95 @@ import { ToastProvider } from './context/ToastContext';
 // Layout
 import AppLayout from './components/layout/AppLayout';
 
-// Auth Pages
-import LoginPage from './pages/auth/LoginPage';
-
-// User Space Pages
-import UserDashboard from './pages/user/UserDashboard';
-import ClientListPage from './pages/user/clients/ClientListPage';
-import ClientDetailPage from './pages/user/clients/ClientDetailPage';
-import QuoteListPage from './pages/user/quotes/QuoteListPage';
-import NewAutoQuotePage from './pages/user/quotes/NewAutoQuotePage';
-import NewMrhQuotePage from './pages/user/quotes/NewMrhQuotePage';
-import NewSanteQuotePage from './pages/user/quotes/NewSanteQuotePage';
-import NewIaQuotePage from './pages/user/quotes/NewIaQuotePage';
-import NewRisquesDiversQuotePage from './pages/user/quotes/NewRisquesDiversQuotePage';
-import NewTousDommagesQuotePage from './pages/user/quotes/NewTousDommagesQuotePage';
-import NewVoyageQuotePage from './pages/user/quotes/NewVoyageQuotePage';
-import NewTransportQuotePage from './pages/user/quotes/NewTransportQuotePage';
-import TransportAccueilPage from './pages/user/quotes/TransportAccueilPage';
-import NewTransportHorsGucePage from './pages/user/quotes/NewTransportHorsGucePage';
-import TransportAbonnementsPage from './pages/user/quotes/TransportAbonnementsPage';
-import ContractListPage from './pages/user/contracts/ContractListPage';
-import ContractDetailPage from './pages/user/contracts/ContractDetailPage';
-import EndorsementPage from './pages/user/endorsements/EndorsementPage';
-import CashCollectionPage from './pages/user/cash/CashCollectionPage';
-import ChequeManagementPage from './pages/user/cash/ChequeManagementPage';
-import EtatEncaissementsPage from './pages/user/cash/EtatEncaissementsPage';
-import AsaciPage from './pages/user/asaci/AsaciPage';
-import MyDerogationsPage from './pages/user/derogations/MyDerogationsPage';
-import ArchivesPage from './pages/user/archives/ArchivesPage';
-
-// Admin Space Pages
-import AdminDashboard from './pages/admin/AdminDashboard';
-import AdminGuidePage from './pages/admin/AdminGuidePage';
-import CimaReportsPage from './pages/admin/reporting/CimaReportsPage';
-import EmissionSummaryPage from './pages/admin/reporting/EmissionSummaryPage';
-import DecisionalStatesPage from './pages/admin/reporting/DecisionalStatesPage';
-import ApprovalCenterPage from './pages/admin/approvals/ApprovalCenterPage';
-import CompanyRemittancePage from './pages/admin/remittances/CompanyRemittancePage';
-import CommissionDashboardPage from './pages/admin/commissions/CommissionDashboardPage';
-import UserManagementPage from './pages/admin/users/UserManagementPage';
-import ProfileManagementPage from './pages/admin/users/ProfileManagementPage';
-import RolesPermissionsPage from './pages/admin/users/RolesPermissionsPage';
-import JournalAuditPage from './pages/admin/users/JournalAuditPage';
 import { premierEcranAdmin } from './components/layout/adminMenu';
-import CatalogCompaniesPage from './pages/admin/settings/CatalogCompaniesPage';
-import CatalogProductsPage from './pages/admin/settings/CatalogProductsPage';
-import CatalogTarifsPage from './pages/admin/settings/CatalogTarifsPage';
-import CabinetSettingsPage from './pages/admin/settings/CabinetSettingsPage';
-import VehicleGeoSettingsPage from './pages/admin/settings/VehicleGeoSettingsPage';
-import { SecteursActivitePage } from './pages/admin/settings/SecteursActivitePage';
-import { TypeSouscripteurPage } from './pages/admin/settings/TypeSouscripteurPage';
-import { TypeAssurePage } from './pages/admin/settings/TypeAssurePage';
-import { ProfessionsPage } from './pages/admin/settings/ProfessionsPage';
-import ParametrageGarantiesPage from './pages/admin/settings/ParametrageGarantiesPage';
-import ParametrageOffresPage from './pages/admin/settings/ParametrageOffresPage';
-import ParametrageTaxesPage from './pages/admin/settings/ParametrageTaxesPage';
-import ParametrageMarquesPage from './pages/admin/settings/ParametrageMarquesPage';
-import ParametrageCommissionsPage from './pages/admin/settings/ParametrageCommissionsPage';
-import ParametrageFlottePage from './pages/admin/settings/ParametrageFlottePage';
-import ParametrageSecuritePage from './pages/admin/settings/ParametrageSecuritePage';
-import ParametrageGrillesVoyagePage from './pages/admin/settings/ParametrageGrillesVoyagePage';
-import ParametrageDommagesPage from './pages/admin/settings/ParametrageDommagesPage';
-import { ReglagesBranchePage, ReglagesBranchesPage } from './pages/admin/settings/ReglagesBranchePage';
-import ParametrageSantePage from './pages/admin/settings/ParametrageSantePage';
-import ParametrageDepreciationPage from './pages/admin/settings/ParametrageDepreciationPage';
-import ParametragePoolTpvPage from './pages/admin/settings/ParametragePoolTpvPage';
-import ParametrageTarifsDirectsPage from './pages/admin/settings/ParametrageTarifsDirectsPage';
-import ParametrageReglesGarantiesPage from './pages/admin/settings/ParametrageReglesGarantiesPage';
-import RenouvellementPage from './pages/user/contracts/RenouvellementPage';
 
-// New Institutional Modules (LE PHARE V2)
-import CrmPipelinePage from './pages/user/crm/CrmPipelinePage';
-import Customer360Page from './pages/user/crm/Customer360Page';
-import QuestionnairesPage from './pages/user/crm/QuestionnairesPage';
-import ClaimsListPage from './pages/user/claims/ClaimsListPage';
-import ClaimDetailPage from './pages/user/claims/ClaimDetailPage';
-import DocumentManagementPage from './pages/user/documents/DocumentManagementPage';
-import ConventionsEnginePage from './pages/admin/conventions/ConventionsEnginePage';
-import ComplianceAuditPage from './pages/admin/compliance/ComplianceAuditPage';
+const LoginPage = lazy(() => import('./pages/auth/LoginPage'));
+const UserDashboard = lazy(() => import('./pages/user/UserDashboard'));
+const ClientListPage = lazy(() => import('./pages/user/clients/ClientListPage'));
+const ClientDetailPage = lazy(() => import('./pages/user/clients/ClientDetailPage'));
+const QuoteListPage = lazy(() => import('./pages/user/quotes/QuoteListPage'));
+const NewAutoQuotePage = lazy(() => import('./pages/user/quotes/NewAutoQuotePage'));
+const NewMrhQuotePage = lazy(() => import('./pages/user/quotes/NewMrhQuotePage'));
+const NewSanteQuotePage = lazy(() => import('./pages/user/quotes/NewSanteQuotePage'));
+const NewIaQuotePage = lazy(() => import('./pages/user/quotes/NewIaQuotePage'));
+const NewRisquesDiversQuotePage = lazy(() => import('./pages/user/quotes/NewRisquesDiversQuotePage'));
+const NewTousDommagesQuotePage = lazy(() => import('./pages/user/quotes/NewTousDommagesQuotePage'));
+const NewAfaQuotePage = lazy(() => import('./pages/user/quotes/NewAfaQuotePage'));
+const NewVoyageQuotePage = lazy(() => import('./pages/user/quotes/NewVoyageQuotePage'));
+const NewTransportQuotePage = lazy(() => import('./pages/user/quotes/NewTransportQuotePage'));
+const TransportAccueilPage = lazy(() => import('./pages/user/quotes/TransportAccueilPage'));
+const NewTransportHorsGucePage = lazy(() => import('./pages/user/quotes/NewTransportHorsGucePage'));
+const TransportAbonnementsPage = lazy(() => import('./pages/user/quotes/TransportAbonnementsPage'));
+const ContractListPage = lazy(() => import('./pages/user/contracts/ContractListPage'));
+const ContractDetailPage = lazy(() => import('./pages/user/contracts/ContractDetailPage'));
+const IncorporationFlottePage = lazy(() => import('./pages/user/contracts/IncorporationFlottePage'));
+const AdminContractManagementPage = lazy(() => import('./pages/admin/contracts/AdminContractManagementPage'));
+const EndorsementPage = lazy(() => import('./pages/user/endorsements/EndorsementPage'));
+const RepriseAffairesPage = lazy(() => import('./pages/user/reprises/RepriseAffairesPage'));
+const OreoleAccueilPage = lazy(() => import('./pages/user/quotes/oreole/OreoleAccueilPage'));
+const NewOreolePage = lazy(() => import('./pages/user/quotes/oreole/NewOreolePage'));
+const OreoleFichierPage = lazy(() => import('./pages/user/quotes/oreole/OreoleFichierPage'));
+const OreoleCartesPage = lazy(() => import('./pages/user/quotes/oreole/OreoleCartesPage'));
+const ConsommationsSantePage = lazy(() => import('./pages/user/sante/ConsommationsSantePage'));
+const RafasAccueilPage = lazy(() => import('./pages/user/rafas/RafasAccueilPage'));
+const RafasConventionPage = lazy(() => import('./pages/user/rafas/RafasConventionPage'));
+const ParametrageOreolePage = lazy(() => import('./pages/admin/settings/ParametrageOreolePage'));
+const CashCollectionPage = lazy(() => import('./pages/user/cash/CashCollectionPage'));
+const ChequeManagementPage = lazy(() => import('./pages/user/cash/ChequeManagementPage'));
+const EtatEncaissementsPage = lazy(() => import('./pages/user/cash/EtatEncaissementsPage'));
+const RechercheReglementPage = lazy(() => import('./pages/user/cash/RechercheReglementPage'));
+const AsaciPage = lazy(() => import('./pages/user/asaci/AsaciPage'));
+const MyDerogationsPage = lazy(() => import('./pages/user/derogations/MyDerogationsPage'));
+const ArchivesPage = lazy(() => import('./pages/user/archives/ArchivesPage'));
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'));
+const AdminGuidePage = lazy(() => import('./pages/admin/AdminGuidePage'));
+const CimaReportsPage = lazy(() => import('./pages/admin/reporting/CimaReportsPage'));
+const EmissionSummaryPage = lazy(() => import('./pages/admin/reporting/EmissionSummaryPage'));
+const DecisionalStatesPage = lazy(() => import('./pages/admin/reporting/DecisionalStatesPage'));
+const ApprovalCenterPage = lazy(() => import('./pages/admin/approvals/ApprovalCenterPage'));
+const CompanyRemittancePage = lazy(() => import('./pages/admin/remittances/CompanyRemittancePage'));
+const CommissionDashboardPage = lazy(() => import('./pages/admin/commissions/CommissionDashboardPage'));
+const ApporteursPage = lazy(() => import('./pages/admin/apporteurs/ApporteursPage'));
+const UserManagementPage = lazy(() => import('./pages/admin/users/UserManagementPage'));
+const ProfileManagementPage = lazy(() => import('./pages/admin/users/ProfileManagementPage'));
+const RolesPermissionsPage = lazy(() => import('./pages/admin/users/RolesPermissionsPage'));
+const JournalAuditPage = lazy(() => import('./pages/admin/users/JournalAuditPage'));
+const CatalogCompaniesPage = lazy(() => import('./pages/admin/settings/CatalogCompaniesPage'));
+const CatalogProductsPage = lazy(() => import('./pages/admin/settings/CatalogProductsPage'));
+const CatalogTarifsPage = lazy(() => import('./pages/admin/settings/CatalogTarifsPage'));
+const CabinetSettingsPage = lazy(() => import('./pages/admin/settings/CabinetSettingsPage'));
+const VehicleGeoSettingsPage = lazy(() => import('./pages/admin/settings/VehicleGeoSettingsPage'));
+const SecteursActivitePage = lazy(() => import('./pages/admin/settings/SecteursActivitePage').then((module) => ({ default: module.SecteursActivitePage })));
+const TypeSouscripteurPage = lazy(() => import('./pages/admin/settings/TypeSouscripteurPage').then((module) => ({ default: module.TypeSouscripteurPage })));
+const TypeAssurePage = lazy(() => import('./pages/admin/settings/TypeAssurePage').then((module) => ({ default: module.TypeAssurePage })));
+const BanquesPage = lazy(() => import('./pages/admin/settings/BanquesPage'));
+const ProfessionsPage = lazy(() => import('./pages/admin/settings/ProfessionsPage').then((module) => ({ default: module.ProfessionsPage })));
+const ParametrageGarantiesPage = lazy(() => import('./pages/admin/settings/ParametrageGarantiesPage'));
+const ParametrageOffresPage = lazy(() => import('./pages/admin/settings/ParametrageOffresPage'));
+const ParametrageTaxesPage = lazy(() => import('./pages/admin/settings/ParametrageTaxesPage'));
+const ParametrageMarquesPage = lazy(() => import('./pages/admin/settings/ParametrageMarquesPage'));
+const ParametrageCommissionsPage = lazy(() => import('./pages/admin/settings/ParametrageCommissionsPage'));
+const ParametrageFlottePage = lazy(() => import('./pages/admin/settings/ParametrageFlottePage'));
+const ParametrageSecuritePage = lazy(() => import('./pages/admin/settings/ParametrageSecuritePage'));
+const ParametrageGrillesVoyagePage = lazy(() => import('./pages/admin/settings/ParametrageGrillesVoyagePage'));
+const ParametrageDommagesPage = lazy(() => import('./pages/admin/settings/ParametrageDommagesPage'));
+const ReglagesBranchePage = lazy(() => import('./pages/admin/settings/ReglagesBranchePage').then((module) => ({ default: module.ReglagesBranchePage })));
+const ReglagesBranchesPage = lazy(() => import('./pages/admin/settings/ReglagesBranchePage').then((module) => ({ default: module.ReglagesBranchesPage })));
+const ParametrageSantePage = lazy(() => import('./pages/admin/settings/ParametrageSantePage'));
+const ParametrageDepreciationPage = lazy(() => import('./pages/admin/settings/ParametrageDepreciationPage'));
+const ParametragePoolTpvPage = lazy(() => import('./pages/admin/settings/ParametragePoolTpvPage'));
+const ParametrageTarifsDirectsPage = lazy(() => import('./pages/admin/settings/ParametrageTarifsDirectsPage'));
+const ParametrageBaremeAutoPage = lazy(() => import('./pages/admin/settings/ParametrageBaremeAutoPage'));
+const ParametrageReglesGarantiesPage = lazy(() => import('./pages/admin/settings/ParametrageReglesGarantiesPage'));
+const RenouvellementPage = lazy(() => import('./pages/user/contracts/RenouvellementPage'));
+const CrmPipelinePage = lazy(() => import('./pages/user/crm/CrmPipelinePage'));
+const Customer360Page = lazy(() => import('./pages/user/crm/Customer360Page'));
+const QuestionnairesPage = lazy(() => import('./pages/user/crm/QuestionnairesPage'));
+const ClaimsListPage = lazy(() => import('./pages/user/claims/ClaimsListPage'));
+const ClaimDetailPage = lazy(() => import('./pages/user/claims/ClaimDetailPage'));
+const DocumentManagementPage = lazy(() => import('./pages/user/documents/DocumentManagementPage'));
+const ConventionsEnginePage = lazy(() => import('./pages/admin/conventions/ConventionsEnginePage'));
+const ComplianceAuditPage = lazy(() => import('./pages/admin/compliance/ComplianceAuditPage'));
 
 // Protected Route Guard
 const ProtectedRoute = ({ children }) => {
@@ -109,6 +120,32 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
+const premierePageProduction = (peut) => [
+  ['crm.view', '/user/crm'],
+  ['clients.view', '/user/clients'],
+  ['devis.view', '/user/quotes'],
+  ['contrats.view', '/user/contracts'],
+  ['encaissements.view', '/user/cash'],
+  ['sinistres.view', '/user/claims'],
+  ['documents.view', '/user/documents'],
+  ['approbations.view', '/user/derogations'],
+].find(([droit]) => peut(droit))?.[1];
+
+const CockpitRoute = ({ children }) => {
+  const { peut } = useAuth();
+  if (peut('cockpit.view')) return children;
+
+  const destination = premierePageProduction(peut);
+  if (destination) return <Navigate to={destination} replace />;
+
+  return (
+    <main className="page-container" role="alert">
+      <h1 className="title-xl">Accès restreint</h1>
+      <p>Votre rôle ne vous donne pas accès au Cockpit opérationnel. Demandez à l’administrateur de vous attribuer un rôle autorisé.</p>
+    </main>
+  );
+};
+
 // Default Route Redirector
 const DefaultRedirect = () => {
   const auth = useAuth() || {};
@@ -125,6 +162,7 @@ function App() {
       <AuthProvider>
         <ToastProvider>
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Suspense fallback={<main className="page-container" role="status">Chargement de la page…</main>}>
             <Routes>
               {/* Public Login */}
               <Route path="/login" element={<LoginPage />} />
@@ -140,7 +178,7 @@ function App() {
                 <Route path="/" element={<DefaultRedirect />} />
 
                 {/* ===== ESPACE OPÉRATEUR / UTILISATEUR ===== */}
-                <Route path="/user/dashboard" element={<UserDashboard />} />
+                <Route path="/user/dashboard" element={<CockpitRoute><UserDashboard /></CockpitRoute>} />
                 {/* ===== MODULE C – CRM & RELATION CLIENT ===== */}
                 <Route path="/user/crm" element={<CrmPipelinePage />} />
                 <Route path="/user/crm/360" element={<Customer360Page />} />
@@ -157,6 +195,14 @@ function App() {
                 <Route path="/user/quotes/rc" element={<NewRisquesDiversQuotePage key="rc" produit={8} />} />
                 <Route path="/user/quotes/mrp" element={<NewRisquesDiversQuotePage key="mrp" produit={7} />} />
                 <Route path="/user/quotes/tous-dommages" element={<NewTousDommagesQuotePage />} />
+                <Route path="/user/quotes/afa" element={<NewAfaQuotePage />} />
+                <Route path="/user/quotes/oreole-sante" element={<OreoleAccueilPage />} />
+                <Route path="/user/quotes/oreole-sante/nouveau" element={<NewOreolePage />} />
+                <Route path="/user/quotes/oreole-sante/fichier" element={<OreoleFichierPage />} />
+                <Route path="/user/quotes/oreole-sante/cartes" element={<OreoleCartesPage />} />
+                <Route path="/user/sante/consommations" element={<ConsommationsSantePage />} />
+                <Route path="/user/rafas" element={<RafasAccueilPage />} />
+                <Route path="/user/rafas/:id" element={<RafasConventionPage />} />
                 <Route path="/user/quotes/voyage" element={<NewVoyageQuotePage />} />
                 <Route path="/user/quotes/transport" element={<TransportAccueilPage />} />
                 <Route path="/user/quotes/transport/hors-guce" element={<NewTransportHorsGucePage />} />
@@ -167,13 +213,28 @@ function App() {
                 <Route path="/user/contracts" element={<ContractListPage />} />
                 <Route path="/user/contracts/:id" element={<ContractDetailPage />} />
                 <Route path="/user/contracts/:id/renouvellement" element={<RenouvellementPage />} />
+                <Route path="/user/contracts/:id/incorporation" element={<IncorporationFlottePage />} />
                 <Route path="/user/endorsements" element={<EndorsementPage />} />
+                <Route path="/user/reprises" element={<RepriseAffairesPage />} />
+                {/* Affaires antérieures : écrans de devis de la Production, sans quitter la vue (utils/navigationDevis.js) */}
+                <Route path="/user/reprises/saisie/auto" element={<NewAutoQuotePage />} />
+                <Route path="/user/reprises/saisie/mrh" element={<NewMrhQuotePage />} />
+                <Route path="/user/reprises/saisie/sante" element={<NewSanteQuotePage />} />
+                <Route path="/user/reprises/saisie/ia" element={<NewIaQuotePage />} />
+                <Route path="/user/reprises/saisie/rc" element={<NewRisquesDiversQuotePage key="rc-reprise" produit={8} />} />
+                <Route path="/user/reprises/saisie/mrp" element={<NewRisquesDiversQuotePage key="mrp-reprise" produit={7} />} />
+                <Route path="/user/reprises/saisie/tous-dommages" element={<NewTousDommagesQuotePage />} />
+                <Route path="/user/reprises/saisie/voyage" element={<NewVoyageQuotePage />} />
+                <Route path="/user/reprises/saisie/transport" element={<NewTransportHorsGucePage />} />
+                {/* Branche Vie (AFA, Retraite complémentaire, Temporaire décès), ajoutée aux boutons de saisie communs */}
+                <Route path="/user/reprises/saisie/afa" element={<NewAfaQuotePage />} />
                 <Route path="/user/asaci" element={<AsaciPage />} />
 
                 {/* ===== MODULE F – ENCAISSEMENT & TRÉSORERIE ===== */}
                 <Route path="/user/cash" element={<CashCollectionPage />} />
                 <Route path="/user/cheques" element={<ChequeManagementPage />} />
                 <Route path="/user/cash/etat" element={<EtatEncaissementsPage />} />
+                <Route path="/user/cash/recherche" element={<RechercheReglementPage />} />
 
                 {/* ===== MODULE H – SINISTRES DÉLÉGUÉS ===== */}
                 <Route path="/user/claims" element={<ClaimsListPage />} />
@@ -189,6 +250,7 @@ function App() {
                 {/* ===== ESPACE ADMINISTRATION / DIRECTION (DIRECTEUR & ADMIN SEULEMENT) ===== */}
                 <Route path="/admin/guide" element={<AdminRoute><AdminGuidePage /></AdminRoute>} />
                 <Route path="/admin/dashboard" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+                <Route path="/admin/contracts/edit" element={<AdminContractManagementPage />} />
                 <Route path="/admin/conventions" element={<AdminRoute><ConventionsEnginePage /></AdminRoute>} />
                 <Route path="/admin/compliance" element={<AdminRoute><ComplianceAuditPage /></AdminRoute>} />
                 <Route path="/admin/reporting/cima" element={<AdminRoute><CimaReportsPage /></AdminRoute>} />
@@ -197,6 +259,7 @@ function App() {
                 <Route path="/admin/approvals" element={<AdminRoute><ApprovalCenterPage /></AdminRoute>} />
                 <Route path="/admin/remittances" element={<AdminRoute><CompanyRemittancePage /></AdminRoute>} />
                 <Route path="/admin/commissions" element={<AdminRoute><CommissionDashboardPage /></AdminRoute>} />
+                <Route path="/admin/apporteurs" element={<AdminRoute><ApporteursPage /></AdminRoute>} />
                 <Route path="/admin/users" element={<AdminRoute><UserManagementPage /></AdminRoute>} />
                 <Route path="/admin/profiles" element={<AdminRoute><ProfileManagementPage /></AdminRoute>} />
                 <Route path="/admin/roles-permissions" element={<AdminRoute><RolesPermissionsPage /></AdminRoute>} />
@@ -212,6 +275,7 @@ function App() {
                 <Route path="/admin/settings/professions" element={<AdminRoute><ProfessionsPage /></AdminRoute>} />
                 <Route path="/admin/settings/types-souscripteur" element={<AdminRoute><TypeSouscripteurPage /></AdminRoute>} />
                 <Route path="/admin/settings/types-assure" element={<AdminRoute><TypeAssurePage /></AdminRoute>} />
+                <Route path="/admin/settings/banques" element={<AdminRoute><BanquesPage /></AdminRoute>} />
                 {/* Modules de Paramétrage OREOLE Fidèles */}
                 <Route path="/admin/settings/garanties-oreole" element={<AdminRoute><ParametrageGarantiesPage /></AdminRoute>} />
                 <Route path="/admin/settings/offres" element={<AdminRoute><ParametrageOffresPage /></AdminRoute>} />
@@ -225,9 +289,11 @@ function App() {
                 <Route path="/admin/settings/branches/:module" element={<AdminRoute><ReglagesBranchePage /></AdminRoute>} />
                 <Route path="/admin/settings/dommages" element={<AdminRoute><ParametrageDommagesPage /></AdminRoute>} />
                 <Route path="/admin/settings/sante" element={<AdminRoute><ParametrageSantePage /></AdminRoute>} />
+                <Route path="/admin/settings/oreole-sante" element={<AdminRoute><ParametrageOreolePage /></AdminRoute>} />
                 <Route path="/admin/settings/depreciation" element={<AdminRoute><ParametrageDepreciationPage /></AdminRoute>} />
                 <Route path="/admin/settings/pool-tpv" element={<AdminRoute><ParametragePoolTpvPage /></AdminRoute>} />
                 <Route path="/admin/settings/tarifs-directs" element={<AdminRoute><ParametrageTarifsDirectsPage /></AdminRoute>} />
+                <Route path="/admin/settings/bareme-auto" element={<AdminRoute><ParametrageBaremeAutoPage /></AdminRoute>} />
                 <Route path="/admin/settings/regles-garanties" element={<AdminRoute><ParametrageReglesGarantiesPage /></AdminRoute>} />
 
                 {/* Alias direct pour compatibilité stricte OREOLE */}
@@ -245,6 +311,7 @@ function App() {
               {/* Fallback */}
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
+            </Suspense>
           </BrowserRouter>
         </ToastProvider>
       </AuthProvider>

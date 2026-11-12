@@ -65,8 +65,8 @@ CHAMPS_REPARTITION = [
     ("taux_frais_gestion_adec", "Frais de gestion ADEC", "taux"),
     ("taux_autres_frais_gestion", "Autres frais de gestion", "taux"),
     ("taux_commission_commerciaux", "Commission des commerciaux NSIA", "taux"),
-    ("frais_gestion_adec_forfait_ia", "Frais de gestion ADEC — IA, par adhérent", "forfait"),
-    ("frais_gestion_adec_forfait_rc", "Frais de gestion ADEC — RC chef de famille, par adhérent", "forfait"),
+    ("frais_gestion_adec_forfait_ia", "Frais de gestion ADEC - IA, par adhérent", "forfait"),
+    ("frais_gestion_adec_forfait_rc", "Frais de gestion ADEC - RC chef de famille, par adhérent", "forfait"),
 ]
 
 

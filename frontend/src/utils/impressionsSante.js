@@ -8,8 +8,9 @@
    adhérents, affiliés) et, pour un contrat, ayants droit de l'IA MINENE rattachée à la police.
    ========================================================================= */
 import { impressionSanteApi } from '../api/endpoints';
-import { formuleSante, logoCabinetEntete, logoCabinetPied, parametre, reglagesMinene } from './parametrage';
+import { formuleSante, logoCabinetEntete, logoCabinetPied, nomCabinet, parametre, reglagesMinene, villeSignature } from './parametrage';
 import { ouvrirApercuImpression } from './apercuImpression';
+import { numberToFrenchWords } from './exportUtils';
 
 const TARIFS_MINENE = [87, 102, 153];
 
@@ -25,6 +26,14 @@ const date = (x) => {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
 };
 const annee = (x) => Number(String(x || '').slice(0, 4)) || new Date().getFullYear();
+// Lendemain de l'échéance en lettres : « 1er janvier 2027 » pour une échéance au 31 décembre, « 16 avril 2026 » au 15 avril
+const lendemainEnLettres = (x) => {
+  const m = String(x || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  const jour = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1));
+  const quantieme = jour.getUTCDate();
+  return `${quantieme === 1 ? '1er' : quantieme} ${jour.toLocaleDateString('fr-FR', { month: 'long', timeZone: 'UTC' })} ${jour.getUTCFullYear()}`;
+};
 const nombre = (x) => Number(x || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 }).replace(/[  ]/g, ' ');
 const MILLIONS = ['', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 'huit', 'neuf', 'dix'];
 // « deux (02) millions » comme sur les CP OREOLE ; autre montant : en chiffres
@@ -104,6 +113,7 @@ const STYLES = `
   .primes td { border: 1px solid #555; padding: 4px 8px; font-weight: 700; }
   .rubrique { font-weight: 700; text-decoration: underline; margin: 14px 0 6px; }
   p { margin: 6px 0; text-align: justify; line-height: 1.35; }
+  p.mention-avenants { font-size: 8.5pt; font-style: italic; margin: 5px 0 8px; }
   .ajustement td { border: 1px solid #555; padding: 3px 8px; font-weight: 700; font-size: 9pt; }
   .signatures { display: flex; justify-content: space-between; margin-top: 46px; font-weight: 700; text-decoration: underline; }
   .bareme td { border: 1px solid #777; padding: 5px 8px; vertical-align: top; font-weight: 700; font-size: 9pt; }
@@ -122,13 +132,38 @@ const page = (corps) => `<table class="feuille">
   <thead><tr><td><img class="logo" src="${absolue(logoCabinetEntete())}" alt="OREOLE Assurances" /></td></tr></thead>
   <tfoot><tr><td><div class="espace-pied"></div></td></tr></tfoot>
   <tbody><tr><td>${corps}</td></tr></tbody></table>`;
-const documentHtml = (titre, pages) => `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8" /><title>${echapper(titre)}</title>
-<style>${STYLES}</style></head><body>
+// Bordereau des primes par assuré : A4 paysage (14 colonnes)
+const PAYSAGE = `
+  @page { size: A4 landscape; margin: 9mm 10mm 8mm; }
+  body, .pied { max-width: 277mm; }
+  .bordereau th, .bordereau td { border: 1px solid #777; padding: 3px 4px; font-size: 7.6pt; }
+  .bordereau th { background: #1e3a5f; color: #fff; text-align: center; font-weight: 700; }
+  .bordereau td.m { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .bordereau tr.principal td { border-top: 1.6px solid #333; }
+  .bordereau tr.total td { background: #1e3a5f; color: #fff; font-weight: 700; }
+  .recap { display: flex; justify-content: flex-end; gap: 24px; margin-top: 12px; }
+  .recap table { width: auto; min-width: 260px; }
+  .recap td { padding: 2px 8px; font-size: 9pt; }
+  .recap .titre td { background: #1e3a5f; color: #fff; font-weight: 700; }
+  .recap td.m { text-align: right; font-weight: 700; white-space: nowrap; }
+  .ecart { margin-top: 10px; padding: 6px 10px; border: 1px solid #d97706; color: #92400e; font-size: 8.5pt; }
+`;
+const documentHtml = (titre, pages, styles = '') => `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8" /><title>${echapper(titre)}</title>
+<style>${STYLES}${styles}</style></head><body>
 <div class="pied"><img src="${absolue(logoCabinetPied())}" alt="" /><div>${echapper(parametre('documents.mentions_legales', MENTIONS_LEGALES))}</div></div>
 ${pages.join('')}
 <script>window.onload = function () { setTimeout(function () { window.print(); }, 400); };</script></body></html>`;
 
 // ------------------------------------------------------------------ Conditions Particulières
+// Contrat de base d'une période qui a des avenants (incorporation d'un membre, changement de formule…) : documents à jour
+// de ces avenants, primes de la période (production/periode_contrat.py), avenants rappelés sous le tableau des primes
+const mentionAvenants = (periode, debut = 'Primes de la période, avenants compris') => {
+  if (!periode?.EstBase || !periode.Mouvements?.length) return '';
+  const avenants = periode.Mouvements.map((m) => `avenant${m.NumeroAvenant ? ` n° ${texte(m.NumeroAvenant)}` : ''} `
+    + `(${texte((m.LibelleAvenant || m.Avenant).toLowerCase())}) du ${date(m.DateEffet)} : ${montant(m.PrimeTtc)} F TTC`);
+  return `<p class="mention-avenants">${debut} : ${avenants.join(' ; ')}.</p>`;
+};
+
 const pagesCp = (d) => {
   const q = d.quittance || {};
   const r = reglagesMinene();
@@ -137,8 +172,12 @@ const pagesCp = (d) => {
   const duree = Number(q.Duree) ? Math.max(1, Math.round(Number(q.Duree) / 30.42)) : 12;
   const ligne = (l1, v1, l2, v2) => `<tr><td><b>${l1} :</b> ${v1}</td><td><b>${l2} :</b> ${v2}</td></tr>`;
   const numero = q.NumeroPolice || q.NumeroDevis || '';
+  // Réduction (négative) ou majoration (positive) de l'année, si le détail recalculé retrouve la prime enregistrée
+  const ajustement = d.bordereau?.Minene && !Number(d.bordereau.Recap?.Ecart) ? Number(d.bordereau.Recap?.Ajustement) || 0 : 0;
+  // Imprimées depuis un avenant (incorporation…) : primes de l'avenant, familles à sa date
+  const avenant = Boolean(d.periode && !d.periode.EstBase);
   const page1 = `
-    <div class="bandeau">${q.NumeroPolice ? 'CONDITIONS PARTICULIERES POLICE' : 'DEVIS'} N° ${texte(numero)}</div>
+    <div class="bandeau">${q.NumeroPolice ? `CONDITIONS PARTICULIERES${avenant ? ` - AVENANT N° ${texte(q.NumeroAvenant)} -` : ''} POLICE` : 'DEVIS'} N° ${texte(numero)}</div>
     <table class="cadre entete">
       ${ligne('Compagnie', texte(q.RaisonSociale), physique ? 'Nom et Prénoms assuré' : 'Raison Sociale', texte(q.NomAssure || q.NomClient))}
       ${ligne('Nature du risque', 'MINENE SANTE', physique ? 'Date et lieu de naissance' : 'Numéro registre de commerce', texte(naissance))}
@@ -152,9 +191,10 @@ const pagesCp = (d) => {
       <td>Date d'effet : <b>${date(q.DateEffet)}</b></td><td>Date d'écheance : <b>${date(q.DateExpiration)}</b></td><td>Durée : <b>${duree} Mois</b></td>
     </tr></table>
     <table class="primes">
-      <tr><td>Prime Nette</td><td>Accessoires</td><td>Taxe</td><td>Frais de Gestion</td><td>Prime TTC</td></tr>
-      <tr><td>${montant(q.PrimeNetteHorsFga ?? q.PrimeNette)}</td><td>${montant(q.Accessoire)}</td><td>${montant(q.TaxeEnregistrement)}</td><td>${montant(q.FraisGestion)}</td><td>${montant(q.PrimeTtc)}</td></tr>
+      <tr>${ajustement ? `<td>Prime Nette avant ajustement</td><td>${libelleAjustement(d.bordereau.TauxAjustement)}</td>` : ''}<td>Prime Nette</td><td>Accessoires</td><td>Taxe</td><td>Frais de Gestion</td><td>Prime TTC</td></tr>
+      <tr>${ajustement ? `<td>${montant(d.bordereau.Recap.PrimeNetteAvantAjustement)}</td><td>${ajustement < 0 ? '- ' : '+ '}${montant(Math.abs(ajustement))}</td>` : ''}<td>${montant(q.PrimeNetteHorsFga ?? q.PrimeNette)}</td><td>${montant(q.Accessoire)}</td><td>${montant(q.TaxeEnregistrement)}</td><td>${montant(q.FraisGestion)}</td><td>${montant(q.PrimeTtc)}</td></tr>
     </table>
+    ${mentionAvenants(d.periode)}
     <div class="rubrique">OBJET DU CONTRAT</div>
     <p><b>MINÉNÉ SANTÉ</b> est une offre composée de 3 produits d’assurances indissociables les uns des autres.<br />
     Se sont :<b>L’assurance Santé, L’assurance Individuelle, L’assurance Responsabilité Civile chef de famille</b></p>
@@ -171,7 +211,7 @@ const pagesCp = (d) => {
     <div class="rubrique">EFFET ET DUREE DU CONTRAT</div>
     <p>Conformément à l’article 13 Nouveau du code CIMA, la prise d’effet du contrat est subordonnée au paiement intégral de la prime correspondante.<br />
     Le présent contrat prend effet à sa souscription au <b>${date(q.DateEffet)}.</b><br />
-    Son échéance est fixée au <b>${date(q.DateExpiration)}.</b> Il se renouvellera au 1er janvier <b>${annee(q.DateEffet) + 1}</b> à zéro heure pour une durée de 12 mois.</p>
+    Son échéance est fixée au <b>${date(q.DateExpiration)}.</b> Il se renouvellera au <b>${lendemainEnLettres(q.DateExpiration) || `1er janvier ${annee(q.DateEffet) + 1}`}</b> à zéro heure pour une durée de 12 mois.</p>
     <p><b>Il est convenu d’accord partie que le barème en annexe fait partie intégrante des présentes conditions particulières.</b></p>`;
   const page2 = `
     <div class="rubrique">DELAI DE CARENCE</div>
@@ -261,7 +301,7 @@ const pageBareme = (d) => {
   const groupes = sectionsSante(d);
   const santes = groupes.length <= 1
     ? sante(groupes[0]?.formules[0] || formuleSante(17) || {}, 'SANTE')
-    : groupes.map((g) => sante(g.formules[0], `SANTE — OPTION ${g.formules.map((f) => `${f.Option} : ${personnes(f)}`).join(' / ')}`)).join('');
+    : groupes.map((g) => sante(g.formules[0], `SANTE - OPTION ${g.formules.map((f) => `${f.Option} : ${personnes(f)}`).join(' / ')}`)).join('');
   return page(`
     <div class="titre-bareme">BAREME</div>
     <table class="bareme">
@@ -294,12 +334,282 @@ const pageAffilies = (d) => {
     return `${entete}<tr><td>${texte(a.lienparente || a.lien)}</td><td>${texte(a.nom)}</td><td>${texte(a.prenom)}</td><td>${date(a.datenaissance)}</td><td>${texte(a.numerocmu)}</td></tr>`;
   }).join('');
   return page(`
-    <div class="titre-liste">LISTE DES ASSURÉS — ${q.NumeroPolice ? 'POLICE' : 'DEVIS'} N° ${texte(q.NumeroPolice || q.NumeroDevis)}</div>
-    <p><b>Souscripteur :</b> ${texte(q.NomClient)} &nbsp;—&nbsp; <b>Option :</b> ${texte(d.option)}</p>
+    <div class="titre-liste">LISTE DES ASSURÉS - ${q.NumeroPolice ? 'POLICE' : 'DEVIS'} N° ${texte(q.NumeroPolice || q.NumeroDevis)}</div>
+    <p><b>Souscripteur :</b> ${texte(q.NomClient)} &nbsp;-&nbsp; <b>Option :</b> ${texte(d.option)}</p>
+    ${mentionAvenants(d.periode, 'Liste à jour')}
     <table class="liste">
       <tr><th>Statut</th><th>Nom</th><th>Prénoms</th><th>Date de naissance</th><th>Numéro CMU</th></tr>
       ${lignes || '<tr><td colspan="5">Aucun affilié enregistré pour ce devis.</td></tr>'}
     </table>`);
+};
+
+// ------------------------------------------------------------------ Bordereau des primes par assuré
+// Modèle de l'état des assurés de la compagnie (une ligne par personne, récapitulatif de la liste), avec la réduction
+// ou la majoration de l'année (taux d'ajustement de la clause S/P) : sante.utils.bordereau_primes_sante
+const libelleAjustement = (taux) => (Number(taux) < 0 ? `Réduction ${nombre(-taux)} %` : Number(taux) > 0 ? `Majoration ${nombre(taux)} %` : 'Réduction / majoration');
+const pageBordereau = (d) => {
+  const q = d.quittance || {};
+  const b = d.bordereau || { Lignes: [], Recap: {} };
+  const r = b.Recap || {};
+  const avecAge = b.Minene;
+  const avecAjustement = b.Minene && (Number(b.TauxAjustement) !== 0 || Number(r.Ajustement) !== 0);
+  const somme = (cle) => b.Lignes.reduce((t, l) => t + Number(l[cle] || 0), 0);
+  const m = (x, vide = '-') => (Number(x) ? montant(x) : vide);
+  const lignes = b.Lignes.map((l) => `<tr class="${l.Lien === 'A' ? 'principal' : ''}">
+      <td>${l.Numero}</td><td>${texte(l.Carte)}</td><td>${texte(l.Filiation)}</td><td>${texte(l.Formule)}</td>
+      <td>${texte(l.Nom)}</td><td>${texte(l.Prenoms)}</td><td>${date(l.DateNaissance)}</td><td>${texte(l.Sexe)}</td><td>${date(l.DateEntree)}</td>
+      <td class="m">${m(l.PrimeBase)}</td>${avecAge ? `<td class="m">${m(l.SurprimeAge)}</td>` : ''}<td class="m">${m(l.SurprimeAffection)}</td>
+      ${avecAjustement ? `<td class="m">${Number(l.Ajustement) ? (Number(l.Ajustement) < 0 ? '- ' : '+ ') + montant(Math.abs(l.Ajustement)) : '-'}</td>` : ''}
+      <td class="m"><b>${m(l.PrimeNette)}</b></td></tr>`).join('');
+  const colonnesIdentite = 9;
+  // Récapitulatif : prime avant ajustement et ajustement seulement si le détail retrouve la prime enregistrée
+  const ajustementRecap = Number(r.Ecart) ? 0 : Number(r.Ajustement) || 0;
+  // Option : formules des couvertures des familles (celle de l'en-tête du devis peut différer)
+  const formules = [...new Set(b.Lignes.map((l) => l.LibelleOffre).filter(Boolean))];
+  const option = formules.length === 1 ? formules[0] : formules.length > 1 ? 'VOIR LISTE' : d.option;
+  return page(`
+    <div class="titre-liste">BORDEREAU RÉCAPITULATIF DES PRIMES PAR ASSURÉ</div>
+    <table class="cadre entete"><tr>
+      <td><b>Souscripteur :</b> ${texte(q.NomClient)}<br /><b>Compagnie :</b> ${texte(q.RaisonSociale)}<br /><b>Option :</b> ${texte(option)}</td>
+      <td><b>${q.NumeroPolice ? 'Police' : 'Devis'} N° :</b> ${texte(q.NumeroPolice || q.NumeroDevis || b.NumeroDevis)}<br />
+        <b>Période :</b> du ${date(q.DateEffet)} au ${date(q.DateExpiration)}<br /><b>Intermédiaire :</b> ${texte(q.LibelleIntermediaire || 'OREOLE ASSURANCES')}</td>
+    </tr></table>
+    <table class="bordereau" style="margin-top:8px">
+      <tr><th>N°</th><th>N° carte</th><th>Filiation</th><th>Formule</th><th>Nom</th><th>Prénoms</th><th>Date de naissance</th><th>Sexe</th>
+        <th>Date d'entrée</th><th>${b.Minene ? 'Prime de base' : 'Prime nette'}</th>${avecAge ? "<th>Surprime d'âge</th>" : ''}
+        <th>${b.Minene ? 'Surprime affection' : 'Surprime'}</th>${avecAjustement ? `<th>${libelleAjustement(b.TauxAjustement)}</th>` : ''}<th>Prime nette totale</th></tr>
+      ${lignes || `<tr><td colspan="${colonnesIdentite + 3 + (avecAge ? 1 : 0) + (avecAjustement ? 1 : 0)}">Aucun assuré enregistré.</td></tr>`}
+      <tr class="total"><td colspan="${colonnesIdentite}" style="text-align:center">TOTAL</td><td class="m">${montant(somme('PrimeBase'))}</td>
+        ${avecAge ? `<td class="m">${montant(somme('SurprimeAge'))}</td>` : ''}<td class="m">${montant(somme('SurprimeAffection'))}</td>
+        ${avecAjustement ? `<td class="m">${ajustementRecap < 0 ? '- ' : '+ '}${montant(Math.abs(ajustementRecap))}</td>` : ''}<td class="m">${montant(somme('PrimeNette'))}</td></tr>
+    </table>
+    ${b.PrimeGlobale ? '<p><b>Prime globale :</b> la prime nette du contrat n\'est pas ventilée par assuré ; seules les surprimes individuelles figurent ci-dessus.</p>' : ''}
+    <div class="recap">
+      <table class="cadre">
+        <tr class="titre"><td>Effectif total</td><td class="m">${r.Effectif || 0}</td></tr>
+        <tr><td><i>dont</i> Assurés principaux</td><td class="m">${r.AssuresPrincipaux || '-'}</td></tr>
+        <tr><td>Conjoints</td><td class="m">${r.Conjoints || '-'}</td></tr>
+        <tr><td>Enfants</td><td class="m">${r.Enfants || '-'}</td></tr>
+      </table>
+      <table class="cadre">
+        ${ajustementRecap ? `<tr><td>Prime nette avant ajustement</td><td class="m">${montant(Number(r.PrimeNette) - ajustementRecap)}</td></tr>
+        <tr><td>${libelleAjustement(b.TauxAjustement)}</td><td class="m">${ajustementRecap < 0 ? '- ' : '+ '}${montant(Math.abs(ajustementRecap))}</td></tr>` : ''}
+        ${b.Avenant ? `
+        <tr><td>PRIME NETTE ANNUELLE - nouvelle composition</td><td class="m">${montant(r.PrimeNette)}</td></tr>
+        <tr><td>Prime annuelle avant modification</td><td class="m">${montant(b.Avenant.PrimeAnnuellePrecedente)}</td></tr>
+        <tr class="titre"><td colspan="2">AVENANT DU ${date(b.Avenant.DateEffet)} AU ${date(b.Avenant.DateExpiration)} - ${b.Avenant.Jours} j sur ${b.Avenant.JoursPeriode}</td></tr>
+        <tr><td>PRIME NETTE DE L'AVENANT</td><td class="m">${montant(b.Avenant.PrimeNette)}</td></tr>
+        <tr><td>ACCESSOIRES</td><td class="m">${montant(b.Avenant.Accessoire)}</td></tr>
+        <tr><td>TAXES</td><td class="m">${montant(b.Avenant.Taxe)}</td></tr>
+        <tr class="titre"><td>PRIME TTC DE L'AVENANT</td><td class="m">${montant(b.Avenant.PrimeTtc)}</td></tr>` : `
+        <tr><td>PRIME NETTE TOTALE</td><td class="m">${montant(r.PrimeNette)}</td></tr>
+        <tr><td>ACCESSOIRES</td><td class="m">${montant(r.Accessoire)}</td></tr>
+        <tr><td>TAXES</td><td class="m">${montant(r.Taxe)}</td></tr>
+        ${Number(r.FraisGestion) ? `<tr><td>FRAIS DE GESTION</td><td class="m">${montant(r.FraisGestion)}</td></tr>` : ''}
+        <tr class="titre"><td>PRIME TTC</td><td class="m">${montant(r.PrimeTtc)}</td></tr>`}
+      </table>
+    </div>
+    ${Number(r.Ecart) ? `<div class="ecart">Écart de ${montant(r.Ecart)} F entre la prime nette enregistrée (${montant(r.PrimeNette)} F) et le détail par assuré recalculé avec le barème en vigueur (${montant(r.TotalLignes)} F) : ${q.NumeroPolice ? 'contrat émis avec un calcul antérieur' : 'enregistrez de nouveau le devis pour mettre à jour ses primes'}.</div>` : ''}`);
+};
+
+// ------------------------------------------------------------------ État des cotisations MINENE Santé
+// Modèle d'OREOLE « ETATS DES COTISATIONS MINENE SANTE » (demande du 2026-10-27) : un bloc par famille, ses montants
+// fusionnés sur ses assurés ; réduction ou majoration de l'année ajoutée avant la prime nette totale ; encaissement,
+// nature, solde et statut du contrat sur toutes les familles (un contrat par devis dans LE PHARE) :
+// sante.utils._etat_cotisations. Récapitulatif de la prime sous le tableau.
+const ETAT = `
+  @page { size: A4 landscape; margin: 8mm 8mm 8mm; }
+  body, .pied { max-width: 281mm; }
+  .titre-etat { text-align: center; font-weight: 800; font-size: 13pt; text-decoration: underline; margin: 2px 0 8px; color: #000; }
+  .titre-etat span { color: #000; }
+  .reference-etat { font-size: 8pt; margin-bottom: 6px; }
+  /* Grand tableau en noir sur blanc ; Encaissement et Solde sur le bleu des tableaux du récapitulatif (2026-10-27) */
+  .etat th, .etat td { border: 1px solid #555; padding: 2px 3px; font-size: 6.7pt; vertical-align: middle; color: #000; background: #fff; }
+  .etat th { font-weight: 700; text-align: center; font-size: 6.1pt; line-height: 1.15; }
+  .etat th.bleu, .etat td.bleu { background: #1e3a5f; color: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .etat td.m { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .etat td.c { text-align: center; }
+  .etat tr.total td { font-weight: 700; }
+  .etat td.nature { font-size: 6.2pt; text-align: center; }
+  .notes-etat { font-size: 7.5pt; margin-top: 6px; }
+`;
+const pageEtatCotisations = (d) => {
+  const q = d.quittance || {};
+  const b = d.bordereau;
+  const e = b.Etat;
+  const r = b.Recap || {};
+  const signe = (x) => (Number(x) < 0 ? `- ${montant(Math.abs(x))}` : Number(x) > 0 ? `+ ${montant(x)}` : '0');
+  const personnes = e.Familles.reduce((s, f) => s + f.Assures.length, 0);
+  const contrat = Boolean(e.Contrat);
+  let numero = 0;
+  const lignes = e.Familles.map((f, i) => f.Assures.map((a, j) => {
+    numero += 1;
+    const n = f.Assures.length;
+    const famille = j > 0 ? '' : `
+      <td rowspan="${n}" class="c">${texte(f.Option)}</td><td rowspan="${n}" class="c">${f.Effectif}</td>
+      <td rowspan="${n}" class="c">${date(e.DateEffet)} au ${date(e.DateExpiration)}</td>
+      <td rowspan="${n}" class="m"><b>${montant(f.PrimeBase)}</b></td><td rowspan="${n}" class="m">${montant(f.SurprimePathologie)}</td>
+      <td rowspan="${n}" class="m">${montant(f.SurprimeAge)}</td><td rowspan="${n}" class="m">${montant(f.SurprimeEnfants)}</td>
+      <td rowspan="${n}" class="m">${signe(f.Ajustement)}</td><td rowspan="${n}" class="m"><b>${montant(f.PrimeNette)}</b></td>
+      <td rowspan="${n}" class="m">${montant(f.PrimeTtcSante)}</td><td rowspan="${n}" class="m">${montant(f.PrimeTtcIa)}</td>
+      <td rowspan="${n}" class="m">${montant(f.PrimeTtcRc)}</td><td rowspan="${n}" class="m"><b>${montant(f.PrimeTotaleTtc)}</b></td>`;
+    // Encaissement, nature, solde et statut : ceux du contrat, sur toutes les familles
+    const situation = i > 0 || j > 0 ? '' : `
+      <td rowspan="${personnes}" class="m bleu"><b>${contrat ? montant(e.Encaissement) : '-'}</b></td>
+      <td rowspan="${personnes}" class="nature">${texte(e.Nature) || '-'}</td>
+      <td rowspan="${personnes}" class="m bleu"><b>${montant(e.Solde)}</b></td>
+      <td rowspan="${personnes}" class="c">${texte(e.Statut)}</td>`;
+    return `<tr><td class="c">${numero}</td>${j === 0 ? `<td rowspan="${n}">${texte(f.Souscripteur)}</td>` : ''}
+      <td>${texte(a.Nom)}</td><td class="c">${date(a.DateNaissance)}</td>${famille}${situation}</tr>`;
+  }).join('')).join('');
+  const somme = (cle) => e.Familles.reduce((s, f) => s + Number(f[cle] || 0), 0);
+  // Récapitulatif de la prime : réduction ou majoration seulement si le détail retrouve la prime enregistrée
+  const ajustementRecap = Number(r.Ecart) ? 0 : Number(r.Ajustement) || 0;
+  const adherents = e.Familles.length;
+  return page(`
+    <div class="titre-etat">ETATS DES COTISATIONS <span>MINENE SANTE</span> ${e.Annee || ''}</div>
+    <div class="reference-etat"><b>${contrat ? 'Police' : 'Devis'} N° :</b> ${texte(e.Contrat || q.NumeroDevis || b.NumeroDevis)}
+      &nbsp;·&nbsp; <b>Client :</b> ${texte(q.NomClient)} &nbsp;·&nbsp; <b>Compagnie :</b> ${texte(q.RaisonSociale)}</div>
+    <table class="etat">
+      <tr><th>N°Ordre</th><th>Souscripteur</th><th>Assuré</th><th>Date de naissance</th><th>Option</th><th>Effectif</th><th>Période</th>
+        <th>Prime de base</th><th>Surprime pour pathologie</th><th>Surprime d'âge</th>
+        <th>Surprime enfants supplémentaires</th><th>${libelleAjustement(b.TauxAjustement)}</th>
+        <th>Prime nette totale</th><th>Prime TTC Santé</th><th>Prime TTC Individuelle Accidents</th>
+        <th>Prime TTC RC chef de famille</th><th>Prime totale TTC</th><th class="bleu">Encaissement</th>
+        <th>Nature de l'encaissement</th><th class="bleu">Solde</th><th>Statut</th></tr>
+      ${lignes}
+      <tr class="total"><td colspan="4" class="c">TOTAL</td><td></td><td class="c">${personnes}</td><td></td>
+        <td class="m">${montant(somme('PrimeBase'))}</td><td class="m">${montant(somme('SurprimePathologie'))}</td>
+        <td class="m">${montant(somme('SurprimeAge'))}</td><td class="m">${montant(somme('SurprimeEnfants'))}</td>
+        <td class="m">${signe(somme('Ajustement'))}</td><td class="m">${montant(somme('PrimeNette'))}</td>
+        <td class="m">${montant(somme('PrimeTtcSante'))}</td><td class="m">${montant(somme('PrimeTtcIa'))}</td>
+        <td class="m">${montant(somme('PrimeTtcRc'))}</td><td class="m">${montant(somme('PrimeTotaleTtc'))}</td>
+        <td class="m bleu">${contrat ? montant(e.Encaissement) : '-'}</td><td></td><td class="m bleu">${montant(e.Solde)}</td><td></td></tr>
+    </table>
+    <div class="recap">
+      <table class="cadre">
+        <tr class="titre"><td colspan="2">RÉCAPITULATIF DE LA PRIME SANTÉ</td></tr>
+        ${ajustementRecap ? `<tr><td>Prime nette avant ajustement</td><td class="m">${montant(Number(r.PrimeNette) - ajustementRecap)}</td></tr>
+        <tr><td>${libelleAjustement(b.TauxAjustement)}</td><td class="m">${signe(ajustementRecap)}</td></tr>` : ''}
+        <tr><td>Prime nette totale</td><td class="m">${montant(r.PrimeNette)}</td></tr>
+        <tr><td>Accessoires</td><td class="m">${montant(r.Accessoire)}</td></tr>
+        <tr><td>Taxes</td><td class="m">${montant(r.Taxe)}</td></tr>
+        ${Number(r.FraisGestion) ? `<tr><td>Frais de gestion</td><td class="m">${montant(r.FraisGestion)}</td></tr>` : ''}
+        <tr class="titre"><td>PRIME TTC SANTÉ</td><td class="m">${montant(r.PrimeTtc)}</td></tr>
+      </table>
+      <table class="cadre">
+        <tr class="titre"><td colspan="2">MINENE SANTÉ : ${adherents} adhérent${adherents > 1 ? 's' : ''}, ${personnes} assuré${personnes > 1 ? 's' : ''}</td></tr>
+        <tr><td>Prime TTC Santé</td><td class="m">${montant(somme('PrimeTtcSante'))}</td></tr>
+        <tr><td>Prime TTC Individuelle Accidents</td><td class="m">${montant(somme('PrimeTtcIa'))}</td></tr>
+        <tr><td>Prime TTC RC chef de famille</td><td class="m">${montant(somme('PrimeTtcRc'))}</td></tr>
+        <tr class="titre"><td>PRIME TOTALE TTC</td><td class="m">${montant(somme('PrimeTotaleTtc'))}</td></tr>
+        ${contrat ? `<tr><td>Encaissement</td><td class="m">${montant(e.Encaissement)}</td></tr>` : ''}
+        <tr><td><b>Solde</b></td><td class="m">${montant(e.Solde)}</td></tr>
+      </table>
+    </div>
+    ${Number(r.Ecart) ? `<div class="ecart">Écart de ${montant(r.Ecart)} F entre la prime nette enregistrée (${montant(r.PrimeNette)} F) et le détail par famille recalculé avec le barème en vigueur (${montant(r.TotalLignes)} F) : ${contrat ? 'contrat émis avec un calcul antérieur ; la prime TTC Santé facturée est répartie entre les familles' : 'enregistrez de nouveau le devis pour mettre à jour ses primes'}.</div>` : ''}`);
+};
+
+// ------------------------------------------------------------------ Facture MINENE
+// Facture des trois assurances indissociables de l'offre (Santé, Individuelle Accidents, RC chef de famille), au
+// modèle de la facture de prime OREOLE, avec les coordonnées du client et le récapitulatif de l'état des cotisations
+// (demande du 2026-10-28) : mêmes montants que l'état, IA et RC au forfait MINENE par adhérent.
+const FACTURE = `
+  .fm-titre { text-align: center; font-weight: 700; font-size: 13pt; margin: 4mm 0 2mm; }
+  .fm-objet { text-align: center; font-weight: 700; font-size: 10pt; margin: 0 0 5mm; }
+  .fm-proforma { text-align: center; font-size: 8.5pt; margin: -3mm 0 4mm; }
+  .fm-table td, .fm-table th { border: 0.75pt solid #222; padding: 2mm 1.5mm; text-align: center; vertical-align: middle; font-size: 9pt; }
+  .fm-table th { font-weight: 700; background: #f1f5f9; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .fm-table td.cie { text-align: left; padding-left: 2mm; }
+  .fm-table td.pers { text-align: left; line-height: 1.45; padding: 3mm; font-size: 9pt; }
+  .fm-table td.pers b { font-size: 9.5pt; }
+  .fm-table td.v { font-weight: 700; }
+  .fm-familles { margin-top: 5mm; }
+  .fm-familles td, .fm-familles th { border: 0.75pt solid #555; padding: 1.5mm; font-size: 8.5pt; }
+  .fm-familles th { background: #f1f5f9; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .fm-familles td.m { text-align: right; white-space: nowrap; }
+  .fm-recap { width: 62%; margin: 6mm 0 0 auto; border: 1px solid #555; }
+  .fm-recap td { padding: 1.6mm 3mm; font-size: 10pt; }
+  .fm-recap td.m { text-align: right; font-weight: 700; white-space: nowrap; }
+  .fm-recap tr.titre td { background: #1e3a5f; color: #fff; font-weight: 700; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .fm-recap tr.solde td { font-weight: 700; border-top: 1px solid #555; }
+  .fm-texte { margin: 6mm 0 0; line-height: 1.4; font-size: 10pt; }
+  .fm-cima { margin-top: 4mm; font-size: 8.5pt; font-style: italic; }
+  .fm-fait { text-align: right; margin-top: 8mm; font-size: 10pt; }
+  .fm-signe { text-align: right; margin: 5mm 14mm 0 0; font-weight: 700; font-size: 10pt; }
+`;
+// Valeur d'un champ du client : les valeurs de remplissage des fiches (« - », « NA ») ne sont pas imprimées
+const renseigne = (x) => {
+  const v = String(x ?? '').trim();
+  return /^(-+|NA|N\/A|NEANT|NÉANT|\.)$/i.test(v) ? '' : v;
+};
+const pageFactureMinene = (d) => {
+  const q = d.quittance || {};
+  // Avenant : sa date d'incorporation, effet et « Fait à », la date d'émission n'est pas imprimée (demande du 2026-11-03).
+  // Sinon la date d'émission, la même à chaque impression et sur les autres documents de la police.
+  const avenant = d.periode && !d.periode.EstBase ? (d.periode.Mouvements || []).find((m) => m.IdContrat === d.periode.IdContrat) : null;
+  const e = d.bordereau.Etat;
+  const contrat = Boolean(e.Contrat);
+  const somme = (cle) => e.Familles.reduce((s, f) => s + Number(f[cle] || 0), 0);
+  const total = somme('PrimeTotaleTtc');
+  const personnes = e.Familles.reduce((s, f) => s + f.Assures.length, 0);
+  const adherents = e.Familles.length;
+  const coordonnees = (nom, adresse, telephone, email, extra = []) => [
+    nom && `<b>${texte(nom)}</b>`,
+    ...extra,
+    renseigne(adresse) && texte(adresse),
+    renseigne(telephone) && `Tél. : ${texte(telephone)}`,
+    renseigne(email) && texte(email),
+  ].filter(Boolean).join('<br/>');
+  const telephoneClient = [renseigne(q.MobileClient), renseigne(q.TelephoneClient)].filter(Boolean).filter((t, i, l) => l.indexOf(t) === i).join(' / ');
+  const souscripteur = coordonnees(q.NomClient, renseigne(q.AdresseClient) || renseigne(q.AdresseGeographique), telephoneClient, q.EmailClient,
+    [renseigne(q.ProfessionClient) && texte(q.ProfessionClient)]);
+  const memePersonne = !renseigne(q.NomAssure) || String(q.NomAssure).trim() === String(q.NomClient || '').trim();
+  const assure = memePersonne ? souscripteur : coordonnees(q.NomAssure, q.AdresseAssure, '', '');
+  const polices = (liste, prevue) => (liste?.length ? liste.map(texte).join(', ') : prevue);
+  const numero = q.NumeroFacture || q.NumeroPolice || q.NumeroDevis || d.bordereau.NumeroDevis || '';
+  const lettres = numberToFrenchWords(Math.round(total));
+  const familles = adherents > 1 ? `
+    <table class="fm-familles">
+      <tr><th>Adhérent</th><th>Option</th><th>Assurés</th><th>Prime TTC Santé</th><th>Prime TTC IA</th><th>Prime TTC RC</th><th>Prime totale TTC</th></tr>
+      ${e.Familles.map((f) => `<tr><td>${texte(f.Souscripteur)}</td><td>${texte(f.Option)}</td><td class="m">${f.Effectif}</td>
+        <td class="m">${montant(f.PrimeTtcSante)}</td><td class="m">${montant(f.PrimeTtcIa)}</td><td class="m">${montant(f.PrimeTtcRc)}</td>
+        <td class="m"><b>${montant(f.PrimeTotaleTtc)}</b></td></tr>`).join('')}
+    </table>` : '';
+  return page(`
+    <div class="fm-titre">FACTURE MINENE N° ${texte(numero)}</div>
+    <div class="fm-objet">MINENE SANTÉ : SANTÉ, INDIVIDUELLE ACCIDENTS ET RESPONSABILITÉ CIVILE CHEF DE FAMILLE</div>
+    ${contrat ? '' : `<div class="fm-proforma">Facture proforma du devis N° ${texte(q.NumeroDevis || d.bordereau.NumeroDevis)}, non encore confirmé en contrat</div>`}
+    <table class="fm-table">
+      <colgroup><col style="width:20%"/><col style="width:16%"/><col style="width:16%"/><col style="width:16%"/><col style="width:16%"/><col style="width:16%"/></colgroup>
+      <tr><td class="cie" colspan="6">Compagnie : <b>${texte(q.RaisonSociale)}</b> &nbsp;·&nbsp; Intermédiaire : <b>${texte(q.LibelleIntermediaire || nomCabinet())}</b></td></tr>
+      <tr><th colspan="3">SOUSCRIPTEUR</th><th colspan="3">ASSURÉ PRINCIPAL</th></tr>
+      <tr><td class="pers" colspan="3">${souscripteur}</td><td class="pers" colspan="3">${assure}</td></tr>
+      <tr><th>${contrat ? 'Police Santé' : 'Devis Santé'}</th><th>Police IA</th><th>Police RC</th><th>Effet</th><th>Échéance</th><th>Effectif</th></tr>
+      <tr><td class="v">${texte(e.Contrat || q.NumeroDevis || d.bordereau.NumeroDevis)}</td>
+        <td class="v">${polices(e.PolicesIa, 'À émettre')}</td><td class="v">${polices(e.PolicesRc, 'À émettre')}</td>
+        <td class="v">${date(avenant?.DateEffet || e.DateEffet || q.DateEffet)}</td><td class="v">${date(e.DateExpiration || q.DateExpiration)}</td>
+        <td class="v">${adherents} adh. / ${personnes} ass.</td></tr>
+    </table>
+    ${familles}
+    <table class="fm-recap">
+      <tr class="titre"><td colspan="2">MINENE SANTÉ : ${adherents} adhérent${adherents > 1 ? 's' : ''}, ${personnes} assuré${personnes > 1 ? 's' : ''}</td></tr>
+      <tr><td>Prime TTC Santé</td><td class="m">${montant(somme('PrimeTtcSante'))}</td></tr>
+      ${avenant ? `<tr><td>dont prime nette</td><td class="m">${montant(q.PrimeNette)}</td></tr>
+      <tr><td>dont accessoire</td><td class="m">${montant(q.Accessoire)}</td></tr>
+      <tr><td>dont taxes</td><td class="m">${montant(Number(q.PrimeTtc) - Number(q.PrimeNette) - Number(q.Accessoire))}</td></tr>` : ''}
+      <tr><td>Prime TTC Individuelle Accidents</td><td class="m">${montant(somme('PrimeTtcIa'))}</td></tr>
+      <tr><td>Prime TTC RC chef de famille</td><td class="m">${montant(somme('PrimeTtcRc'))}</td></tr>
+      <tr class="titre"><td>PRIME TOTALE TTC</td><td class="m">${montant(total)}</td></tr>
+      <tr><td>Encaissement</td><td class="m">${montant(contrat ? e.Encaissement : 0)}</td></tr>
+      <tr class="solde"><td>Solde à payer</td><td class="m">${montant(e.Solde)}</td></tr>
+    </table>
+    <div class="fm-texte">Arrêtée la présente facture à la somme de <b>${texte(lettres)} FRANCS CFA</b> (${montant(total)} F CFA)${Number(e.Solde) > 0 && Number(e.Solde) !== total ? `, dont <b>${montant(e.Solde)} F CFA</b> restant à régler` : Number(e.Solde) <= 0 ? ', entièrement réglée' : ''}.</div>
+    ${e.Nature ? `<div class="fm-texte">Encaissements : ${texte(e.Nature)}.</div>` : ''}
+    <div class="fm-cima">Conformément à l'article 13 du Code CIMA, la prise d'effet des garanties est subordonnée au paiement intégral de la prime.</div>
+    <div class="fm-texte">Dans cette attente, nous vous prions d'agréer, nos distinguées salutations.</div>
+    <div class="fm-fait">Fait à ${texte(villeSignature())}, le ${date(avenant?.DateEffet || q.DateEmission) || new Date().toLocaleDateString('fr-FR')}</div>
+    <div class="fm-signe">Pour la société</div>`);
 };
 
 // ------------------------------------------------------------------ Ayants droit (IA MINENE)
@@ -308,7 +618,7 @@ const pageAyantsDroit = (d) => {
   // Part : colonne seulement si l'assuré en a précisé une (0 en base = non précisée)
   const avecParts = ayants.some((a) => Number(a.part) > 0);
   return page(`
-    <div class="titre-liste">LISTES DES AYANT DROITS — POLICE N° ${texte(d.quittance?.NumeroPolice)}</div>
+    <div class="titre-liste">LISTES DES AYANT DROITS - POLICE N° ${texte(d.quittance?.NumeroPolice)}</div>
     <table class="liste">
       <tr><th>Qualité</th><th>Nom</th><th>Prénoms</th>${avecParts ? '<th>Part</th>' : ''}</tr>
       ${ayants.map((a) => `<tr><td>${texte(a.libelle_qualite)}</td><td>${texte(a.nom_ayant_droit)}</td><td>${texte(a.prenoms_ayant_droit)}</td>${avecParts ? `<td>${Number(a.part) > 0 ? `${a.part} %` : ''}</td>` : ''}</tr>`).join('')
@@ -321,6 +631,14 @@ const DOCUMENTS = {
   bareme: { titre: 'Bareme MINENE', pages: (d) => [pageBareme(d)] },
   affilies: { titre: 'Liste des assures', pages: (d) => [pageAffilies(d)] },
   ayants: { titre: 'Liste des ayants droit', pages: (d) => [pageAyantsDroit(d)] },
+  // Facture MINENE : Santé, IA et RC chef de famille, à l'en-tête du client (récapitulatif de l'état des cotisations)
+  facture: { titre: 'Facture MINENE', pages: (d) => [pageFactureMinene(d)], styles: FACTURE },
+  // MINENE : état des cotisations au modèle d'OREOLE ; autres offres et avenants : bordereau par assuré
+  bordereau: {
+    titre: 'Bordereau des primes',
+    pages: (d) => [d.bordereau?.Etat ? pageEtatCotisations(d) : pageBordereau(d)],
+    styles: PAYSAGE,
+  },
 };
 
 /**
@@ -334,6 +652,24 @@ export const imprimerDocumentSante = async (type, ids, fenetre = ouvrirApercuImp
   if (fenetre) fenetre.document.write('<p style="font-family:Arial;padding:20px;">Préparation du document…</p>');
   try {
     const d = await charger(ids);
+    // Bordereau des primes par assuré ; CP MINENE : réduction ou majoration de l'année au tableau des primes
+    if (type === 'bordereau' || type === 'facture' || (type === 'cp' && d.minene)) {
+      const idDevis = Number(d.quittance?.IdDevis || d.saisie?.devis?.iddevis || ids.iddevis) || 0;
+      // Contrat : familles et primes de sa période, incorporations comprises (facture MINENE : toute la période)
+      d.bordereau = await impressionSanteApi.bordereau(idDevis, ids.idcontrat ? { idcontrat: ids.idcontrat, document: type } : {}).catch((err) => {
+        if (type === 'bordereau' || type === 'facture') throw err;
+        return null;
+      });
+    }
+    // Facture MINENE : seulement pour une offre MINENE dont les familles sont enregistrées
+    if (type === 'facture' && !d.bordereau?.Etat) {
+      if (fenetre) {
+        fenetre.document.open();
+        fenetre.document.write('<p style="font-family:Arial;padding:20px;">La facture MINENE ne concerne que les devis et polices MINENE SANTÉ dont les adhérents sont enregistrés.</p>');
+        fenetre.document.close();
+      }
+      return true;
+    }
     if (!d.minene && (type === 'cp' || type === 'bareme')) {
       if (type === 'bareme' && fenetre) {
         fenetre.document.open();
@@ -343,8 +679,12 @@ export const imprimerDocumentSante = async (type, ids, fenetre = ouvrirApercuImp
       return false;
     }
     // Conditions Particulières d'un devis : « Devis <n°> » (une proposition est un devis)
-    const titre = type === 'cp' && !d.quittance?.NumeroPolice ? 'Devis' : doc.titre;
-    const html = documentHtml(`${titre} ${d.quittance?.NumeroPolice || d.quittance?.NumeroDevis || ''}`.trim(), doc.pages(d));
+    // Bordereau MINENE : état des cotisations (titre et mise en page du modèle d'OREOLE)
+    const etat = type === 'bordereau' && Boolean(d.bordereau?.Etat);
+    const titre = type === 'cp' && !d.quittance?.NumeroPolice ? 'Devis' : etat ? 'Etat des cotisations MINENE' : doc.titre;
+    const numeroDocument = type === 'facture' ? (d.quittance?.NumeroFacture || d.quittance?.NumeroPolice || d.quittance?.NumeroDevis) : null;
+    const html = documentHtml(`${titre} ${numeroDocument || d.quittance?.NumeroPolice || d.quittance?.NumeroDevis || ''}`.trim(), doc.pages(d),
+      etat ? `${doc.styles}${ETAT}` : doc.styles);
     if (fenetre) {
       fenetre.document.open();
       fenetre.document.write(html);

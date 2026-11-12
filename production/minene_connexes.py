@@ -53,6 +53,14 @@ SQL_POLICES = f"""
            OR EXISTS (SELECT 1 FROM stdfiliale f WHERE f.iddevis = c.iddevis AND f.idoffresante IN {OFFRES_SANTE_MINENE}))
 """
 
+# Contrat le plus récent d'une police : dernière période, puis dernier contrat émis (la date d'effet d'un avenant est au
+# choix : un avenant antidaté porte quand même toute la composition)
+ORDRE_DERNIER_CONTRAT = """
+    ORDER BY (SELECT MAX(b.dateeffet) FROM stdcontrat b JOIN stdavenant ab ON ab.idavenant = b.idavenant
+              WHERE b.numeropolice = c.numeropolice AND ab.codeavenant IN ('AFN', 'REN', 'RPP', 'TRP')
+                AND b.dateeffet <= c.dateeffet) DESC NULLS LAST, c.idcontrat DESC
+"""
+
 
 def _lignes(cursor, sql, params):
     cursor.execute(sql, params)
@@ -133,7 +141,7 @@ def police(request):
     texte = str(request.query_params.get("q") or "").strip()
     with connection.cursor() as cursor:
         if numero:
-            polices = _lignes(cursor, SQL_POLICES + " AND TRIM(c.numeropolice) = %s ORDER BY c.dateeffet DESC LIMIT 1",
+            polices = _lignes(cursor, SQL_POLICES + " AND TRIM(c.numeropolice) = %s" + ORDRE_DERNIER_CONTRAT + " LIMIT 1",
                               [numero])
             if not polices:
                 return Response({"error": f"Aucun contrat Santé MINENE pour la police {numero}."},
@@ -144,8 +152,7 @@ def police(request):
         motif = f"%{texte}%"
         polices = _lignes(cursor, SQL_POLICES + """
             AND (c.numeropolice ILIKE %s OR (COALESCE(cl.nom, '') || ' ' || COALESCE(cl.prenoms, '')) ILIKE %s)
-            ORDER BY c.dateeffet DESC LIMIT 30
-        """, [motif, motif])
+        """ + ORDRE_DERNIER_CONTRAT + " LIMIT 30", [motif, motif])
     # Une ligne par police (la période la plus récente)
     vues, resultats = set(), []
     for p in polices:
@@ -157,8 +164,28 @@ def police(request):
     return Response({"Resultats": resultats[:10]})
 
 
-def _apercu(request, produit):
+def forfait_adherent(cursor, produit, effet):
+    """Prime d'un adhérent de l'IA (« ia ») ou de la RC chef de famille (« rc ») MINENE à la date d'effet, par les
+    fonctions de sp_finalisation_devis / sp_creation_devis_risques_divers : prime forfaitaire, accessoire du barème,
+    taxe sur prime + accessoire, frais de gestion. Renvoie (taux de taxe, montants unitaires)."""
     id_produit, id_offre, prime_base = CONNEXES[produit]
+    cursor.execute(f"""
+        SELECT {prime_base}, a.*, fn_get_taux_taxe(%s, %s, %s, %s), fn_get_frais_gestion_minene(%s)
+        FROM fn_get_accessoire({prime_base}, %s, %s, %s, %s) AS a
+    """, [ID_COMPAGNIE_MINENE, id_produit, id_offre, effet, id_produit,
+          id_produit, id_offre, ID_COMPAGNIE_MINENE, effet])
+    ligne = cursor.fetchone()
+    prime = float(ligne[0] or 0)
+    accessoire = float(ligne[1] or 0) + float(ligne[2] or 0)
+    taux = float(ligne[4] or 0)
+    frais = float(ligne[5] or 0)
+    taxe = round((prime + accessoire) * taux / 100)
+    return taux, {"PrimeNette": prime, "Accessoire": accessoire, "FraisGestion": frais, "Taxe": taxe,
+                  "PrimeTtc": prime + accessoire + taxe + frais}
+
+
+def _apercu(request, produit):
+    id_produit = CONNEXES[produit][0]
     police_sante = str(request.query_params.get("police") or "").strip()
     if not police_sante:
         return Response({"error": "Numéro de police Santé MINENE à renseigner."}, status=status.HTTP_400_BAD_REQUEST)
@@ -171,8 +198,7 @@ def _apercu(request, produit):
             SELECT c.iddevis, c.numeropolice, TRIM(COALESCE(cl.nom, '') || ' ' || COALESCE(cl.prenoms, '')) AS client
             FROM stdcontrat c LEFT JOIN stdclient cl ON cl.idclient = c.idclient
             WHERE c.idproduit = 5 AND TRIM(c.numeropolice) = %s
-            ORDER BY c.dateeffet DESC LIMIT 1
-        """, [police_sante])
+        """ + ORDRE_DERNIER_CONTRAT + " LIMIT 1", [police_sante])
         if not contrats:
             return Response({"error": f"Aucun contrat Santé pour la police {police_sante}."}, status=status.HTTP_404_NOT_FOUND)
         c = contrats[0]
@@ -183,24 +209,10 @@ def _apercu(request, produit):
                       AND COALESCE(x.actif, TRUE)) AS ayants
             FROM stdadherent a WHERE a.iddevis = %s ORDER BY a.idadherent
         """, [c["iddevis"]])
-        cursor.execute(f"""
-            SELECT {prime_base}, a.*, fn_get_taux_taxe(%s, %s, %s, %s), fn_get_frais_gestion_minene(%s)
-            FROM fn_get_accessoire({prime_base}, %s, %s, %s, %s) AS a
-        """, [ID_COMPAGNIE_MINENE, id_produit, id_offre, effet, id_produit,
-              id_produit, id_offre, ID_COMPAGNIE_MINENE, effet])
-        ligne = cursor.fetchone()
-        prime_unitaire = float(ligne[0] or 0) + float(ligne[1] or 0) + float(ligne[2] or 0) + float(ligne[5] or 0)
-        prime_unitaire += round((float(ligne[0] or 0) + float(ligne[1] or 0) + float(ligne[2] or 0)) * float(ligne[4] or 0) / 100)
+        taux, unitaire = forfait_adherent(cursor, produit, effet)
         # TTC du devis = somme des adhérents, arrondie à l'enregistrement (fn_lephare_arrondi_montant)
-        cursor.execute("SELECT fn_lephare_arrondi_montant(%s, %s)", [prime_unitaire * len(adherents), id_produit])
+        cursor.execute("SELECT fn_lephare_arrondi_montant(%s, %s)", [unitaire["PrimeTtc"] * len(adherents), id_produit])
         ttc_arrondie = float(cursor.fetchone()[0] or 0)
-    prime = float(ligne[0] or 0)
-    accessoire = float(ligne[1] or 0) + float(ligne[2] or 0)
-    taux = float(ligne[4] or 0)
-    frais = float(ligne[5] or 0)
-    taxe = round((prime + accessoire) * taux / 100)
-    unitaire = {"PrimeNette": prime, "Accessoire": accessoire, "FraisGestion": frais, "Taxe": taxe,
-                "PrimeTtc": prime + accessoire + taxe + frais}
     nombre = len(adherents)
     return Response({
         "Police": c["numeropolice"], "Client": c["client"], "Nombre": nombre,

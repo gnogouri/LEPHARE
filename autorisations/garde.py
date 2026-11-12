@@ -104,6 +104,39 @@ def instantane_contrat(idcontrat):
     )
 
 
+def instantane_contrat_administration(idcontrat):
+    from production.models import Contrat, ContratDetail, ContratDetGarantie
+
+    contrat = Contrat.objects.filter(pk=idcontrat).values().first()
+    if not contrat:
+        return None
+    details = list(
+        ContratDetail.objects.filter(idcontrat_id=idcontrat)
+        .order_by("pk")
+        .values()
+    )
+    garanties = list(
+        ContratDetGarantie.objects.filter(
+            idcontratdetail__idcontrat_id=idcontrat
+        )
+        .order_by("pk")
+        .values()
+    )
+    return {"contrat": contrat, "details": details, "garanties": garanties}
+
+
+def instantane_contrat_suppression(idcontrat):
+    """État complet d'un contrat supprimé (contrat, objets, garanties, quittance) : seule trace qui reste, au journal."""
+    etat = instantane_contrat_administration(idcontrat)
+    if etat:
+        etat["quittance"] = _une_ligne(
+            """SELECT q.idquittance, q.numeroquittance, q.primettc, q.mt_encaisse FROM stdquittance q
+               JOIN stdcontrat c ON c.idquittance = q.idquittance WHERE c.idcontrat = %s""",
+            [idcontrat],
+        )
+    return etat
+
+
 def auteur_devis(iddevis):
     ligne = _une_ligne("SELECT idoperateur FROM stddevis WHERE iddevis = %s", [iddevis])
     return ligne and ligne["idoperateur"]
@@ -139,6 +172,18 @@ def _devis_creer_ou_modifier(request, view):
     return "devis.create"
 
 
+def _banque_creation(request, view):
+    """Banque créée depuis la caisse (bouton « + » de la banque émettrice) par qui peut encaisser, sinon depuis
+    l'administration (paramétrage général)."""
+    return "encaissements.create" if a_le_droit(request.user, "encaissements.create") else "parametrage.update"
+
+
+def _correction_encaissement(request, view):
+    """Correction d'un encaissement : droit des responsables s'il est accordé, sinon celui de la caisse (l'auteur corrige sa saisie
+    du jour ; production/corrections_encaissement.droits le vérifie)."""
+    return "encaissements.cancel" if a_le_droit(request.user, "encaissements.cancel") else "encaissements.create"
+
+
 CLES_DEVIS = ("iddevis", "IdDevis", "id_devis", "devis_id", "idDevis")
 CLES_CONTRAT = ("idcontrat", "IdContrat", "id_contrat", "contrat_id")
 R = Regle
@@ -146,6 +191,17 @@ R = Regle
 REGLES = [
     # ---- sécurité : utilisateurs, rôles, journal (autorisations/views_securite.py)
     R("GET", r"securite/moi/", CONNECTE),
+    # Cockpit opérationnel : accordé rôle par rôle (Administration > Rôles), puis chaque bloc n'est calculé qu'avec le
+    # droit de lecture de son module (views_cockpit.py)
+    R("GET", r"cockpit/?$", "cockpit.view"),
+    # Alertes de la cloche : chaque bloc selon le droit de lecture de son module (views_cockpit.alertes)
+    R("GET", r"alertes/?$", CONNECTE),
+    # Tableau de bord de la direction et suivi commercial : chiffres réservés au droit de la page (vérifié aussi dans la vue)
+    R("GET", r"tableau-de-bord/?$", "reporting.view"),
+    R("GET", r"suivi-commercial/?$", "crm.view"),
+    # Conventions avec les compagnies : primes à reverser et commissions par compagnie, réservées au droit de la page
+    R("GET", r"conventions-compagnies/", "parametrage.update"),
+    R("PUT", r"conventions-compagnies/\d+/?$", "parametrage.update", objet="parametre", cles=("id_compagnie",)),
     R("POST", r"securite/moi/mot-de-passe/", CONNECTE, objet="utilisateur", action="securite.mot_de_passe"),
     R("GET", r"securite/utilisateurs/", "users.view"),
     R("POST", r"securite/utilisateurs/$", "users.create", objet="utilisateur"),
@@ -188,24 +244,55 @@ REGLES = [
     # ---- devis : primes (sensible)
     R("POST", r"majrecapprimes/", "devis.primes", objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
     R("POST", r"correctiondevis/?$", "devis.primes", objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
+    R("POST", r"devis/(?P<pk>\d+)/imposition-garanties/?$", "devis.primes", objet="devis", cles=("pk",),
+      instantane=instantane_devis),
     R("POST,DELETE", r"mrh/devis/(?P<devis_id>\d+)/(maisons/\d+/)?(imposer-prime|imposition-prime)/", "devis.primes",
       objet="devis", cles=("devis_id",), instantane=instantane_devis),
     R("POST", r"mrh/devis/(?P<devis_id>\d+)/repartir-garanties/", "devis.primes", objet="devis", cles=("devis_id",),
       instantane=instantane_devis),
+    # ---- suppression définitive, par habilitation (production/suppression.py) : préparation sans écriture, puis suppression
+    R("GET", r"devis/\d+/suppression/?$", "devis.delete"),
+    R("DELETE", r"devis/(?P<iddevis>\d+)/suppression/?$", "devis.delete", objet="devis", cles=("iddevis",),
+      instantane=instantane_devis),
+    R("GET", r"contrat/\d+/suppression/?$", "contrats.delete"),
+    R("DELETE", r"contrat/(?P<idcontrat>\d+)/suppression/?$", "contrats.delete", objet="contrat", cles=("idcontrat",),
+      instantane=instantane_contrat_suppression),
     # ---- devis : transformation en contrat, archivage
     R("POST", r"confirmationdevis/?$", "devis.validate", objet="devis", cles=CLES_DEVIS, instantane=instantane_devis,
       auteur=auteur_devis),
-    R("POST", r"(archivagedevis|annulationsaisiedevis|desarchivagedevis)/?$", "devis.cancel", objet="devis",
+    R("POST", r"(archivagedevis|annulationsaisiedevis)/?$", "devis.cancel", objet="devis",
       cles=CLES_DEVIS, instantane=instantane_devis),
-    R("DELETE", r"mrh/devis/(?P<devis_id>\d+)/$", "devis.cancel", objet="devis", cles=("devis_id", "pk"),
+    # Restauration d'un élément archivé : un droit à part, accordé dans Administration > Rôles
+    R("POST", r"desarchivagedevis/?$", "archives.restore", objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
+    R("POST", r"archives/(?P<type_objet>\w+)/(?P<pk>\d+)/restauration/?$", "archives.restore", objet="archive", cles=("pk",)),
+    R("DELETE", r"mrh/devis/(?P<devis_id>\d+)/$", "devis.delete", objet="devis", cles=("devis_id", "pk"),
       instantane=instantane_devis),
     # ---- devis : saisie (création ou modification selon le devis désigné)
     R("POST", r"(enregistrementdevis(ia|mrh|rc|mrp|sante|voyage|tousrisquesinfo|globaledebanque)?|finalisationdevis(auto|ia)|"
               r"enregistrementassureia|saisieayantdroitia|saisie(adherent|affilie|filiale)sante|"
               r"annulationsaisie(vehicule|adherent|affilie|filiale))/?$",
       _devis_creer_ou_modifier, objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
+    # Reprise des affaires antérieures (production/views_reprise.py) : tout utilisateur qui a le droit saisit, sans
+    # validation ; l'analyse d'un fichier n'écrit rien. Devis à finaliser : lecture d'un devis, droit du registre des devis
+    R("GET", r"reprise/devis/", "devis.view"),
+    R("GET", r"reprise/", "contrats.view"),
+    R("POST", r"reprise/import/analyse/?$", "contrats.reprise", lecture=True),
+    # Devis des écrans de la vue Production confirmé en affaire antérieure (contrat et quittance « R »)
+    R("POST", r"reprise/devis/(?P<id_devis>\d+)/?$", "contrats.reprise", objet="devis", cles=("id_devis",)),
+    # Devis enregistré en mode reprise noté en attente de finalisation (marque technique, sans effet sur le devis)
+    R("POST", r"reprise/devis/(?P<id_devis>\d+)/attente/?$", "contrats.reprise", lecture=True),
+    R("POST,PATCH,DELETE", r"reprise/", "contrats.reprise", objet="contrat", cles=("pk",)),
+    # Avenant Santé d'un contrat en cours (changement de formule, incorporation) : préparation et devis d'avenant
+    # (avant les règles générales de devissante/)
+    R("GET", r"devissante/avenant/\d+/?$", "contrats.view"),
+    R("POST", r"devissante/avenant/(?P<idcontrat>\d+)/?$", "contrats.avenant", objet="contrat", cles=("idcontrat",),
+      instantane=instantane_contrat),
     # Import des adhérents et affiliés Santé (avant la règle générale de devissante/)
     R("POST", r"devissante/importation/", "imports.excel", objet="import"),
+    # Aperçu des primes Santé : calcul sans écriture (point de sauvegarde annulé)
+    R("POST", r"devissante/apercu/?$", "devis.view", lecture=True),
+    # Un collègue continue la saisie d'un autre : la saisie change de propriétaire, droit explicite (avant la règle générale)
+    R("POST", r"devissante/(?P<iddevis>\d+)/continuer/?$", "devis.update", objet="devis", cles=("iddevis",), instantane=instantane_devis),
     R("POST", r"(devisia/enregistrement/|devisvoyage/enregistrement/|dommages/devis/$|devissante/|garantiesvehiculeflotte/|"
               r"creer-devis-ia-minene/|transformer-sante-en-ia/|consolidationdevis/)",
       _devis_creer_ou_modifier, objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
@@ -217,6 +304,34 @@ REGLES = [
     # ---- imports
     R("POST", r"verifier-fichier/", "imports.excel", lecture=True),
     R("POST", r"flotte/import/analyse/", "imports.excel", lecture=True),
+    # Vie : liste AFA ou état des cotisations Retraite complémentaire, lus et contrôlés sans écriture
+    R("POST", r"afa/(import|retraite)/analyse/?$", "imports.excel", lecture=True),
+    R("POST", r"mrh/import/analyse/?$", "imports.excel", lecture=True),
+    # Oreole Santé : calcul et lecture du classeur sans écriture, devis liés, émission groupée
+    R("POST", r"oreole/apercu/?$", "devis.view", lecture=True),
+    # Cartes d'assurance : vérification de l'historique sans écriture ; carte facturée sur une police émise : l'avenant sort aussitôt
+    R("POST", r"oreole/cartes/verification/?$", "devis.view", lecture=True),
+    R("POST", r"oreole/contrat/(?P<idcontrat>\d+)/cartes/?$", "devis.validate", objet="contrat", cles=("idcontrat",), instantane=instantane_contrat),
+    R("POST", r"oreole/import/analyse/?$", "imports.excel", lecture=True),
+    R("POST", r"oreole/devis/?$", _devis_creer_ou_modifier, objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
+    R("POST", r"oreole/devis/(?P<iddevis>\d+)/emission/?$", "devis.validate", objet="devis", cles=("iddevis",), instantane=instantane_devis),
+    R("POST", r"oreole/contrat/(?P<idcontrat>\d+)/emission/?$", "devis.validate", objet="contrat", cles=("idcontrat",), instantane=instantane_contrat),
+    R("POST", r"oreole/devis/(?P<iddevis>\d+)/encaissement/?$", "encaissements.create", objet="encaissement", cles=("iddevis",)),
+    # Consommations santé (sante/consommations.py) : données de santé, droits dédiés ; l'analyse d'un relevé n'écrit rien
+    R("POST", r"consommations/import/analyse/?$", "consommations.import", lecture=True),
+    R("POST", r"consommations/import/?$", "consommations.import", objet="releve_sante"),
+    R("POST", r"consommations/entreprises/lien/?$", "consommations.import", objet="lien_entreprise_police"),
+    R("POST", r"consommations/souscriptions/?$", "consommations.import", objet="effectif_sante"),
+    R("POST", r"consommations/fraude/(?P<matricule>\d+)/instruction/?$", "consommations.fraude", objet="suspicion_fraude", cles=("matricule",)),
+    R("GET", r"consommations/fraude", "consommations.fraude"),
+    R("GET", r"consommations/", "consommations.view"),
+    # Branche RAFAS (sante/rafas.py) : données de santé et fonds du souscripteur, droits dédiés ; l'analyse d'un fichier n'écrit rien
+    R("POST", r"rafas/conventions/(?P<idconvention>\d+)/import/analyse/?$", "rafas.import", lecture=True),
+    R("POST", r"rafas/conventions/(?P<idconvention>\d+)/import/?$", "rafas.import", objet="releve_rafas", cles=("idconvention",)),
+    R("DELETE", r"rafas/conventions/(?P<idconvention>\d+)/imports/(?P<idimport>\d+)/?$", "rafas.import", objet="releve_rafas", cles=("idimport",)),
+    R("POST,PUT,PATCH,DELETE", r"rafas/", "rafas.manage", objet="rafas"),
+    R("GET", r"rafas/", "rafas.view"),
+    R("POST", r"afa/devis/?$", _devis_creer_ou_modifier, objet="devis", cles=CLES_DEVIS, instantane=instantane_devis),
     R("POST", r"(importationassureia/|importationaffilie)", "imports.excel", objet="import"),
     # Transport hors GUCE : décompte sans écriture, devis, voyages déclarés et ressortie d'une police d'abonnement
     R("POST", r"transport/hors-guce/calcul/$", "devis.view", lecture=True),
@@ -238,15 +353,26 @@ REGLES = [
              r"listevehiculedevis|reductionflottedevis|devisvoyage|devisia|devisrisquesdivers|devissante|dommages|"
              r"assureiainfo|assureiapardevis|adherents-sante-pour-devis-ia|saisiesanteencours|numerosaisiesante|"
              r"(adherent|affilie|filiale)(liste)?ensaisie|listeaffiliesante|ayantdroitia|ayantdroitminene|mrh/devis|"
-             r"brouillons|devisdetgarantie)(/|$)", "devis.view"),
+             r"brouillons|devisdetgarantie|valeursusuelles)(/|$)", "devis.view"),
     # ---- contrats
     R("GET", r"renouvellement/\d+/?$", "contrats.view"),
+    R("GET", r"incorporation/\d+/?$", "contrats.view"),
+    R("GET", r"incorporation/devis/\d+/?$", "devis.view"),
+    R("GET", r"afa/", "devis.view"),
+    R("GET", r"oreole/caisse/?$", "encaissements.view"),
+    R("GET", r"oreole/contrat/", "contrats.view"),
+    R("GET", r"oreole/", "devis.view"),
     R("GET", r"minene/\d+/connexes/?$", "contrats.view"),
     R("GET", r"minene/(ia|rc)/apercu/?$", "devis.view"),
     R("GET", r"minene/police/?$", "devis.view"),
     R("POST", r"renouvellement/(?P<pk>\d+)/?$", "contrats.avenant", objet="contrat", cles=("pk",), instantane=instantane_contrat),
+    R("POST", r"incorporation/(?P<pk>\d+)/?$", "contrats.avenant", objet="contrat", cles=("pk",), instantane=instantane_contrat),
     R("POST", r"avenant/annulation", "contrats.cancel", objet="contrat", cles=CLES_CONTRAT, instantane=instantane_contrat),
     R("POST", r"avenant/", "contrats.avenant", objet="contrat", cles=CLES_CONTRAT, instantane=instantane_contrat),
+    R("GET", r"contrat/administration/?$", "contrats.admin_update"),
+    R("GET", r"contrat/\d+/administration/?$", "contrats.admin_update"),
+    R("PATCH", r"contrat/(?P<pk>\d+)/administration/?$", "contrats.admin_update",
+      objet="contrat", cles=("pk",), instantane=instantane_contrat_administration),
     R("POST", r"contrat/(?P<pk>\d+)/attacher_piece_jointe", "contrats.update", objet="contrat", cles=("pk",)),
     R("POST,PUT,PATCH,DELETE", r"contratdetgarantie/", "contrats.update", objet="garantie_contrat", cles=("pk",)),
     R("GET", r"(contrat|contratdetail|garantiecontrat|garantiesouscritecontrat|quittancecontrat|listevehiculecontrat|"
@@ -256,6 +382,14 @@ REGLES = [
     R("POST", r"(contratpourencaissement/|encaissementrecherche/)", "encaissements.view", lecture=True),
     R("POST", r"(encaissement/(?P<pk>\d+)/annuler/|cheques/(?P<id_cheque>\d+)/decaissement/)", "encaissements.cancel",
       objet="encaissement", cles=("pk", "id_cheque")),
+    # Décaissement de tout autre règlement : même droit et même motif que le chèque impayé
+    R("POST", r"caisse/reglements/(?P<id_encaissement>\d+)/decaissement/?$", "encaissements.cancel", objet="encaissement", cles=("id_encaissement",)),
+    R("GET", r"caisse/(reglements|decaissements)/?$", "encaissements.view"),
+    # Correction d'un encaissement saisi par erreur (production/corrections_encaissement.py) : l'auteur le jour même, sinon un
+    # responsable ; la vue vérifie lequel des deux
+    R("POST", r"caisse/encaissements/(?P<id_encaissement>\d+)/correction/(references|annulation)/?$", _correction_encaissement,
+      objet="encaissement", cles=("id_encaissement",)),
+    R("GET", r"caisse/encaissements/(du-jour|\d+/correction)/?$", "encaissements.view"),
     R("DELETE", r"cheques/(?P<id_cheque>\d+)/", "encaissements.cancel", objet="cheque", cles=("id_cheque",)),
     R("PUT,PATCH,DELETE", r"encaissement/(?P<pk>\d+)", "encaissements.cancel", objet="encaissement", cles=("pk",)),
     R("POST", r"(enregistrementencaissement|cheques/echeancier/|initiationpaiementmobile|quittances-cima/$|encaissement/$|"
@@ -263,6 +397,9 @@ REGLES = [
       cles=("pk", "IdQuittance", "idquittance")),
     R("GET", r"(encaissement|encaissementrecherche|infoencaissement|listedetailencaissement|cheques|finance/encaissements|"
              r"paiementmobileinfo|distripaytransaction|quittances-cima|contratpourencaissement)(/|$)", "encaissements.view"),
+    # Banques : création depuis la caisse ou l'administration, modification et suppression depuis l'administration
+    R("POST", r"banque/?$", _banque_creation, objet="banque", cles=("idbanque",)),
+    R("PUT,PATCH,DELETE", r"banque/(?P<pk>\d+)/?$", "parametrage.update", objet="banque", cles=("pk",)),
     # ---- reversements
     # Bordereaux et courriers au modèle d'OREOLE (production/views_bordereaux.py) : émission (un bordereau de
     # réclamation est payé d'office, chèques du client transmis), décharge, ordre d'un règlement, police de la
@@ -281,6 +418,16 @@ REGLES = [
       "reversements.create", objet="reversement"),
     R("GET", r"(reversement|reversementnonvalide|inforeversement|listedetailreversement|contratpourreversement|"
              r"finance/reversements|reversements-cima)(/|$)", "reversements.view"),
+    # ---- apporteurs d'affaires (production/apporteurs.py) ; la fiche : configuration_api, route apporteurs/
+    R("POST,PUT,PATCH", r"apporteurs(/|$)", "apporteurs.update", objet="apporteur", cles=("pk",)),
+    R("POST", r"finance/apporteurs/rattachements/$", "apporteurs.rattacher", objet="affaire_apporteur", cles=("IdDevis", "IdContrat")),
+    R("PATCH", r"finance/apporteurs/rattachements/(?P<id_rattachement>\d+)/$", "apporteurs.rattacher", objet="affaire_apporteur", cles=("id_rattachement",)),
+    R("POST", r"finance/apporteurs/rattachements/(?P<id_rattachement>\d+)/retrait/", "apporteurs.rattacher", objet="affaire_apporteur", cles=("id_rattachement",)),
+    R("POST", r"finance/apporteurs/reglements/$", "apporteurs.payer", objet="reglement_apporteur", cles=("IdApporteur",)),
+    R("POST", r"finance/apporteurs/reglements/(?P<id_reglement>\d+)/annulation/", "apporteurs.cancel", objet="reglement_apporteur", cles=("id_reglement",)),
+    R("POST", r"finance/apporteurs/commissions/(?P<id_commission>\d+)/annulation/", "apporteurs.cancel", objet="commission_apporteur", cles=("id_commission",)),
+    R("PATCH", r"finance/apporteurs/commissions/(?P<id_commission>\d+)/$", "apporteurs.rattacher", objet="commission_apporteur", cles=("id_commission",)),
+    R("GET", r"finance/apporteurs/", "apporteurs.view"),
     # ---- commissions
     R("POST", r"commissions/(affaires-commission/rechercher_pour_paiement|details-paiement-commission/verifier_selection|"
               r"notifications/marquer_toutes_lues|dashboard/invalider_cache)", "commissions.view", lecture=True),
@@ -325,7 +472,7 @@ REGLES = [
     R("GET", r"(cimaetate1|cimaetate2|etatdecisionnel|bordereaurecapemission)", "reporting.view"),
     R("POST,PUT,PATCH,DELETE", r"etatdecisionnel", "reporting.view", objet="etat", cles=("pk",)),
     # ---- tarifs et barèmes
-    R("POST,PUT,PATCH,DELETE", r"(parametrage/dommages/|parametrage/sante/|parametrage/auto/|parametrage/transport/|parametrage/ia/|parametrage/mrh/|grillesvoyage/)", "tarifs.update", objet="bareme",
+    R("POST,PUT,PATCH,DELETE", r"(parametrage/dommages/|parametrage/sante/|parametrage/oreole/|parametrage/auto/|parametrage/transport/|parametrage/ia/|parametrage/mrh/|parametrage/vie/|grillesvoyage/)", "tarifs.update", objet="bareme",
       cles=("id_tarif", "id_compagnie", "id_ligne", "id_offre", "id_pays", "cle", "id_repartition", "code")),
     # Valeur vénale d'après le tableau de dépréciation, primes d'un tarif à lecture directe (calculs sans écriture,
     # écrans de devis)
@@ -336,7 +483,7 @@ REGLES = [
                                r"collegesante|zonevoyage|zonecouverturesante|zonecouvertureoffre|typereduction|typecontratsante|"
                                r"risque|filialesante|delaiavisecheance)(/|$)", "tarifs.update", objet="bareme", cles=("pk",)),
     # ---- paramétrage
-    R("POST,PUT,PATCH,DELETE", r"(parametrage/|apporteurs|conventions)", "parametrage.update", objet="parametre",
+    R("POST,PUT,PATCH,DELETE", r"(parametrage/|conventions)", "parametrage.update", objet="parametre",
       cles=("pk", "cle", "id_compagnie", "id_produit")),
     R("POST,PUT,PATCH,DELETE", r"(menu|menuparent|utilisateur|groupeutilisateur|numero|parametresite|intermediaire|"
                                r"periodictaskschedule|crontabschedule|intervalschedule|solarschedule|clockedschedule|"
@@ -694,7 +841,7 @@ def apres_reponse(view, request, reponse):
     description = complements.get("description") or libelle
     journaliser(
         request=request, module=module, action=action,
-        description=f"{description}{' — échec : ' + message if message else ''}"
+        description=f"{description}{' - échec : ' + message if message else ''}"
                     f"{'' if contexte['cartographiee'] else ' (route non cartographiée : ' + contexte['module_vue'] + ')'}",
         objet_type=complements.get("objet_type") or (regle.objet if regle and regle.objet else OBJETS_PAR_MODULE.get(module, "")),
         objet_id=complements.get("objet_id") or objet_id or "", resultat=RESULTAT_SUCCES if reussie else RESULTAT_ECHEC,

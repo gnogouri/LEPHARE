@@ -10,9 +10,9 @@ Trois types de police :
   « Émission de certificat » (avenant 18), contrat sous le numéro de la police et quittance
   (sp_generation_contrat_transport).
 Prime = valeur assurée × (taux de la garantie de base + taux des extensions retenues), au minimum la prime minimum ;
-taxe sur la prime nette et les accessoires (7 % comme les certificats GUCE), sauf affaire exonérée. Les taux sont
-proposés par Administration > Le cabinet & règles de gestion > Transport et modifiables dans la cotation, sauf le
-FAP Sauf : jamais sous le taux minimum réglementaire.
+taxe sur la prime nette et les accessoires selon le mode de transport (maritime et fluvial : 0 %, aérien : 7 %,
+terrestre et ferroviaire : 14,5 %), sauf affaire exonérée. Les taux sont réglables par mode dans Administration >
+Réglages par branche > Transport, sauf le FAP Sauf : jamais sous le taux minimum réglementaire.
 
 - GET  /api/transport/hors-guce/catalogue/                         modes, types de police, garanties, listes, réglages
 - POST /api/transport/hors-guce/calcul/                            décompte sans écriture
@@ -48,6 +48,13 @@ ID_INTERMEDIAIRE = 1
 ID_AVENANT_AFFAIRE_NOUVELLE = 1
 ID_AVENANT_CERTIFICAT = 18  # ECT « Émission de certificat » : ressortie d'une police d'abonnement (comme GUCE)
 CENT = Decimal("100")
+TAUX_TAXE_ORIGINE = {
+    "MARITIME": Decimal("0"),
+    "FLUVIAL": Decimal("0"),
+    "AERIEN": Decimal("7"),
+    "TERRESTRE": Decimal("14.5"),
+    "FERROVIAIRE": Decimal("14.5"),
+}
 
 # Modes, garanties et listes : Administration > Réglages par branche > Transport (tables lephare_transport_mode et
 # lephare_transport_garantie, paramètres transport.liste_*, configuration_api 0101). Valeurs d'origine ci-dessous,
@@ -170,6 +177,12 @@ def _parametre(cle):
     return Decimal(str(valeur)) if valeur is not None else None
 
 
+def _taux_taxe(mode):
+    """Taux de taxe (%) réglé pour le mode, ou taux d'origine si le paramètre est absent."""
+    taux = _parametre(f"transport.taux_taxe_{mode.lower()}")
+    return TAUX_TAXE_ORIGINE[mode] if taux is None else taux
+
+
 def _taux_propose(garantie, mode):
     """Taux proposé par le réglage de la garantie pour ce mode (Decimal) ou None."""
     taux = (garantie.get("Taux") or {}).get(mode)
@@ -225,7 +238,8 @@ def _compagnies(cursor):
 
 def _reglages():
     cles = ["transport.prime_minimum", "transport.prime_minimum_police_voyage", "transport.cout_police_voyage",
-            "transport.cout_par_voyage", "transport.cout_police_annuelle", "transport.taux_taxe"]
+            "transport.cout_par_voyage", "transport.cout_police_annuelle",
+            *(f"transport.taux_taxe_{mode.lower()}" for mode in TAUX_TAXE_ORIGINE)]
     return {cle.split(".", 1)[1]: (_nombre(_parametre(cle)) if _parametre(cle) is not None else None) for cle in cles}
 
 
@@ -328,7 +342,7 @@ def calculer(cursor, type_police, mode, id_compagnie, valeur, garanties, accesso
     if prime_nette > prime_calculee and lignes:
         lignes[0]["Prime"] += prime_nette - prime_calculee  # complément de la prime minimum sur la garantie de base
     acc = _arrondi(accessoire if accessoire is not None else (cout or 0))
-    taux_taxe = Decimal(0) if exonere else (_parametre("transport.taux_taxe") or Decimal(0))
+    taux_taxe = Decimal(0) if exonere else _taux_taxe(mode)
     for l in lignes:
         l["Taxe"] = _arrondi(l["Prime"] * taux_taxe / CENT)
     taxe = _arrondi((prime_nette + acc) * taux_taxe / CENT)

@@ -17,12 +17,13 @@ import { SectionTransport } from './branches/SectionTransport';
 import { SectionIa } from './branches/SectionIa';
 import { SectionMrh } from './branches/SectionMrh';
 import { SectionRc } from './branches/SectionRc';
+import { SectionVie } from './branches/SectionVie';
 
 // Réglages d'une branche de production, au même endroit (demande du 2026-10-21 : « le paramétrage pour toutes les
 // branches de production actives, ce qui évitera la confusion ») : production (saisie, compagnie proposée), règles de
-// la branche, réglages propres (Transport, IA, MRH, RC), écrans détaillés et tables communes filtrées sur la branche.
+// la branche, réglages propres (Transport, IA, MRH, RC, offres commerciales Vie), écrans détaillés et tables communes.
 
-const SECTIONS = { transport: SectionTransport, ia: SectionIa, mrh: SectionMrh, rc: SectionRc };
+const SECTIONS = { transport: SectionTransport, ia: SectionIa, mrh: SectionMrh, rc: SectionRc, vie: SectionVie };
 const ECRANS = ADMIN_MENU.flatMap((g) => g.items);
 
 // Tables communes à toutes les branches, ouvertes filtrées sur la branche
@@ -145,7 +146,7 @@ export const ReglagesBranchePage = () => {
               </label>
               <div className="rb-champ">
                 <span className="rb-champ-libelle">Onglet du registre</span>
-                <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>{saisie.Onglet || '—'} <Link to="/admin/settings/products" style={{ fontSize: '0.78rem', fontWeight: 400 }}>Produits</Link></span>
+                <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>{saisie.Onglet || '-'} <Link to="/admin/settings/products" style={{ fontSize: '0.78rem', fontWeight: 400 }}>Produits</Link></span>
               </div>
               <div className="rb-actions">
                 {modifie && <button type="button" className="btn btn-secondary" onClick={() => setSaisie({ ...produit })} title="Annuler les changements"><RotateCcw size={14} /></button>}

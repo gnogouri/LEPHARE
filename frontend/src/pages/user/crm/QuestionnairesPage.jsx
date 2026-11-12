@@ -628,7 +628,7 @@ export const QuestionnairesPage = () => {
                                       {[...(q.historique || [])].reverse().map((h, i) => (
                                         <li key={`${h.date}-${i}`}>
                                           <span style={{ color: 'var(--text-primary)' }}>{h.action}</span>
-                                          <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}> — {dateHeure(h.date)}, {h.auteur}</span>
+                                          <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}> - {dateHeure(h.date)}, {h.auteur}</span>
                                         </li>
                                       ))}
                                     </ol>

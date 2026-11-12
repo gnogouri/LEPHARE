@@ -4,7 +4,7 @@ import { StatusBadge } from '../../../components/common/StatusBadge';
 import { Modal } from '../../../components/common/Modal';
 import { EditClientModal } from './EditClientModal';
 import { dataStore } from '../../../api/dataStore';
-import { customerApi, configRefApi, secteurActiviteApi, professionApi, sanitizeClientForApi } from '../../../api/endpoints';
+import { customerApi, configRefApi, secteurActiviteApi, professionApi, sanitizeClientForApi, normalizeClient } from '../../../api/endpoints';
 import { useToast } from '../../../context/ToastContext';
 import { useAuth } from '../../../context/AuthContext';
 import { canUser } from '../../../utils/rbac';
@@ -12,7 +12,7 @@ import { Users, Plus, Phone, Mail, MapPin, Building, User, Eye, Edit2, Archive, 
 import { exportToPdf, printFicheClient } from '../../../utils/exportUtils';
 import { useNavigate } from 'react-router-dom';
 import { trierParLibelle } from '../../../utils/sortUtils';
-import { qualitesSelonPersonne } from '../../../utils/clientUtils';
+import { messageErreurClient, qualitesSelonPersonne, ribIncomplet } from '../../../utils/clientUtils';
 
 // Champs jamais modifiés depuis la fenêtre de modification : identifiants attribués et soldes
 const CHAMPS_CLIENT_NON_MODIFIABLES = ['Matricule', 'numero_assure', 'cle_unique', 'Solde', 'Avoir', 'CreeCie', 'IdCategorie', 'IdProfil'];
@@ -213,6 +213,7 @@ export const ClientListPage = () => {
   const modalTabOrder = ['identite', 'coordonnees', 'professionnel', 'banque'];
   // Client venant d'être créé : bascule le modal sur l'écran de confirmation + impression
   const [createdClient, setCreatedClient] = useState(null);
+  const [isSavingClient, setIsSavingClient] = useState(false);
 
   // Form State Exhaustif (41 champs réels de stdclient)
   const initialFormState = {
@@ -242,7 +243,7 @@ export const ClientListPage = () => {
     // 3. Domaine d'activité
     Responsable: '',
     Fonction: '',
-    IdProfession: 1,
+    IdProfession: '',
     profession: '',
     IdSecteurActivite: '',
 
@@ -379,7 +380,25 @@ export const ClientListPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSavingClient) return;
     const isEntreprise = formData.typeclient === 'Entreprise';
+
+    // Les onglets s'ouvrent aussi directement : les contrôles du bouton « Suivant » sont refaits ici
+    if (!formData.nom.trim()) {
+      toastError(isEntreprise ? 'La raison sociale est requise.' : 'Le nom de famille est requis.');
+      setModalTab('identite');
+      return;
+    }
+    if (!formData.telephone.trim()) {
+      toastError('Le numéro de téléphone principal est obligatoire.');
+      setModalTab('coordonnees');
+      return;
+    }
+    if (ribIncomplet(formData.Rib)) {
+      toastError('Le RIB doit compter 24 caractères : code banque, code guichet, numéro de compte et clé.');
+      setModalTab('banque');
+      return;
+    }
 
     // Trouver libellés associés aux identifiants sélectionnés
     const selectedQualite = refData.qualites.find((q) => q.IdQualite === Number(formData.IdQualite));
@@ -405,17 +424,21 @@ export const ClientListPage = () => {
 
     // Enregistrement dans le dataStore réactif (avec tous les 41 champs)
     // Envoi direct à l'API Django REST (/api/client/)
+    setIsSavingClient(true);
     try {
       const res = await customerApi.createClient(newClientPayload);
       const savedClient = res.data || {};
-      const matricule = savedClient.Matricule || savedClient.codeclient || newClientPayload.codeclient;
+      // Même code que la liste (aucun matricule n'est attribué à la création)
+      const matricule = normalizeClient(savedClient).codeclient;
       success(`Client [${matricule}] ${newClientPayload.nomcomplet} a été créé avec succès.`);
       // Fusionne les données saisies avec la réponse de l'API pour disposer de toutes les
       // informations sur la fiche imprimable (matricule, IdClient, etc.)
       setCreatedClient({ ...newClientPayload, ...savedClient, Matricule: matricule, codeclient: matricule });
       loadClients();
     } catch (err) {
-      toastError(err.response?.data?.detail || err.response?.data?.message || 'Le client n\'a pas pu être créé. Veuillez réessayer.');
+      toastError(messageErreurClient(err, 'Le client n\'a pas pu être créé. Veuillez réessayer.'));
+    } finally {
+      setIsSavingClient(false);
     }
   };
 
@@ -976,9 +999,10 @@ export const ClientListPage = () => {
                   <input
                     type="text"
                     className="form-control"
+                    maxLength={15}
                     value={formData.CodePostal}
                     onChange={(e) => setFormData({ ...formData, CodePostal: e.target.value })}
-                    placeholder="Ex: 01 BP 4512 Abidjan 01"
+                    placeholder="Ex: 01 BP 4512"
                   />
                 </div>
               </div>
@@ -1047,7 +1071,7 @@ export const ClientListPage = () => {
                     <option value="">-- Sélectionner une profession --</option>
                     {trierParLibelle(refData.professions, (p) => `${p.Libelle} ${p.CodeProfession ? `(${p.CodeProfession})` : ''}`).map((p) => (
                       <option key={p.IdProfession} value={p.IdProfession}>
-                        {p.Libelle}{p.CodeProfession ? ` — ${p.CodeProfession}` : ''}
+                        {p.Libelle}{p.CodeProfession ? ` - ${p.CodeProfession}` : ''}
                       </option>
                     ))}
                   </select>
@@ -1165,8 +1189,8 @@ export const ClientListPage = () => {
               </span>
 
               {isLastModalTab ? (
-                <button type="submit" className="btn btn-primary">
-                  Créer & Enregistrer le Client
+                <button type="submit" className="btn btn-primary" disabled={isSavingClient}>
+                  {isSavingClient ? 'Enregistrement…' : 'Créer & Enregistrer le Client'}
                 </button>
               ) : (
                 <button type="button" className="btn btn-primary" onClick={handleNextTab} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -1279,7 +1303,7 @@ export const ClientListPage = () => {
       </Modal>
 
       {/* =====================================================================
-          MODAL AJOUT RAPIDE — Secteur d'Activité Économique (stdsecteuractivite)
+          MODAL AJOUT RAPIDE - Secteur d'Activité Économique (stdsecteuractivite)
           ===================================================================== */}
       {isAddSecteurOpen && (
         <div
@@ -1378,7 +1402,7 @@ export const ClientListPage = () => {
       )}
 
       {/* =====================================================================
-          MODAL AJOUT RAPIDE — Profession (stdprofession)
+          MODAL AJOUT RAPIDE - Profession (stdprofession)
           ===================================================================== */}
       {isAddProfessionOpen && (
         <div

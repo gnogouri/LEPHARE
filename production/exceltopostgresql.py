@@ -836,7 +836,6 @@ def create_transport_insurance_quote(
     finally:
         if connection:
             cursor.close()
-            connection.close()
 
     return (
         error_occured,

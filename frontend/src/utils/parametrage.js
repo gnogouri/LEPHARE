@@ -13,10 +13,11 @@ const PRODUITS_ORIGINE = [
   { IdProduit: 3, Libelle: 'ASSURANCE VOYAGE', Onglet: 'Voyage', ModuleSaisie: 'voyage', SaisieOuverte: true, Ordre: 2, IdCompagnieDefaut: 21 },
   { IdProduit: 6, Libelle: 'TRANSPORT', Onglet: 'Transport', ModuleSaisie: 'transport', SaisieOuverte: true, Ordre: 3, IdCompagnieDefaut: 1 },
   { IdProduit: 4, Libelle: 'MULTIRISQUES HABITATION', Onglet: 'MRH', ModuleSaisie: 'mrh', SaisieOuverte: true, Ordre: 4, IdCompagnieDefaut: 1 },
-  { IdProduit: 7, Libelle: 'MULTIRISQUES PROFESSIONNELLE', Onglet: 'MRH', ModuleSaisie: 'mrp', SaisieOuverte: false, Ordre: 5, IdCompagnieDefaut: 1 },
+  { IdProduit: 7, Libelle: 'MULTIRISQUES PROFESSIONNELLE', Onglet: 'MRP', ModuleSaisie: 'mrp', SaisieOuverte: false, Ordre: 5, IdCompagnieDefaut: 1 },
   { IdProduit: 9, Libelle: 'TOUS DOMMAGES', Onglet: 'Dommages', ModuleSaisie: 'tous-dommages', SaisieOuverte: true, Ordre: 6, IdCompagnieDefaut: 1 },
   { IdProduit: 5, Libelle: 'SANTE', Onglet: 'Santé', ModuleSaisie: 'sante', SaisieOuverte: true, Ordre: 7, IdCompagnieDefaut: 1 },
-  { IdProduit: 10, Libelle: 'VIE', Onglet: 'Santé', ModuleSaisie: '', SaisieOuverte: false, Ordre: 8, IdCompagnieDefaut: null },
+  // Vie séparée de la Santé (2026-11-02) : onglet propre, formulaire AFA, SANLAM qui gère la Vie
+  { IdProduit: 10, Libelle: 'VIE', Onglet: 'Vie', ModuleSaisie: 'afa', SaisieOuverte: true, Ordre: 8, IdCompagnieDefaut: 30 },
   { IdProduit: 2, Libelle: 'INDIVIDUELLE ACCIDENTS', Onglet: 'IA', ModuleSaisie: 'ia', SaisieOuverte: true, Ordre: 9, IdCompagnieDefaut: 1 },
   { IdProduit: 8, Libelle: 'RESPONSABILITE CIVILE', Onglet: 'RC', ModuleSaisie: 'rc', SaisieOuverte: false, Ordre: 10, IdCompagnieDefaut: 1 },
 ];
@@ -236,7 +237,7 @@ export const moduleDuProduit = (idProduit) => produitPar(idProduit)?.ModuleSaisi
 export const moduleOuvert = (module) => etat.Produits.some((p) => p.ModuleSaisie === module && p.SaisieOuverte);
 
 export const libellesModulesOuverts = () => {
-  const libelles = { auto: 'Automobile', ia: 'Individuelle Accidents', sante: 'Santé', voyage: 'Voyage', transport: 'Transport', mrh: 'Multirisques Habitation', rc: 'Responsabilité Civile', mrp: 'Multirisque Professionnelle', 'tous-dommages': 'Dommages' };
+  const libelles = { auto: 'Automobile', ia: 'Individuelle Accidents', sante: 'Santé', voyage: 'Voyage', transport: 'Transport', mrh: 'Multirisques Habitation', rc: 'Responsabilité Civile', mrp: 'Multirisque Professionnelle', 'tous-dommages': 'Dommages', afa: 'Vie' };
   return [...new Set(etat.Produits.filter((p) => p.SaisieOuverte && p.ModuleSaisie).map((p) => libelles[p.ModuleSaisie] || p.ModuleSaisie))];
 };
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Eye, Edit2, Archive, CheckCircle, RefreshCw } from 'lucide-react';
+import { Eye, Edit2, Archive, CheckCircle, Printer, RefreshCw, Trash2 } from 'lucide-react';
 
 const baseBtn = {
   display: 'inline-flex',
@@ -49,6 +49,8 @@ const Divider = () => (
  * - Action principale (Confirmer) : toujours visible, un clic.
  * - Actions secondaires : groupe d'icônes avec infobulle, séparateurs fins.
  * - Archiver : icône rouge au survol, isolée à droite ; la confirmation est gérée par le parent (onArchive ouvre une modale).
+ * - Imprimer (facultatif, showPrint) : documents de la ligne, en tête du groupe d'icônes.
+ * - Supprimer (facultatif, showDelete) : suppression définitive, par habilitation ; la confirmation est gérée par le parent.
  * Chaque action se masque avec `show*={false}` ou se désactive avec `*Disabled` + `*Title`.
  */
 export const RowActions = ({
@@ -57,6 +59,8 @@ export const RowActions = ({
   onEdit, editTitle = 'Modifier', editDisabled = false, showEdit = true,
   onArchive, archiveTitle = 'Archiver', archiveDisabled = false, showArchive = true,
   onRestore, restoreTitle = 'Désarchiver', showRestore = false,
+  onPrint, printTitle = 'Imprimer', showPrint = false,
+  onDelete, deleteTitle = 'Supprimer', showDelete = false,
 }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'nowrap', whiteSpace: 'nowrap' }}>
     {showConfirm && (
@@ -93,6 +97,10 @@ export const RowActions = ({
         overflow: 'hidden',
       }}
     >
+      {showPrint && (
+        <IconButton icon={Printer} title={printTitle} onClick={onPrint} hoverColor="#c084fc" hoverBg="rgba(192,132,252,0.12)" />
+      )}
+      {showPrint && (showView || showEdit) && <Divider />}
       {showView && (
         <IconButton icon={Eye} title={viewTitle} onClick={onView} hoverColor="#60a5fa" hoverBg="rgba(96,165,250,0.12)" />
       )}
@@ -118,6 +126,12 @@ export const RowActions = ({
             hoverColor="#fff"
             hoverBg="rgba(239,68,68,0.7)"
           />
+        </>
+      )}
+      {showDelete && (
+        <>
+          <Divider />
+          <IconButton icon={Trash2} title={deleteTitle} onClick={onDelete} color="#f87171" hoverColor="#fff" hoverBg="rgba(239,68,68,0.7)" />
         </>
       )}
     </div>
